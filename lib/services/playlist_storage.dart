@@ -72,6 +72,7 @@ class PlaylistStorageService {
     required String url,
     required List<M3uChannel> channels,
     String? existingId,
+    String? epgUrl,
   }) async {
     final id = existingId ?? DateTime.now().millisecondsSinceEpoch.toString();
     final now = DateTime.now();
@@ -83,6 +84,7 @@ class PlaylistStorageService {
       channelCount: channels.length,
       lastUpdated: now,
       channels: channels,
+      epgUrl: epgUrl,
     );
 
     // 1. Salvar os canais em arquivo local JSON
@@ -140,12 +142,13 @@ class PlaylistStorageService {
 
   /// Atualiza a lista baixando novamente o conteúdo M3U a partir da URL.
   Future<M3uPlaylist> refreshPlaylist(M3uPlaylist playlist) async {
-    final channels = await M3uParser.fetchAndParse(playlist.url);
+    final result = await M3uParser.fetchAndParseWithMetadata(playlist.url);
     return savePlaylist(
       name: playlist.name,
       url: playlist.url,
-      channels: channels,
+      channels: result.channels,
       existingId: playlist.id,
+      epgUrl: result.epgUrl ?? playlist.epgUrl,
     );
   }
 }

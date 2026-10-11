@@ -56,14 +56,15 @@ class _AddPlaylistDialogState extends State<AddPlaylistDialog> {
     setState(() => _isLoading = true);
 
     try {
-      // 1. Download e parse dos canais
-      final channels = await M3uParser.fetchAndParse(rawUrl);
+      // 1. Download e parse dos canais e metadados de EPG
+      final result = await M3uParser.fetchAndParseWithMetadata(rawUrl);
 
       // 2. Salvar localmente
       final savedPlaylist = await widget.storageService.savePlaylist(
         name: name,
         url: rawUrl,
-        channels: channels,
+        channels: result.channels,
+        epgUrl: result.epgUrl,
       );
 
       if (mounted) {

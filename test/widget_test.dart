@@ -38,11 +38,11 @@ void main() {
     await tester.tap(skipButton);
     await tester.pumpAndSettle();
 
-    // 3. Deve exibir a tela inicial (HomeScreen) com os cards e a barra inferior
+    // 3. Deve exibir a tela inicial (HomeScreen) com os cards e a barra lateral
     expect(find.byKey(const Key('cat_live_tv')), findsOneWidget);
     expect(find.byKey(const Key('cat_movies')), findsOneWidget);
     expect(find.byKey(const Key('cat_series')), findsOneWidget);
-    expect(find.byKey(const Key('bottom_nav_home')), findsOneWidget);
+    expect(find.byKey(const Key('sidebar_home')), findsOneWidget);
 
     // 4. Toca no card "TV ao vivo" no modo sem login para abrir o gerenciador M3U
     await tester.tap(find.byKey(const Key('cat_live_tv')));

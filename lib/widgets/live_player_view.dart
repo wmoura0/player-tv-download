@@ -29,6 +29,7 @@ class LivePlayerView extends StatefulWidget {
   final VoidCallback? onToggleFavorite;
   final String? currentProgram;
   final String? nextProgram;
+  final VoidCallback? onOpenGuide;
 
   const LivePlayerView({
     super.key,
@@ -50,6 +51,7 @@ class LivePlayerView extends StatefulWidget {
     this.onToggleFavorite,
     this.currentProgram,
     this.nextProgram,
+    this.onOpenGuide,
   });
 
   @override
@@ -564,6 +566,20 @@ class _LivePlayerViewState extends State<LivePlayerView> {
               ],
             ),
           ),
+          if (widget.onOpenGuide != null) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: 'Guia de Programação (EPG)',
+              icon: Icon(
+                Icons.schedule_rounded,
+                color: const Color(0xFF00E5FF),
+                size: isCompact ? 20 : 22,
+              ),
+              padding: EdgeInsets.zero,
+              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
+              onPressed: widget.onOpenGuide,
+            ),
+          ],
           if (widget.onToggleFavorite != null) ...[
             const SizedBox(width: 4),
             IconButton(

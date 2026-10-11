@@ -3,10 +3,14 @@ import '../models/xtream_account.dart';
 import '../services/settings_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
+import '../utils/device_utils.dart';
 import '../widgets/live_player_view.dart';
+import 'playlists_screen.dart';
+import 'xtream_login_screen.dart';
 
-/// Tela moderna de configurações e personalização do Player TV.
-/// Permite customizar temas, densidade, comportamento do player e gerenciar o cache local.
+/// Tela simplificada e focada de configurações do Player TV.
+/// Apresenta informações da conta/listas, preferências essenciais de reprodução,
+/// manutenção de cache e informações sobre o aplicativo, com navegação por D-pad.
 class SettingsScreen extends StatefulWidget {
   final XtreamAccount? xtreamAccount;
   final XtreamCatalogService? catalogService;
@@ -79,7 +83,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(color: Color(0xFFF5F8FC), fontWeight: FontWeight.bold),
         ),
         content: const Text(
-          'Os dados em cache serão removidos. Na próxima abertura, o catálogo será baixado novamente do servidor.',
+          'Os dados salvos localmente serão limpos. Na próxima abertura, o catálogo será recarregado do servidor.',
           style: TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
         ),
         actions: [
@@ -118,7 +122,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: _settings.accentColor.color, width: 1),
+          side: const BorderSide(color: Color(0xFF00E5FF), width: 1),
         ),
       ),
     );
@@ -126,77 +130,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: _settings,
-      builder: (context, _) {
-        final accent = _settings.accentColor.color;
+    const accent = Color(0xFF00E5FF);
 
-        return Scaffold(
-          backgroundColor: const Color(0xFF070A12),
-          appBar: AppBar(
-            backgroundColor: const Color(0xFF0E1424),
-            elevation: 0,
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFF5F8FC)),
-              onPressed: () => Navigator.of(context).pop(),
+    return Scaffold(
+      backgroundColor: const Color(0xFF070A12),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0E1424),
+        elevation: 0,
+        leading: IconButton(
+          tooltip: 'Voltar',
+          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFF5F8FC)),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.tune_rounded, color: accent, size: 24),
+            SizedBox(width: 12),
+            Text(
+              'Configurações',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFFF5F8FC),
+              ),
             ),
-            title: Row(
-              children: [
-                Icon(Icons.tune_rounded, color: accent, size: 24),
-                const SizedBox(width: 12),
-                const Text(
-                  'Configurações',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFFF5F8FC),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          body: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            children: [
-              // 1. APARÊNCIA E TEMA
-              _buildSectionHeader('Aparência e Personalização', Icons.palette_outlined, accent),
-              const SizedBox(height: 12),
-              _buildAccentColorCard(accent),
-              const SizedBox(height: 12),
-              _buildPosterDensityCard(accent),
-              const SizedBox(height: 12),
-              _buildReduceAnimationsCard(accent),
+          ],
+        ),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        children: [
+          // 1. CONTA E GERENCIAMENTO DE LISTAS
+          _buildSectionHeader('Conta e Acesso', Icons.account_circle_outlined, accent),
+          const SizedBox(height: 12),
+          _buildAccountCard(accent),
 
-              const SizedBox(height: 28),
+          const SizedBox(height: 28),
 
-              // 2. REPRODUTOR DE VÍDEO
-              _buildSectionHeader('Reprodutor de Vídeo', Icons.play_circle_outline_rounded, accent),
-              const SizedBox(height: 12),
-              _buildDefaultAspectRatioCard(accent),
-              const SizedBox(height: 12),
-              _buildResumePlaybackCard(accent),
-              const SizedBox(height: 12),
-              _buildAutoPlayNextEpisodeCard(accent),
+          // 2. PREFERÊNCIAS DE REPRODUÇÃO
+          _buildSectionHeader('Preferências de Reprodução', Icons.play_circle_outline_rounded, accent),
+          const SizedBox(height: 12),
+          _buildDefaultAspectRatioCard(accent),
+          const SizedBox(height: 12),
+          _buildResumePlaybackCard(accent),
+          const SizedBox(height: 12),
+          _buildAutoPlayNextEpisodeCard(accent),
 
-              const SizedBox(height: 28),
+          const SizedBox(height: 28),
 
-              // 3. CACHE E SINCRONIZAÇÃO
-              _buildSectionHeader('Armazenamento e Catálogo', Icons.storage_rounded, accent),
-              const SizedBox(height: 12),
-              _buildCatalogCacheCard(accent),
+          // 3. ARMAZENAMENTO E CATÁLOGO
+          _buildSectionHeader('Armazenamento e Catálogo', Icons.storage_rounded, accent),
+          const SizedBox(height: 12),
+          _buildCatalogCacheCard(accent),
 
-              const SizedBox(height: 28),
+          const SizedBox(height: 28),
 
-              // 4. INFORMAÇÕES DO APLICATIVO
-              _buildSectionHeader('Sobre o Aplicativo', Icons.info_outline_rounded, accent),
-              const SizedBox(height: 12),
-              _buildAppInfoCard(accent),
+          // 4. INFORMAÇÕES DO APLICATIVO
+          _buildSectionHeader('Sobre o Aplicativo', Icons.info_outline_rounded, accent),
+          const SizedBox(height: 12),
+          _buildAppInfoCard(accent),
 
-              const SizedBox(height: 36),
-            ],
-          ),
-        );
-      },
+          const SizedBox(height: 36),
+        ],
+      ),
     );
   }
 
@@ -230,157 +226,102 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildAccentColorCard(Color accent) {
-    return _buildCardContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Cor de Destaque',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Selecione a cor visual principal dos botões, foco e detalhes.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 12,
-            runSpacing: 10,
-            children: AccentColorOption.values.map((opt) {
-              final isSelected = _settings.accentColor == opt;
-              return InkWell(
-                onTap: () => _settings.setAccentColor(opt),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isSelected ? opt.color.withValues(alpha: 0.15) : const Color(0xFF141C33),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isSelected ? opt.color : const Color(0xFF263352),
-                      width: isSelected ? 2 : 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 16,
-                        height: 16,
-                        decoration: BoxDecoration(
-                          color: opt.color,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        opt.name,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          color: isSelected ? opt.color : const Color(0xFFE2E8F0),
-                        ),
-                      ),
-                      if (isSelected) ...[
-                        const SizedBox(width: 6),
-                        Icon(Icons.check_circle_rounded, color: opt.color, size: 16),
-                      ],
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildAccountCard(Color accent) {
+    final account = widget.xtreamAccount;
+    final isXtream = account != null;
 
-  Widget _buildPosterDensityCard(Color accent) {
     return _buildCardContainer(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Densidade dos Pôsteres',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Ajuste o tamanho e a quantidade de cards exibidos no catálogo.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: isXtream
+                      ? const Color(0xFF00E676).withValues(alpha: 0.15)
+                      : const Color(0xFF29B6F6).withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isXtream ? Icons.cloud_done_rounded : Icons.playlist_play_rounded,
+                  color: isXtream ? const Color(0xFF00E676) : const Color(0xFF29B6F6),
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isXtream ? 'Conta Xtream Conectada' : 'Modo Listas M3U (Sem Login)',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFF5F8FC),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isXtream
+                          ? 'Servidor: ${UrlSanitizer.sanitize(account.serverUrl)} | Usuário: ${account.username}'
+                          : 'Utilizando listas de canais locais M3U/M3U8',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF94A3B8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           Row(
-            children: PosterDensity.values.map((density) {
-              final isSelected = _settings.posterDensity == density;
-              return Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: InkWell(
-                    onTap: () => _settings.setPosterDensity(density),
-                    borderRadius: BorderRadius.circular(10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                      decoration: BoxDecoration(
-                        color: isSelected ? accent.withValues(alpha: 0.15) : const Color(0xFF141C33),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: isSelected ? accent : const Color(0xFF263352),
-                          width: isSelected ? 2 : 1,
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          Text(
-                            density.name,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                              color: isSelected ? accent : const Color(0xFFE2E8F0),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            density.description,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: isSelected ? const Color(0xFFF5F8FC) : const Color(0xFF64748B),
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF00E5FF),
+                    side: const BorderSide(color: Color(0xFF00E5FF)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PlaylistsScreen()),
+                    );
+                  },
+                  icon: const Icon(Icons.playlist_add_check_rounded, size: 18),
+                  label: const Text('Gerenciar Listas M3U'),
                 ),
-              );
-            }).toList(),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: isXtream ? const Color(0xFFEF5350) : const Color(0xFF00E676),
+                    side: BorderSide(
+                      color: isXtream ? const Color(0xFFEF5350) : const Color(0xFF00E676),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (_) => const XtreamLoginScreen(autoLogin: false)),
+                      (route) => false,
+                    );
+                  },
+                  icon: Icon(isXtream ? Icons.logout_rounded : Icons.login_rounded, size: 18),
+                  label: Text(isXtream ? 'Trocar Conta' : 'Conectar Xtream'),
+                ),
+              ),
+            ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildReduceAnimationsCard(Color accent) {
-    return _buildCardContainer(
-      child: SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text(
-          'Reduzir Animações',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-        ),
-        subtitle: const Text(
-          'Desativa transições complexas para máxima fluidez em TV boxes ou aparelhos mais simples.',
-          style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-        ),
-        activeThumbColor: accent,
-        value: _settings.reduceAnimations,
-        onChanged: (val) => _settings.setReduceAnimations(val),
       ),
     );
   }
@@ -397,7 +338,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Define como o vídeo será enquadrado ao abrir filmes e episódios.',
+            'Define como o vídeo será ajustado na tela (Original sem cortes ou Preencher tela inteira).',
             style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
           ),
           const SizedBox(height: 14),
@@ -409,7 +350,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.aspect_ratio_rounded,
                   isSelected: !isCover,
                   accent: accent,
-                  onTap: () => _settings.setDefaultAspectRatio(LiveVideoFitMode.contain),
+                  onTap: () {
+                    setState(() {
+                      _settings.setDefaultAspectRatio(LiveVideoFitMode.contain);
+                    });
+                  },
                 ),
               ),
               const SizedBox(width: 12),
@@ -419,7 +364,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.fullscreen_rounded,
                   isSelected: isCover,
                   accent: accent,
-                  onTap: () => _settings.setDefaultAspectRatio(LiveVideoFitMode.cover),
+                  onTap: () {
+                    setState(() {
+                      _settings.setDefaultAspectRatio(LiveVideoFitMode.cover);
+                    });
+                  },
                 ),
               ),
             ],
@@ -436,36 +385,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required Color accent,
     required VoidCallback onTap,
   }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-        decoration: BoxDecoration(
-          color: isSelected ? accent.withValues(alpha: 0.15) : const Color(0xFF141C33),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isSelected ? accent : const Color(0xFF263352),
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: isSelected ? accent : const Color(0xFF94A3B8), size: 18),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? accent : const Color(0xFFE2E8F0),
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
+    return FocusableActionDetector(
+      actions: DeviceUtils.activateAction(onTap),
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+          decoration: BoxDecoration(
+            color: isSelected ? accent.withValues(alpha: 0.15) : const Color(0xFF141C33),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected ? accent : const Color(0xFF263352),
+              width: isSelected ? 2 : 1,
             ),
-          ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: isSelected ? accent : const Color(0xFF94A3B8), size: 18),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    color: isSelected ? accent : const Color(0xFFE2E8F0),
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -480,12 +433,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
         ),
         subtitle: const Text(
-          'Continua de onde parou ao abrir filmes ou episódios que você já estava assistindo.',
+          'Continua de onde você parou ao abrir filmes ou episódios em andamento.',
           style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
         ),
         activeThumbColor: accent,
         value: _settings.enableResumePlayback,
-        onChanged: (val) => _settings.setEnableResumePlayback(val),
+        onChanged: (val) {
+          setState(() {
+            _settings.setEnableResumePlayback(val);
+          });
+        },
       ),
     );
   }
@@ -499,12 +456,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
         ),
         subtitle: const Text(
-          'Inicia contagem regressiva de 5 segundos para o próximo episódio ao terminar.',
+          'Inicia o próximo episódio automaticamente com contagem regressiva ao término.',
           style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
         ),
         activeThumbColor: accent,
         value: _settings.enableAutoPlayNextEpisode,
-        onChanged: (val) => _settings.setEnableAutoPlayNextEpisode(val),
+        onChanged: (val) {
+          setState(() {
+            _settings.setEnableAutoPlayNextEpisode(val);
+          });
+        },
       ),
     );
   }
@@ -522,7 +483,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Última atualização: $lastUpdatedStr',
+                  'Última sincronização: $lastUpdatedStr',
                   style: const TextStyle(
                     fontSize: 14,
                     color: Color(0xFFF5F8FC),
@@ -534,7 +495,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'O catálogo fica salvo no celular para abertura instantânea e modo offline.',
+            'Os dados em cache permitem abertura rápida e navegação instantânea pelo catálogo.',
             style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
           ),
           const SizedBox(height: 16),
@@ -582,10 +543,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildAppInfoCard(Color accent) {
-    final server = widget.xtreamAccount != null
-        ? UrlSanitizer.sanitize(widget.xtreamAccount!.serverUrl)
-        : 'Nenhum servidor conectado';
-    final user = widget.xtreamAccount?.username ?? 'Visitante';
+    final isTv = DeviceUtils.isTvMode(context);
 
     return _buildCardContainer(
       child: Column(
@@ -594,43 +552,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   color: accent.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(Icons.tv_rounded, color: accent, size: 24),
+                child: Icon(Icons.tv_rounded, color: accent, size: 22),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     'Player TV',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFFF5F8FC),
-                    ),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFFF5F8FC)),
                   ),
                   SizedBox(height: 2),
                   Text(
-                    'Versão 1.0.0 (Build 1)',
+                    'Versão 1.0.1 (Build 2)',
                     style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                   ),
                 ],
               ),
             ],
           ),
-          const Divider(color: Color(0xFF1D263B), height: 24),
-          _buildInfoRow('Servidor Conectado', server),
+          const SizedBox(height: 14),
+          const Divider(color: Color(0xFF1D263B), height: 1),
+          const SizedBox(height: 14),
+          _buildInfoRow('Modo de Dispositivo', isTv ? 'Smart TV / Fire TV' : 'Celular / Tablet'),
           const SizedBox(height: 8),
-          _buildInfoRow('Usuário Ativo', user),
-          const SizedBox(height: 12),
-          const Text(
-            'Nota: O Player TV é um reprodutor de mídia e não hospeda nem fornece listas próprias.',
-            style: TextStyle(fontSize: 12, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
-          ),
+          _buildInfoRow('Reprodutor Nativo', 'ExoPlayer / VideoPlayer Integrado'),
+          const SizedBox(height: 8),
+          _buildInfoRow('Suporte de Protocolos', 'HLS (.m3u8), MP4, MKV, TS (Xtream & M3U)'),
         ],
       ),
     );
@@ -638,21 +591,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildInfoRow(String label, String value) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        SizedBox(
-          width: 140,
-          child: Text(
-            label,
-            style: const TextStyle(fontSize: 13, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(fontSize: 13, color: Color(0xFFE2E8F0), fontWeight: FontWeight.w600),
-          ),
-        ),
+        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
+        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Color(0xFFF5F8FC))),
       ],
     );
   }

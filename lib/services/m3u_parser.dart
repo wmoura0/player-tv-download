@@ -11,10 +11,35 @@ class M3uParseException implements Exception {
   String toString() => message;
 }
 
-/// Parser de listas M3U/M3U8 com extração de canais, categorias e logos.
+/// Resultado do parsing de uma lista M3U contendo canais e metadados como URL de EPG.
+class M3uParseResult {
+  final List<M3uChannel> channels;
+  final String? epgUrl;
+
+  const M3uParseResult({
+    required this.channels,
+    this.epgUrl,
+  });
+}
+
+/// Parser de listas M3U/M3U8 com extração de canais, categorias, logos e URL de EPG.
 class M3uParser {
   /// Baixa o conteúdo M3U a partir de uma URL e faz o parsing dos canais.
   static Future<List<M3uChannel>> fetchAndParse(
+    String rawUrl, {
+    Duration timeout = const Duration(seconds: 30),
+    http.Client? client,
+  }) async {
+    final result = await fetchAndParseWithMetadata(
+      rawUrl,
+      timeout: timeout,
+      client: client,
+    );
+    return result.channels;
+  }
+
+  /// Baixa o conteúdo M3U e retorna canais e metadados de EPG.
+  static Future<M3uParseResult> fetchAndParseWithMetadata(
     String rawUrl, {
     Duration timeout = const Duration(seconds: 30),
     http.Client? client,
@@ -44,7 +69,6 @@ class M3uParser {
         );
       }
 
-      // Decodificação flexível para UTF-8 (removendo BOM se presente) ou latin1
       String content;
       try {
         content = utf8.decode(response.bodyBytes);
@@ -52,7 +76,7 @@ class M3uParser {
         content = latin1.decode(response.bodyBytes);
       }
 
-      return parse(content);
+      return parseWithMetadata(content);
     } on M3uParseException {
       rethrow;
     } catch (e) {
@@ -67,17 +91,21 @@ class M3uParser {
 
   /// Realiza o parsing de uma string com conteúdo M3U em uma lista de [M3uChannel].
   static List<M3uChannel> parse(String content) {
+    return parseWithMetadata(content).channels;
+  }
+
+  /// Realiza o parsing de uma string M3U retornando canais e URL do EPG se fornecida.
+  static M3uParseResult parseWithMetadata(String content) {
     if (content.trim().isEmpty) {
       throw const M3uParseException('O conteúdo da lista está vazio.');
     }
 
-    // Limpa BOM (Byte Order Mark) se presente
     final cleanContent = content.startsWith('\uFEFF') ? content.substring(1) : content;
     final lines = const LineSplitter().convert(cleanContent);
 
     final channels = <M3uChannel>[];
+    String? epgUrl;
 
-    // Variáveis temporárias para armazenar os atributos do canal atual
     String? currentName;
     String? currentGroup;
     String? currentLogo;
@@ -89,14 +117,16 @@ class M3uParser {
       final rawLine = lines[i].trim();
       if (rawLine.isEmpty) continue;
 
-      if (rawLine.startsWith('#EXTINF:')) {
+      if (rawLine.startsWith('#EXTM3U')) {
+        epgUrl = _extractAttribute(rawLine, 'url-tvg') ??
+            _extractAttribute(rawLine, 'x-tvg-url');
+      } else if (rawLine.startsWith('#EXTINF:')) {
         awaitingUrl = true;
         currentGroup = _extractAttribute(rawLine, 'group-title');
         currentLogo = _extractAttribute(rawLine, 'tvg-logo');
         currentTvgId = _extractAttribute(rawLine, 'tvg-id');
         currentTvgName = _extractAttribute(rawLine, 'tvg-name');
 
-        // O nome do canal é tudo após a última vírgula da linha #EXTINF
         final commaIndex = rawLine.lastIndexOf(',');
         if (commaIndex != -1 && commaIndex < rawLine.length - 1) {
           final extractedName = rawLine.substring(commaIndex + 1).trim();
@@ -105,13 +135,11 @@ class M3uParser {
           currentName = currentTvgName;
         }
       } else if (rawLine.startsWith('#EXTGRP:')) {
-        // Suporte opcional à tag alternativa de grupo #EXTGRP
         final groupFromTag = rawLine.substring(8).trim();
         if (groupFromTag.isNotEmpty) {
           currentGroup = groupFromTag;
         }
       } else if (awaitingUrl && !rawLine.startsWith('#')) {
-        // Encontramos a linha com a URL do stream
         final streamUrl = rawLine;
 
         channels.add(
@@ -129,7 +157,6 @@ class M3uParser {
           ),
         );
 
-        // Resetar para o próximo canal
         currentName = null;
         currentGroup = null;
         currentLogo = null;
@@ -145,12 +172,14 @@ class M3uParser {
       );
     }
 
-    return channels;
+    return M3uParseResult(
+      channels: channels,
+      epgUrl: epgUrl,
+    );
   }
 
-  /// Extrai o valor de um atributo específico na linha #EXTINF.
+  /// Extrai o valor de um atributo específico na linha #EXTINF ou #EXTM3U.
   static String? _extractAttribute(String line, String attributeName) {
-    // Procura por attributeName="valor" ou attributeName='valor' ou attributeName=valor
     final regex = RegExp(
       '$attributeName=(?:"([^"]*)"|\'([^\']*)\'|([^\\s,]+))',
       caseSensitive: false,

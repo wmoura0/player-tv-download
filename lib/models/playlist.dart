@@ -8,6 +8,7 @@ class M3uPlaylist {
   final int channelCount;
   final DateTime lastUpdated;
   final List<M3uChannel>? channels;
+  final String? epgUrl;
 
   const M3uPlaylist({
     required this.id,
@@ -16,6 +17,7 @@ class M3uPlaylist {
     required this.channelCount,
     required this.lastUpdated,
     this.channels,
+    this.epgUrl,
   });
 
   M3uPlaylist copyWith({
@@ -25,6 +27,7 @@ class M3uPlaylist {
     int? channelCount,
     DateTime? lastUpdated,
     List<M3uChannel>? channels,
+    String? epgUrl,
   }) {
     return M3uPlaylist(
       id: id ?? this.id,
@@ -33,6 +36,7 @@ class M3uPlaylist {
       channelCount: channelCount ?? this.channelCount,
       lastUpdated: lastUpdated ?? this.lastUpdated,
       channels: channels ?? this.channels,
+      epgUrl: epgUrl ?? this.epgUrl,
     );
   }
 
@@ -43,6 +47,7 @@ class M3uPlaylist {
       'url': url,
       'channelCount': channelCount,
       'lastUpdated': lastUpdated.toIso8601String(),
+      if (epgUrl != null) 'epgUrl': epgUrl,
     };
   }
 
@@ -56,6 +61,7 @@ class M3uPlaylist {
           ? DateTime.tryParse(json['lastUpdated'] as String) ?? DateTime.now()
           : DateTime.now(),
       channels: channels,
+      epgUrl: json['epgUrl'] as String?,
     );
   }
 }

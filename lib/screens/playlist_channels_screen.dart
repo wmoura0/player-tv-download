@@ -3,10 +3,13 @@ import 'package:video_player/video_player.dart';
 import '../models/channel.dart';
 import '../models/favorite_item.dart';
 import '../models/playlist.dart';
+import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
+import '../services/player_stability_manager.dart';
 import '../services/playlist_storage.dart';
 import '../services/url_sanitizer.dart';
 import '../utils/device_utils.dart';
+import '../widgets/epg_guide_view.dart';
 import '../widgets/live_player_view.dart';
 
 /// Tela para exibir os canais de uma lista M3U agrupados por categoria.
@@ -43,18 +46,43 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   bool _isPlayerBuffering = false;
   String? _playerError;
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
+  late final PlayerStabilityManager _stabilityManager;
 
   @override
   void initState() {
     super.initState();
     _currentPlaylist = widget.playlist;
+    _stabilityManager = PlayerStabilityManager(
+      onReconnectRequest: (count) async {
+        if (mounted && _activeChannel != null) {
+          await _playM3uChannel(_activeChannel!);
+        }
+      },
+      onError: (msg) {
+        if (mounted) {
+          setState(() {
+            _isPlayerLoading = false;
+            _playerError = msg;
+          });
+        }
+      },
+    );
     FavoritesService.instance.addListener(_onFavoritesChanged);
     FavoritesService.instance.loadFavorites(_currentPlaylist.id);
+    EpgService.instance.addListener(_onEpgUpdated);
+    if (_currentPlaylist.epgUrl != null && _currentPlaylist.epgUrl!.isNotEmpty) {
+      EpgService.instance.loadXmltv(
+        playlistId: _currentPlaylist.id,
+        url: _currentPlaylist.epgUrl!,
+      );
+    }
     _loadChannels();
   }
 
   @override
   void dispose() {
+    _stabilityManager.dispose();
+    EpgService.instance.removeListener(_onEpgUpdated);
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     _searchController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
@@ -62,6 +90,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     _playerController?.dispose();
     DeviceUtils.restoreOrientation();
     super.dispose();
+  }
+
+  void _onEpgUpdated() {
+    if (mounted) setState(() {});
   }
 
   void _onFavoritesChanged() {
@@ -183,11 +215,13 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       final safeErr = UrlSanitizer.sanitizeErrorMessage(
         val.errorDescription ?? 'Falha na transmissão do canal.',
       );
+      _stabilityManager.clearOpenWatchdog();
       setState(() {
         _playerError = safeErr;
         _isPlayerLoading = false;
         _isPlayerBuffering = false;
       });
+      _stabilityManager.scheduleRetry(safeErr);
     } else if (val.isBuffering != _isPlayerBuffering) {
       setState(() {
         _isPlayerBuffering = val.isBuffering;
@@ -195,11 +229,18 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     }
   }
 
-  Future<void> _playM3uChannel(M3uChannel channel) async {
+  Future<void> _playM3uChannel(M3uChannel channel, {bool isRetry = false}) async {
     // Requisito: Clicar novamente no canal já selecionado abre tela cheia sem reiniciar a transmissão!
-    if (_activeChannel?.streamUrl == channel.streamUrl) {
+    if (!isRetry &&
+        _activeChannel?.streamUrl == channel.streamUrl &&
+        _playerController != null &&
+        _playerController!.value.isInitialized) {
       _toggleFullscreen();
       return;
+    }
+
+    if (!isRetry) {
+      _stabilityManager.resetRetries();
     }
 
     setState(() {
@@ -239,9 +280,22 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     _playerController = controller;
     controller.addListener(_onPlayerStateChanged);
 
+    _stabilityManager.startOpenWatchdog(() {
+      if (mounted && _playerController == controller && _isPlayerLoading) {
+        setState(() {
+          _isPlayerLoading = false;
+          _playerError = 'Tempo limite de conexão excedido. Tentando reconectar...';
+        });
+        _stabilityManager.scheduleRetry('Timeout na conexão inicial');
+      }
+    });
+
     try {
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
+        _stabilityManager.clearOpenWatchdog();
+        _stabilityManager.resetRetries();
+        _stabilityManager.startStallMonitoring(controller);
         await controller.play();
         setState(() {
           _isPlayerLoading = false;
@@ -250,11 +304,13 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       }
     } catch (e) {
       if (mounted && _playerController == controller) {
+        _stabilityManager.clearOpenWatchdog();
         final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
         setState(() {
           _isPlayerLoading = false;
           _playerError = 'Erro ao conectar à transmissão: $safeErr';
         });
+        _stabilityManager.scheduleRetry(safeErr);
       }
     }
   }
@@ -282,6 +338,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   }
 
   Future<void> _closeMiniPlayer() async {
+    _stabilityManager.clearOpenWatchdog();
+    _stabilityManager.resetRetries();
     final oldController = _playerController;
     _playerController = null;
     oldController?.removeListener(_onPlayerStateChanged);
@@ -302,7 +360,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
 
   void _retryPlayback() {
     if (_activeChannel == null) return;
-    _playM3uChannel(_activeChannel!);
+    _stabilityManager.resetRetries();
+    _playM3uChannel(_activeChannel!, isRetry: true);
   }
 
   void _onChannelTap(M3uChannel channel) {
@@ -316,6 +375,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isFullscreen && _activeChannel != null) {
+      final nowNext = EpgService.instance.getNowAndNext(
+        channelId: _activeChannel!.tvgId,
+        channelName: _activeChannel!.name,
+      );
+
       return PopScope(
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
@@ -337,6 +401,20 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
             onTogglePlayPause: _togglePlayPause,
             onToggleFullscreen: _toggleFullscreen,
             onRetry: _retryPlayback,
+            currentProgram: nowNext.now?.title,
+            nextProgram: nowNext.next?.title,
+            onOpenGuide: () {
+              final schedule = EpgService.instance.getSchedule(
+                channelId: _activeChannel!.tvgId,
+                channelName: _activeChannel!.name,
+              );
+              EpgGuideDialog.show(
+                context,
+                channelName: _activeChannel!.name,
+                channelLogo: _activeChannel!.logoUrl,
+                schedule: schedule,
+              );
+            },
             isFavorite: _activeChannel != null &&
                 FavoritesService.instance.isFavorite(
                   scopeKey: _currentPlaylist.id,
@@ -497,6 +575,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   }
 
   Widget _buildMiniPlayerWidget() {
+    final nowNext = EpgService.instance.getNowAndNext(
+      channelId: _activeChannel!.tvgId,
+      channelName: _activeChannel!.name,
+    );
+
     return LivePlayerView(
       controller: _playerController,
       channelName: _activeChannel!.name,
@@ -512,6 +595,20 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       onToggleFullscreen: _toggleFullscreen,
       onClose: _closeMiniPlayer,
       onRetry: _retryPlayback,
+      currentProgram: nowNext.now?.title,
+      nextProgram: nowNext.next?.title,
+      onOpenGuide: () {
+        final schedule = EpgService.instance.getSchedule(
+          channelId: _activeChannel!.tvgId,
+          channelName: _activeChannel!.name,
+        );
+        EpgGuideDialog.show(
+          context,
+          channelName: _activeChannel!.name,
+          channelLogo: _activeChannel!.logoUrl,
+          schedule: schedule,
+        );
+      },
       isFavorite: _activeChannel != null &&
           FavoritesService.instance.isFavorite(
             scopeKey: _currentPlaylist.id,
@@ -854,16 +951,46 @@ class _ChannelTileState extends State<_ChannelTile> {
                                 ),
                               ],
                             )
-                          else
-                            Text(
-                              widget.channel.groupTitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Color(0xFF8A99AD),
-                              ),
+                          else ...[
+                            Builder(
+                              builder: (context) {
+                                final nowProg = EpgService.instance.getNowAndNext(
+                                  channelId: widget.channel.tvgId,
+                                  channelName: widget.channel.name,
+                                ).now;
+
+                                if (nowProg != null && nowProg.title.isNotEmpty) {
+                                  return Row(
+                                    children: [
+                                      const Icon(Icons.schedule_rounded, size: 11, color: Color(0xFF00E5FF)),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          nowProg.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFF00E5FF),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                }
+
+                                return Text(
+                                  widget.channel.groupTitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFF8A99AD),
+                                  ),
+                                );
+                              },
                             ),
+                          ],
                         ],
                       ),
                     ),

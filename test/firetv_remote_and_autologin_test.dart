@@ -69,8 +69,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Navega o foco com tecla de seta para a direita até o card de Filmes
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      // Navega o foco na barra lateral com tecla de seta para baixo até a opção de Filmes
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
 
       // Ativa o card selecionado com LogicalKeyboardKey.enter

@@ -27,7 +27,7 @@ void main() {
   });
 
   group('HomeScreen Redesign Tests', () {
-    testWidgets('Exibe cabeçalho, 4 categorias principais e barra inferior com 5 itens', (tester) async {
+    testWidgets('Exibe cabeçalho, 4 categorias principais e barra lateral com itens de navegação', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: HomeScreen(xtreamAccount: mockAccount),
@@ -36,21 +36,17 @@ void main() {
       await tester.pumpAndSettle();
 
       // Cabeçalho
-      expect(find.text('Player TV'), findsOneWidget);
+      expect(find.text('Player TV'), findsWidgets);
       expect(find.text('user_home'), findsOneWidget);
 
-      // 4 Categorias principais
+      // Itens na barra lateral
+      expect(find.byKey(const Key('sidebar_home')), findsOneWidget);
       expect(find.byKey(const Key('cat_live_tv')), findsOneWidget);
       expect(find.byKey(const Key('cat_movies')), findsOneWidget);
       expect(find.byKey(const Key('cat_series')), findsOneWidget);
       expect(find.byKey(const Key('cat_favorites')), findsOneWidget);
-
-      // 5 Itens na barra inferior
-      expect(find.byKey(const Key('bottom_nav_home')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_live')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_movies')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_series')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_favorites')), findsOneWidget);
+      expect(find.byKey(const Key('sidebar_search')), findsOneWidget);
+      expect(find.byKey(const Key('sidebar_settings')), findsOneWidget);
 
       // Sem itens em andamento, seções opcionais devem estar elegantemente ocultas
       expect(find.text('Continuar assistindo'), findsNothing);
@@ -101,7 +97,7 @@ void main() {
       expect(find.text('Continuar assistindo'), findsNothing);
     });
 
-    testWidgets('Toque no item Favoritos da barra inferior navega para a tela de Favoritos', (tester) async {
+    testWidgets('Toque no item Favoritos da barra lateral navega para a tela de Favoritos', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: HomeScreen(xtreamAccount: mockAccount),
@@ -109,8 +105,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Toca em Favoritos na barra inferior
-      await tester.tap(find.byKey(const Key('bottom_nav_favorites')));
+      // Toca em Favoritos na barra lateral
+      await tester.tap(find.byKey(const Key('cat_favorites')));
       await tester.pumpAndSettle();
 
       // Deve abrir a tela Meus Favoritos
@@ -307,7 +303,7 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.byKey(const Key('cat_live_tv')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_home')), findsOneWidget);
+      expect(find.byKey(const Key('sidebar_home')), findsOneWidget);
 
       // 2. Teste em Paisagem (Android TV / Tablet)
       tester.view.physicalSize = const Size(1280, 720);
@@ -320,10 +316,10 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.byKey(const Key('cat_live_tv')), findsOneWidget);
-      expect(find.byKey(const Key('bottom_nav_home')), findsOneWidget);
+      expect(find.byKey(const Key('sidebar_home')), findsOneWidget);
     });
 
-    testWidgets('Foco D-pad inicial e seleção de categorias e barra inferior', (tester) async {
+    testWidgets('Foco D-pad inicial e seleção de categorias na barra lateral', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: HomeScreen(xtreamAccount: mockAccount),

@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
+import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
+import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
+import '../widgets/epg_guide_view.dart';
 import '../widgets/live_player_view.dart';
 import 'playlists_screen.dart';
 import 'series_detail_screen.dart';
@@ -60,16 +63,33 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   String? _currentProgram;
   String? _nextProgram;
+  late final PlayerStabilityManager _stabilityManager;
 
   @override
   void initState() {
     super.initState();
+    _stabilityManager = PlayerStabilityManager(
+      onReconnectRequest: (count) async {
+        if (mounted && _activeLiveStream != null) {
+          _retryPlayback();
+        }
+      },
+      onError: (msg) {
+        if (mounted) {
+          setState(() {
+            _isPlayerLoading = false;
+            _playerError = msg;
+          });
+        }
+      },
+    );
     FavoritesService.instance.addListener(_onFavoritesChanged);
     _initialize();
   }
 
   @override
   void dispose() {
+    _stabilityManager.dispose();
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     _searchController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
@@ -356,11 +376,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
       final safeErr = UrlSanitizer.sanitizeErrorMessage(
         val.errorDescription ?? 'Falha na transmissão do canal.',
       );
+      _stabilityManager.clearOpenWatchdog();
       setState(() {
         _playerError = safeErr;
         _isPlayerLoading = false;
         _isPlayerBuffering = false;
       });
+      _stabilityManager.scheduleRetry(safeErr);
     } else if (val.isBuffering != _isPlayerBuffering) {
       setState(() {
         _isPlayerBuffering = val.isBuffering;
@@ -370,10 +392,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
 
   Future<void> _playLiveChannel(XtreamLiveStream stream) async {
     // Requisito: Clicar novamente no canal que já está selecionado abre tela cheia sem reiniciar!
-    if (_activeLiveStream?.streamId == stream.streamId) {
+    if (_activeLiveStream?.streamId == stream.streamId &&
+        _playerController != null &&
+        _playerController!.value.isInitialized) {
       _toggleFullscreen();
       return;
     }
+
+    _stabilityManager.resetRetries();
 
     setState(() {
       _activeLiveStream = stream;
@@ -403,18 +429,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
   Future<void> _fetchEpgForChannel(int streamId) async {
     if (_service == null) return;
     try {
-      final epgList = await _service!.fetchShortEpg(streamId);
+      final schedule = await EpgService.instance.fetchXtreamChannelEpg(
+        streamId: streamId,
+        catalogService: _service!,
+      );
       if (!mounted || _activeLiveStream?.streamId != streamId) return;
-      if (epgList.isNotEmpty) {
-        final now = epgList.firstWhere(
-          (p) => p.isNowPlaying,
-          orElse: () => epgList.first,
-        );
-        final nextIdx = epgList.indexOf(now) + 1;
-        final next = nextIdx < epgList.length ? epgList[nextIdx] : null;
-
+      if (schedule != null) {
+        final now = schedule.currentProgram;
+        final next = schedule.nextProgram;
         setState(() {
-          _currentProgram = now.title;
+          _currentProgram = now?.title;
           _nextProgram = next?.title;
         });
       }
@@ -444,9 +468,22 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
     _playerController = controller;
     controller.addListener(_onPlayerStateChanged);
 
+    _stabilityManager.startOpenWatchdog(() {
+      if (mounted && _playerController == controller && _isPlayerLoading) {
+        setState(() {
+          _isPlayerLoading = false;
+          _playerError = 'Tempo limite de conexão excedido. Tentando reconectar...';
+        });
+        _stabilityManager.scheduleRetry('Timeout na conexão inicial');
+      }
+    });
+
     try {
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
+        _stabilityManager.clearOpenWatchdog();
+        _stabilityManager.resetRetries();
+        _stabilityManager.startStallMonitoring(controller);
         await controller.play();
         setState(() {
           _isPlayerLoading = false;
@@ -456,6 +493,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
       }
     } catch (e) {
       if (mounted && _playerController == controller) {
+        _stabilityManager.clearOpenWatchdog();
         // Tentativa de rota/extensão alternativa caso exista
         if (_currentCandidateIndex + 1 < _candidateUrls.length) {
           _currentCandidateIndex++;
@@ -469,6 +507,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
           _isPlayerLoading = false;
           _playerError = 'Erro ao conectar à transmissão: $safeErr';
         });
+        _stabilityManager.scheduleRetry(safeErr);
       }
     }
   }
@@ -496,6 +535,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
   }
 
   Future<void> _closeMiniPlayer() async {
+    _stabilityManager.clearOpenWatchdog();
+    _stabilityManager.resetRetries();
     final oldController = _playerController;
     _playerController = null;
     oldController?.removeListener(_onPlayerStateChanged);
@@ -516,6 +557,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
 
   void _retryPlayback() {
     if (_activeLiveStream == null) return;
+    _stabilityManager.clearOpenWatchdog();
     setState(() {
       _reconnectAttempts++;
       _isPlayerLoading = true;
@@ -596,6 +638,21 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
     );
   }
 
+  Future<void> _openGuideForActiveStream() async {
+    if (_service == null || _activeLiveStream == null) return;
+    final schedule = await EpgService.instance.fetchXtreamChannelEpg(
+      streamId: _activeLiveStream!.streamId,
+      catalogService: _service!,
+    );
+    if (!mounted) return;
+    EpgGuideDialog.show(
+      context,
+      channelName: _activeLiveStream!.name,
+      channelLogo: _activeLiveStream!.streamIcon,
+      schedule: schedule,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 1. Modo Tela Cheia: exibe o player ocupando 100% da tela, sem reiniciar a instância
@@ -623,6 +680,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
             onRetry: _retryPlayback,
             currentProgram: _currentProgram,
             nextProgram: _nextProgram,
+            onOpenGuide: _openGuideForActiveStream,
             isFavorite: _activeLiveStream != null &&
                 FavoritesService.instance.isFavorite(
                   scopeKey: _accountKey,
@@ -772,6 +830,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen> {
       onRetry: _retryPlayback,
       currentProgram: _currentProgram,
       nextProgram: _nextProgram,
+      onOpenGuide: _openGuideForActiveStream,
       isFavorite: _activeLiveStream != null &&
           FavoritesService.instance.isFavorite(
             scopeKey: _accountKey,
