@@ -169,12 +169,12 @@ void main() {
         await tester.pump();
       }
 
-      // Deve exibir o chip TODOS
-      expect(find.text('TODOS'), findsOneWidget);
+      // Deve exibir o item Todas na barra lateral
+      expect(find.text('Todas'), findsOneWidget);
       expect(find.text('Ação'), findsOneWidget);
       expect(find.text('Comédia'), findsOneWidget);
 
-      // No modo TODOS, ambos os filmes devem estar visíveis
+      // No modo Todas, ambos os filmes devem estar visíveis
       expect(find.text('Duro de Matar'), findsOneWidget);
       expect(find.text('Se Beber Não Case'), findsOneWidget);
 
@@ -189,8 +189,8 @@ void main() {
       expect(find.text('Duro de Matar'), findsOneWidget);
       expect(find.text('Se Beber Não Case'), findsNothing);
 
-      // Ao voltar para 'TODOS', ambos os filmes retornam
-      await tester.tap(find.text('TODOS'));
+      // Ao voltar para 'Todas', ambos os filmes retornam
+      await tester.tap(find.text('Todas'));
       while (find.byType(CircularProgressIndicator).evaluate().isNotEmpty) {
         await tester.runAsync(() async => await Future.delayed(const Duration(milliseconds: 50)));
         await tester.pump();
@@ -248,8 +248,8 @@ void main() {
         await tester.pump();
       }
 
-      // TODOS é a opção padrão
-      expect(find.text('TODOS'), findsOneWidget);
+      // Todas é a opção padrão
+      expect(find.text('Todas'), findsOneWidget);
       expect(find.text('SporTV HD'), findsOneWidget);
       expect(find.text('GloboNews'), findsOneWidget);
       expect(find.text('ESPN Brasil'), findsOneWidget);

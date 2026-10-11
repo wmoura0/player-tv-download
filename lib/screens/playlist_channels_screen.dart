@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../models/channel.dart';
 import '../models/favorite_item.dart';
@@ -27,7 +28,8 @@ class PlaylistChannelsScreen extends StatefulWidget {
   State<PlaylistChannelsScreen> createState() => _PlaylistChannelsScreenState();
 }
 
-class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
+class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
+    with WidgetsBindingObserver {
   late M3uPlaylist _currentPlaylist;
   List<M3uChannel> _allChannels = [];
   bool _isLoading = true;
@@ -47,15 +49,17 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   String? _playerError;
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   late final PlayerStabilityManager _stabilityManager;
+  bool _isConnecting = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentPlaylist = widget.playlist;
     _stabilityManager = PlayerStabilityManager(
       onReconnectRequest: (count) async {
         if (mounted && _activeChannel != null) {
-          await _playM3uChannel(_activeChannel!);
+          await _retryPlayback();
         }
       },
       onError: (msg) {
@@ -70,6 +74,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     FavoritesService.instance.addListener(_onFavoritesChanged);
     FavoritesService.instance.loadFavorites(_currentPlaylist.id);
     EpgService.instance.addListener(_onEpgUpdated);
+    DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     if (_currentPlaylist.epgUrl != null && _currentPlaylist.epgUrl!.isNotEmpty) {
       EpgService.instance.loadXmltv(
         playlistId: _currentPlaylist.id,
@@ -79,8 +84,49 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     _loadChannels();
   }
 
+  void _onPipModeChanged() {
+    if (!mounted) return;
+    final inPip = DeviceUtils.isPipMode.value;
+    if (!inPip) {
+      if (_isFullscreen) {
+        DeviceUtils.setVideoOrientation();
+      } else {
+        DeviceUtils.restoreOrientation();
+      }
+    }
+    setState(() {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (DeviceUtils.isPipMode.value) {
+      return;
+    }
+
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _stabilityManager.pauseMonitoring();
+      _playerController?.pause();
+    } else if (state == AppLifecycleState.resumed) {
+      if (mounted &&
+          _activeChannel != null &&
+          _playerController != null &&
+          _playerController!.value.isInitialized) {
+        _stabilityManager.startStallMonitoring(_playerController!);
+        if (_playerController!.value.duration > Duration.zero) {
+          _playerController!
+              .seekTo(_playerController!.value.duration)
+              .catchError((_) {});
+        }
+        _playerController!.play().catchError((_) {});
+      }
+    }
+  }
+
   @override
   void dispose() {
+    DeviceUtils.setPipState(enabled: false);
+    DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _stabilityManager.dispose();
     EpgService.instance.removeListener(_onEpgUpdated);
     FavoritesService.instance.removeListener(_onFavoritesChanged);
@@ -229,13 +275,15 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     }
   }
 
-  Future<void> _playM3uChannel(M3uChannel channel, {bool isRetry = false}) async {
+  Future<void> _playM3uChannel(M3uChannel channel, {bool isRetry = false, bool keepFullscreen = false}) async {
     // Requisito: Clicar novamente no canal já selecionado abre tela cheia sem reiniciar a transmissão!
     if (!isRetry &&
         _activeChannel?.streamUrl == channel.streamUrl &&
         _playerController != null &&
         _playerController!.value.isInitialized) {
-      _toggleFullscreen();
+      if (!_isFullscreen) {
+        _toggleFullscreen();
+      }
       return;
     }
 
@@ -243,8 +291,14 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       _stabilityManager.resetRetries();
     }
 
+    if (_isConnecting) return;
+    _isConnecting = true;
+
     setState(() {
       _activeChannel = channel;
+      if (!keepFullscreen && !_isFullscreen) {
+        _isFullscreen = false;
+      }
       _isPlayerLoading = true;
       _isPlayerBuffering = false;
       _playerError = null;
@@ -253,16 +307,22 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     final oldController = _playerController;
     _playerController = null;
     oldController?.removeListener(_onPlayerStateChanged);
-    await oldController?.pause();
-    await oldController?.dispose();
+    try {
+      await oldController?.pause();
+      await oldController?.dispose();
+    } catch (_) {}
 
-    if (!mounted) return;
+    if (!mounted) {
+      _isConnecting = false;
+      return;
+    }
 
     final sanitizedDisplay = UrlSanitizer.sanitize(channel.streamUrl);
     debugPrint('[PLAYER] Conectando ao canal M3U: $sanitizedDisplay');
 
     final uri = Uri.tryParse(channel.streamUrl);
     if (uri == null) {
+      _isConnecting = false;
       setState(() {
         _isPlayerLoading = false;
         _playerError = 'Endereço de canal inválido.';
@@ -296,7 +356,15 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
         _stabilityManager.clearOpenWatchdog();
         _stabilityManager.resetRetries();
         _stabilityManager.startStallMonitoring(controller);
+
+        if (controller.value.duration > Duration.zero) {
+          try {
+            await controller.seekTo(controller.value.duration);
+          } catch (_) {}
+        }
+
         await controller.play();
+        DeviceUtils.setPipState(enabled: true);
         setState(() {
           _isPlayerLoading = false;
           _playerError = null;
@@ -304,6 +372,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       }
     } catch (e) {
       if (mounted && _playerController == controller) {
+        DeviceUtils.setPipState(enabled: false);
         _stabilityManager.clearOpenWatchdog();
         final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
         setState(() {
@@ -312,6 +381,32 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
         });
         _stabilityManager.scheduleRetry(safeErr);
       }
+    } finally {
+      _isConnecting = false;
+    }
+  }
+
+  void _playPreviousChannel() {
+    if (_activeChannel == null) return;
+    final channels = _filteredChannels;
+    if (channels.isEmpty) return;
+    final currentIndex = channels.indexWhere((c) => c.streamUrl == _activeChannel!.streamUrl);
+    if (currentIndex > 0) {
+      _playM3uChannel(channels[currentIndex - 1], keepFullscreen: _isFullscreen);
+    } else if (channels.isNotEmpty) {
+      _playM3uChannel(channels.last, keepFullscreen: _isFullscreen);
+    }
+  }
+
+  void _playNextChannel() {
+    if (_activeChannel == null) return;
+    final channels = _filteredChannels;
+    if (channels.isEmpty) return;
+    final currentIndex = channels.indexWhere((c) => c.streamUrl == _activeChannel!.streamUrl);
+    if (currentIndex >= 0 && currentIndex < channels.length - 1) {
+      _playM3uChannel(channels[currentIndex + 1], keepFullscreen: _isFullscreen);
+    } else if (channels.isNotEmpty) {
+      _playM3uChannel(channels.first, keepFullscreen: _isFullscreen);
     }
   }
 
@@ -320,8 +415,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     if (c == null || !c.value.isInitialized) return;
     if (c.value.isPlaying) {
       c.pause();
+      DeviceUtils.setPipState(enabled: false);
     } else {
       c.play();
+      DeviceUtils.setPipState(enabled: true);
     }
     setState(() {});
   }
@@ -338,6 +435,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
   }
 
   Future<void> _closeMiniPlayer() async {
+    DeviceUtils.setPipState(enabled: false);
     _stabilityManager.clearOpenWatchdog();
     _stabilityManager.resetRetries();
     final oldController = _playerController;
@@ -358,10 +456,30 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
     }
   }
 
-  void _retryPlayback() {
-    if (_activeChannel == null) return;
+  Future<void> _retryPlayback() async {
+    if (_activeChannel == null || !mounted) return;
+    if (_isConnecting) {
+      debugPrint('[PLAYER] Reconexão já em andamento, ignorando chamada redundante.');
+      return;
+    }
+    _stabilityManager.clearOpenWatchdog();
+
+    final c = _playerController;
+    if (c != null && c.value.isInitialized && !c.value.hasError) {
+      debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
+      final ok = await _stabilityManager.attemptSoftRecovery(c);
+      if (ok && mounted) {
+        setState(() {
+          _playerError = null;
+          _isPlayerLoading = false;
+          _isPlayerBuffering = false;
+        });
+        return;
+      }
+    }
+
     _stabilityManager.resetRetries();
-    _playM3uChannel(_activeChannel!, isRetry: true);
+    await _playM3uChannel(_activeChannel!, isRetry: true, keepFullscreen: _isFullscreen);
   }
 
   void _onChannelTap(M3uChannel channel) {
@@ -374,6 +492,30 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 0. Modo Picture-in-Picture: exibe unicamente a tela cheia do player para preencher a janela flutuante
+    if (DeviceUtils.isPipMode.value && _activeChannel != null) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: LivePlayerView(
+          controller: _playerController,
+          channelName: _activeChannel!.name,
+          channelLogo: _activeChannel!.logoUrl,
+          groupTitle: _activeChannel!.groupTitle,
+          isFullscreen: true,
+          isLoading: _isPlayerLoading,
+          isBuffering: _isPlayerBuffering,
+          errorMessage: _playerError,
+          fitMode: _fitMode,
+          onFitModeChanged: (mode) => setState(() => _fitMode = mode),
+          onTogglePlayPause: _togglePlayPause,
+          onToggleFullscreen: _toggleFullscreen,
+          onRetry: _retryPlayback,
+          onPreviousChannel: _playPreviousChannel,
+          onNextChannel: _playNextChannel,
+        ),
+      );
+    }
+
     if (_isFullscreen && _activeChannel != null) {
       final nowNext = EpgService.instance.getNowAndNext(
         channelId: _activeChannel!.tvgId,
@@ -401,6 +543,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
             onTogglePlayPause: _togglePlayPause,
             onToggleFullscreen: _toggleFullscreen,
             onRetry: _retryPlayback,
+            onPreviousChannel: _playPreviousChannel,
+            onNextChannel: _playNextChannel,
             currentProgram: nowNext.now?.title,
             nextProgram: nowNext.next?.title,
             onOpenGuide: () {
@@ -440,21 +584,44 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0F1523),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _currentPlaylist.name,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFFF0F4F8),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
+          setState(() {
+            _searchQuery = '';
+            _searchController.clear();
+          });
+          return;
+        }
+        if (_selectedCategory != 'Todos' && _selectedCategory != 'Todas') {
+          setState(() {
+            _selectedCategory = _categories.contains('Todas') ? 'Todas' : (_categories.contains('Todos') ? 'Todos' : (_categories.isNotEmpty ? _categories.first : 'Todas'));
+          });
+          return;
+        }
+        if (_activeChannel != null) {
+          _closeMiniPlayer();
+          return;
+        }
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF090D14),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF0F1523),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _currentPlaylist.name,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFF0F4F8),
+                ),
               ),
-            ),
             Text(
               '${_allChannels.length} canais encontrados',
               style: const TextStyle(
@@ -570,6 +737,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
                       );
                     },
                   ),
+        ),
       ),
     );
   }
@@ -595,6 +763,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       onToggleFullscreen: _toggleFullscreen,
       onClose: _closeMiniPlayer,
       onRetry: _retryPlayback,
+      onPreviousChannel: _playPreviousChannel,
+      onNextChannel: _playNextChannel,
       currentProgram: nowNext.now?.title,
       nextProgram: nowNext.next?.title,
       onOpenGuide: () {
@@ -638,31 +808,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Column(
         children: [
-          // Campo de busca
-          TextField(
+          // Campo de busca com suporte TV-safe (navegação D-pad não abre teclado automaticamente)
+          _TvSafeM3uSearchBar(
             controller: _searchController,
-            style: const TextStyle(color: Color(0xFFF0F4F8), fontSize: 14),
-            decoration: InputDecoration(
-              hintText: 'Buscar canal...',
-              hintStyle: const TextStyle(color: Color(0xFF5A6E85), fontSize: 14),
-              prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF8A99AD), size: 20),
-              suffixIcon: _searchQuery.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear_rounded, color: Color(0xFF8A99AD), size: 18),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _searchQuery = '');
-                      },
-                    )
-                  : null,
-              filled: true,
-              fillColor: const Color(0xFF141D2D),
-              contentPadding: const EdgeInsets.symmetric(vertical: 8),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide.none,
-              ),
-            ),
+            query: _searchQuery,
             onChanged: (val) => setState(() => _searchQuery = val),
           ),
           const SizedBox(height: 8),
@@ -877,6 +1026,11 @@ class _ChannelTileState extends State<_ChannelTile> {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
     return FocusableActionDetector(
+      actions: DeviceUtils.channelActions(
+        onTap: widget.onTap,
+        onToggleFavorite: widget.onToggleFavorite,
+      ),
+      shortcuts: DeviceUtils.dpadChannelShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: AnimatedScale(
@@ -904,7 +1058,9 @@ class _ChannelTileState extends State<_ChannelTile> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
               onTap: widget.onTap,
+              onLongPress: widget.onToggleFavorite,
               borderRadius: BorderRadius.circular(10),
               splashColor: const Color(0xFF00E5FF).withValues(alpha: 0.15),
               child: Padding(
@@ -996,14 +1152,18 @@ class _ChannelTileState extends State<_ChannelTile> {
                     ),
 
                     if (widget.onToggleFavorite != null)
-                      IconButton(
-                        tooltip: widget.isFavorite ? 'Remover dos favoritos' : 'Favoritar canal',
-                        icon: Icon(
-                          widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                          size: 20,
-                          color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
+                      Focus(
+                        canRequestFocus: false,
+                        skipTraversal: true,
+                        child: IconButton(
+                          tooltip: widget.isFavorite ? 'Remover dos favoritos (Menu no controle)' : 'Favoritar canal (Menu no controle)',
+                          icon: Icon(
+                            widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+                            size: 20,
+                            color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
+                          ),
+                          onPressed: widget.onToggleFavorite,
                         ),
-                        onPressed: widget.onToggleFavorite,
                       ),
 
                     Icon(
@@ -1068,6 +1228,145 @@ class _ChannelTileState extends State<_ChannelTile> {
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+/// Barra de busca com suporte TV-safe para playlist M3U:
+/// - Foco no controle remoto apenas destaca a caixa de busca.
+/// - Teclado virtual abre apenas com OK.
+/// - Voltar encerra edição sem fechar a tela.
+class _TvSafeM3uSearchBar extends StatefulWidget {
+  final TextEditingController controller;
+  final String query;
+  final ValueChanged<String> onChanged;
+
+  const _TvSafeM3uSearchBar({
+    required this.controller,
+    required this.query,
+    required this.onChanged,
+  });
+
+  @override
+  State<_TvSafeM3uSearchBar> createState() => _TvSafeM3uSearchBarState();
+}
+
+class _TvSafeM3uSearchBarState extends State<_TvSafeM3uSearchBar> {
+  final FocusNode _containerFocusNode = FocusNode();
+  final FocusNode _textFocusNode = FocusNode();
+  bool _isFocused = false;
+  bool _isEditing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _textFocusNode.skipTraversal = true;
+  }
+
+  @override
+  void dispose() {
+    _containerFocusNode.dispose();
+    _textFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _startEditing() {
+    _textFocusNode.skipTraversal = false;
+    setState(() => _isEditing = true);
+    _textFocusNode.requestFocus();
+  }
+
+  void _stopEditing() {
+    _textFocusNode.skipTraversal = true;
+    setState(() => _isEditing = false);
+    _containerFocusNode.requestFocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      focusNode: _containerFocusNode,
+      canRequestFocus: !_isEditing,
+      onFocusChange: (f) => setState(() => _isFocused = f),
+      onKeyEvent: (node, event) {
+        if (!_isEditing &&
+            (event.logicalKey == LogicalKeyboardKey.select ||
+             event.logicalKey == LogicalKeyboardKey.enter ||
+             event.logicalKey == LogicalKeyboardKey.gameButtonA ||
+             event.logicalKey == LogicalKeyboardKey.space)) {
+          if (event is KeyDownEvent) {
+            _startEditing();
+          }
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: _startEditing,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: _isFocused || _isEditing ? const Color(0xFF141D2D) : const Color(0xFF0F1523),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: _isFocused || _isEditing ? const Color(0xFF00E5FF) : const Color(0xFF1F2B40),
+              width: 2.0,
+            ),
+            boxShadow: _isFocused || _isEditing
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.search_rounded,
+                size: 20,
+                color: _isFocused || _isEditing ? const Color(0xFF00E5FF) : const Color(0xFF8A99AD),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: widget.controller,
+                  focusNode: _textFocusNode,
+                  readOnly: false,
+                  onTap: _startEditing,
+                  style: const TextStyle(color: Color(0xFFF0F4F8), fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: _isFocused && !_isEditing ? 'Pressione OK para buscar' : 'Buscar canal...',
+                    hintStyle: TextStyle(
+                      color: _isFocused && !_isEditing ? const Color(0xFF00E5FF) : const Color(0xFF5A6E85),
+                      fontSize: 14,
+                    ),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                    border: InputBorder.none,
+                  ),
+                  onChanged: widget.onChanged,
+                  onSubmitted: (_) => _stopEditing(),
+                ),
+              ),
+              if (widget.controller.text.isNotEmpty)
+                GestureDetector(
+                  onTap: () {
+                    widget.controller.clear();
+                    widget.onChanged('');
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 6),
+                    child: Icon(Icons.clear_rounded, size: 18, color: Color(0xFF8A99AD)),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

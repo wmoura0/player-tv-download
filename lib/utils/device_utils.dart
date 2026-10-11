@@ -5,10 +5,22 @@ import 'package:flutter/services.dart';
 class DeviceUtils {
   static const MethodChannel _deviceChannel = MethodChannel('com.player.m3u/device');
   static bool? _cachedIsTv;
+  static bool? _mockIsPipSupported;
+
+  /// Notificador reativo do estado de Picture-in-Picture (PiP).
+  /// Verdadeiro quando o aplicativo estiver minimizado na janela flutuante nativa do Android.
+  static final ValueNotifier<bool> isPipMode = ValueNotifier<bool>(false);
 
   /// Inicializa e consulta a identificação nativa da plataforma Android/Fire TV.
   static Future<void> init() async {
     try {
+      _deviceChannel.setMethodCallHandler((call) async {
+        if (call.method == 'onPipModeChanged') {
+          final inPip = call.arguments as bool? ?? false;
+          isPipMode.value = inPip;
+        }
+      });
+
       final isTv = await _deviceChannel.invokeMethod<bool>('isTvDevice');
       if (isTv != null) {
         _cachedIsTv = isTv;
@@ -78,6 +90,71 @@ class DeviceUtils {
     await setNormalOrientation(context: context, isTv: isTv);
   }
 
+  /// Mantém a tela ligada durante a reprodução de vídeo para impedir bloqueio acidental.
+  static Future<void> setKeepScreenOn(bool enable) async {
+    try {
+      await _deviceChannel.invokeMethod('keepScreenOn', {'enable': enable});
+    } catch (_) {
+      // Ignora falhas em ambientes sem o plugin nativo (ex: testes, desktop)
+    }
+  }
+
+  /// Verifica se o dispositivo possui suporte nativo a Picture-in-Picture (PiP).
+  /// Retorna false em dispositivos de TV (Android TV / Fire TV) para não ativar PiP indevidamente.
+  static Future<bool> isPipSupported() async {
+    if (_mockIsPipSupported != null) return _mockIsPipSupported!;
+    if (isTv) return false;
+    try {
+      final supported = await _deviceChannel.invokeMethod<bool>('isPipSupported');
+      return supported ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Define se o Picture-in-Picture deve ser ativado automaticamente ao minimizar o aplicativo.
+  /// Deve ser chamado com `enabled: true` quando um canal ao vivo estiver em reprodução ativa,
+  /// e `enabled: false` quando o player for pausado ou fechado.
+  static Future<void> setPipState({
+    required bool enabled,
+    int aspectNumerator = 16,
+    int aspectDenominator = 9,
+  }) async {
+    if (isTv) return;
+    try {
+      await _deviceChannel.invokeMethod('setPipState', {
+        'enabled': enabled,
+        'aspectNumerator': aspectNumerator,
+        'aspectDenominator': aspectDenominator,
+      });
+    } catch (_) {
+      // Ignora falhas em plataformas sem o plugin
+    }
+  }
+
+  /// Solicita a entrada manual no modo Picture-in-Picture (PiP).
+  static Future<bool> enterPip({
+    int aspectNumerator = 16,
+    int aspectDenominator = 9,
+  }) async {
+    if (isTv) return false;
+    try {
+      final entered = await _deviceChannel.invokeMethod<bool>('enterPip', {
+        'aspectNumerator': aspectNumerator,
+        'aspectDenominator': aspectDenominator,
+      });
+      return entered ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Permite injetar o suporte a PiP para testes controlados.
+  @visibleForTesting
+  static void setMockIsPipSupported(bool? value) {
+    _mockIsPipSupported = value;
+  }
+
   /// Atalhos comuns de seleção (OK / Enter / Espaço / Botão A do gamepad) para controle remoto
   static const Map<ShortcutActivator, Intent> dpadSelectShortcuts = {
     SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
@@ -85,6 +162,18 @@ class DeviceUtils {
     SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+  };
+
+  /// Atalhos para canais: seleção (OK) e favoritos (Menu/Context Menu/Botão X do gamepad)
+  static const Map<ShortcutActivator, Intent> dpadChannelShortcuts = {
+    SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.contextMenu): FavoriteToggleIntent(),
+    SingleActivator(LogicalKeyboardKey.info): FavoriteToggleIntent(),
+    SingleActivator(LogicalKeyboardKey.gameButtonX): FavoriteToggleIntent(),
   };
 
   /// Cria o mapa de ações padrão para acionar um [onTap] a partir de um [ActivateIntent]
@@ -95,4 +184,25 @@ class DeviceUtils {
       ),
     };
   }
+
+  /// Cria o mapa de ações para canais com suporte a seleção e alternância de favoritos
+  static Map<Type, Action<Intent>> channelActions({
+    required VoidCallback onTap,
+    VoidCallback? onToggleFavorite,
+  }) {
+    return {
+      ActivateIntent: CallbackAction<ActivateIntent>(
+        onInvoke: (_) => onTap(),
+      ),
+      if (onToggleFavorite != null)
+        FavoriteToggleIntent: CallbackAction<FavoriteToggleIntent>(
+          onInvoke: (_) => onToggleFavorite(),
+        ),
+    };
+  }
+}
+
+/// Intent para acionamento de favoritos via atalho do controle remoto (ex: Tecla Menu).
+class FavoriteToggleIntent extends Intent {
+  const FavoriteToggleIntent();
 }

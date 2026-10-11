@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../services/url_sanitizer.dart';
+import '../utils/device_utils.dart';
 
 /// Modos de enquadramento do vídeo na tela (Original ou Preencher).
 enum LiveVideoFitMode { contain, cover }
@@ -30,6 +31,8 @@ class LivePlayerView extends StatefulWidget {
   final String? currentProgram;
   final String? nextProgram;
   final VoidCallback? onOpenGuide;
+  final VoidCallback? onPreviousChannel;
+  final VoidCallback? onNextChannel;
 
   const LivePlayerView({
     super.key,
@@ -52,6 +55,8 @@ class LivePlayerView extends StatefulWidget {
     this.currentProgram,
     this.nextProgram,
     this.onOpenGuide,
+    this.onPreviousChannel,
+    this.onNextChannel,
   });
 
   @override
@@ -62,6 +67,15 @@ class _LivePlayerViewState extends State<LivePlayerView> {
   bool _showControls = true;
   Timer? _controlsTimer;
   final FocusNode _focusNode = FocusNode();
+  final FocusNode _playPauseFocusNode = FocusNode();
+  final FocusNode _prevChannelFocusNode = FocusNode();
+  final FocusNode _nextChannelFocusNode = FocusNode();
+  final FocusNode _guideFocusNode = FocusNode();
+  final FocusNode _favFocusNode = FocusNode();
+  final FocusNode _backFocusNode = FocusNode();
+  final FocusNode _fitFocusNode = FocusNode();
+  final FocusNode _fsFocusNode = FocusNode();
+
   late LiveVideoFitMode _currentFitMode;
 
   @override
@@ -69,57 +83,67 @@ class _LivePlayerViewState extends State<LivePlayerView> {
     super.initState();
     _currentFitMode = widget.fitMode;
     _startControlsTimer();
+    DeviceUtils.setKeepScreenOn(true);
   }
 
   @override
   void didUpdateWidget(covariant LivePlayerView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final isPlaying = widget.controller?.value.isPlaying ?? false;
+    DeviceUtils.setKeepScreenOn(isPlaying);
+
     if (widget.fitMode != oldWidget.fitMode) {
       _currentFitMode = widget.fitMode;
     }
     if (widget.isFullscreen != oldWidget.isFullscreen) {
       if (widget.isFullscreen) {
-        _showControls = true;
-        _startControlsTimer();
-        _focusNode.requestFocus();
+        _revealControls();
       }
     }
   }
 
   @override
   void dispose() {
+    DeviceUtils.setKeepScreenOn(false);
     _controlsTimer?.cancel();
     _focusNode.dispose();
+    _playPauseFocusNode.dispose();
+    _prevChannelFocusNode.dispose();
+    _nextChannelFocusNode.dispose();
+    _guideFocusNode.dispose();
+    _favFocusNode.dispose();
+    _backFocusNode.dispose();
+    _fitFocusNode.dispose();
+    _fsFocusNode.dispose();
     super.dispose();
   }
 
   void _startControlsTimer() {
     _controlsTimer?.cancel();
-    if (!widget.isFullscreen) {
-      // No modo mini player, mantemos os controles acessíveis com auto-ocultação mais longa
-      _controlsTimer = Timer(const Duration(seconds: 4), () {
-        if (mounted && (widget.controller?.value.isPlaying ?? false)) {
-          setState(() => _showControls = false);
-        }
-      });
-      return;
-    }
-
-    _controlsTimer = Timer(const Duration(seconds: 3), () {
+    // Em TV com controles abertos, concede 4 segundos de inatividade para auto-ocultação
+    _controlsTimer = Timer(const Duration(seconds: 4), () {
       if (mounted && (widget.controller?.value.isPlaying ?? false)) {
         setState(() => _showControls = false);
       }
     });
   }
 
-  void _toggleControls() {
-    setState(() {
-      _showControls = !_showControls;
+  void _revealControls() {
+    setState(() => _showControls = true);
+    _startControlsTimer();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _showControls) {
+        _playPauseFocusNode.requestFocus();
+      }
     });
+  }
+
+  void _toggleControls() {
     if (_showControls) {
-      _startControlsTimer();
-    } else {
       _controlsTimer?.cancel();
+      setState(() => _showControls = false);
+    } else {
+      _revealControls();
     }
   }
 
@@ -146,21 +170,65 @@ class _LivePlayerViewState extends State<LivePlayerView> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-    if (event.logicalKey == LogicalKeyboardKey.select ||
-        event.logicalKey == LogicalKeyboardKey.enter ||
-        event.logicalKey == LogicalKeyboardKey.space) {
+    // Se os controles estiverem ocultos: qualquer tecla (setas ou botões) acorda os controles
+    if (!_showControls) {
+      _revealControls();
+      if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
+          event.logicalKey == LogicalKeyboardKey.mediaPlay ||
+          event.logicalKey == LogicalKeyboardKey.mediaPause) {
+        widget.onTogglePlayPause();
+      }
+      return KeyEventResult.handled;
+    }
+
+    // Atalhos diretos de controle remoto mesmo com controles abertos:
+    // 1. Tecla Menu no controle Fire TV: favorita/desfavorita diretamente
+    if (event.logicalKey == LogicalKeyboardKey.contextMenu && widget.onToggleFavorite != null) {
+      widget.onToggleFavorite!();
+      _startControlsTimer();
+      return KeyEventResult.handled;
+    }
+
+    // 2. Tecla Guia no controle de TV
+    if (event.logicalKey == LogicalKeyboardKey.guide && widget.onOpenGuide != null) {
+      widget.onOpenGuide!();
+      _startControlsTimer();
+      return KeyEventResult.handled;
+    }
+
+    // 3. Tecla Media Play/Pause física
+    if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
+        event.logicalKey == LogicalKeyboardKey.mediaPlay ||
+        event.logicalKey == LogicalKeyboardKey.mediaPause) {
       widget.onTogglePlayPause();
       _startControlsTimer();
       return KeyEventResult.handled;
     }
 
-    if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
-        event.logicalKey == LogicalKeyboardKey.mediaPlay ||
-        event.logicalKey == LogicalKeyboardKey.mediaPause) {
-      widget.onTogglePlayPause();
-      return KeyEventResult.handled;
+    // 4. Teclas Channel Up / Channel Down / Page Up / Page Down
+    if (widget.isFullscreen) {
+      if (event.logicalKey == LogicalKeyboardKey.channelUp ||
+          event.logicalKey == LogicalKeyboardKey.pageUp ||
+          event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
+        if (widget.onNextChannel != null) {
+          widget.onNextChannel!();
+          _startControlsTimer();
+          return KeyEventResult.handled;
+        }
+      }
+
+      if (event.logicalKey == LogicalKeyboardKey.channelDown ||
+          event.logicalKey == LogicalKeyboardKey.pageDown ||
+          event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
+        if (widget.onPreviousChannel != null) {
+          widget.onPreviousChannel!();
+          _startControlsTimer();
+          return KeyEventResult.handled;
+        }
+      }
     }
 
+    // 5. Tecla Voltar (Escape / goBack) em tela cheia: sai da tela cheia
     if (widget.isFullscreen &&
         (event.logicalKey == LogicalKeyboardKey.escape ||
             event.logicalKey == LogicalKeyboardKey.goBack)) {
@@ -168,50 +236,67 @@ class _LivePlayerViewState extends State<LivePlayerView> {
       return KeyEventResult.handled;
     }
 
-    // Qualquer seta acorda os controles
-    setState(() => _showControls = true);
+    // Reinicia o timer de auto-hide em qualquer tecla de navegação D-pad
     _startControlsTimer();
+
+    // Permite que teclas de navegação e ativação (Enter, Select, Espaço) passem para os botões focados
     return KeyEventResult.ignored;
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final isInitialized = controller != null && controller.value.isInitialized;
-    final isPlaying = controller?.value.isPlaying ?? false;
+    return ValueListenableBuilder<bool>(
+      valueListenable: DeviceUtils.isPipMode,
+      builder: (context, inPip, _) {
+        final controller = widget.controller;
+        final isInitialized = controller != null && controller.value.isInitialized;
+        final isPlaying = controller?.value.isPlaying ?? false;
 
-    return Focus(
-      focusNode: _focusNode,
-      onKeyEvent: _handleKeyEvent,
-      child: GestureDetector(
-        onTap: _toggleControls,
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          color: Colors.black,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 1. Superfície de vídeo
-              if (isInitialized && widget.errorMessage == null)
-                _buildVideoSurface(controller)
-              else
-                _buildPlaceholderBackground(),
+        // Quando estiver no modo Picture-in-Picture (PiP), exibe unicamente a superfície
+        // de vídeo limpa, preenchendo a janela flutuante sem botões, overlays ou foco
+        if (inPip) {
+          return Container(
+            color: Colors.black,
+            child: isInitialized
+                ? _buildVideoSurface(controller)
+                : _buildPlaceholderBackground(),
+          );
+        }
 
-              // 2. Indicador de Carregamento ou Buffering
-              if (widget.isLoading || widget.isBuffering)
-                _buildLoadingOverlay(),
+        return Focus(
+          focusNode: _focusNode,
+          onKeyEvent: _handleKeyEvent,
+          child: GestureDetector(
+            onTap: _toggleControls,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              color: Colors.black,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // 1. Superfície de vídeo
+                  if (isInitialized && widget.errorMessage == null)
+                    _buildVideoSurface(controller)
+                  else
+                    _buildPlaceholderBackground(),
 
-              // 3. Indicador de Erro
-              if (widget.errorMessage != null && !widget.isLoading)
-                _buildErrorOverlay(),
+                  // 2. Indicador de Carregamento ou Buffering
+                  if (widget.isLoading || widget.isBuffering)
+                    _buildLoadingOverlay(),
 
-              // 4. Controles Sobrepostos (OSD)
-              if (_showControls && widget.errorMessage == null)
-                _buildControlsOverlay(isPlaying),
-            ],
+                  // 3. Indicador de Erro
+                  if (widget.errorMessage != null && !widget.isLoading)
+                    _buildErrorOverlay(),
+
+                  // 4. Controles Sobrepostos (OSD)
+                  if (_showControls && widget.errorMessage == null)
+                    _buildControlsOverlay(isPlaying),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -455,9 +540,9 @@ class _LivePlayerViewState extends State<LivePlayerView> {
                 // Barra Superior
                 _buildTopBar(),
 
-                // Centro: Botão Play/Pause grande (apenas em tela cheia com altura suficiente)
+                // Centro: Botões de Play/Pause e troca de canal (tela cheia)
                 if (showCenterPlay)
-                  _buildCenterPlayButton(isPlaying)
+                  _buildCenterControls(isPlaying)
                 else
                   const SizedBox.shrink(),
 
@@ -481,12 +566,12 @@ class _LivePlayerViewState extends State<LivePlayerView> {
       child: Row(
         children: [
           if (widget.isFullscreen)
-            IconButton(
+            _PlayerTvIconButton(
+              buttonKey: const Key('btn_fullscreen_back'),
               tooltip: 'Voltar à lista de canais',
+              focusNode: _backFocusNode,
               icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 24),
-              onPressed: () {
-                widget.onToggleFullscreen();
-              },
+              onPressed: widget.onToggleFullscreen,
             ),
           _buildLogo(size: isCompact ? 24 : 32),
           const SizedBox(width: 8),
@@ -568,30 +653,38 @@ class _LivePlayerViewState extends State<LivePlayerView> {
           ),
           if (widget.onOpenGuide != null) ...[
             const SizedBox(width: 4),
-            IconButton(
+            _PlayerTvIconButton(
+              buttonKey: const Key('btn_open_guide'),
               tooltip: 'Guia de Programação (EPG)',
+              focusNode: _guideFocusNode,
+              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
               icon: Icon(
                 Icons.schedule_rounded,
                 color: const Color(0xFF00E5FF),
                 size: isCompact ? 20 : 22,
               ),
-              padding: EdgeInsets.zero,
-              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
-              onPressed: widget.onOpenGuide,
+              onPressed: () {
+                widget.onOpenGuide?.call();
+                _startControlsTimer();
+              },
             ),
           ],
           if (widget.onToggleFavorite != null) ...[
             const SizedBox(width: 4),
-            IconButton(
+            _PlayerTvIconButton(
+              buttonKey: const Key('btn_toggle_favorite'),
               tooltip: widget.isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
+              focusNode: _favFocusNode,
+              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
               icon: Icon(
                 widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
                 color: widget.isFavorite ? const Color(0xFFEF5350) : Colors.white70,
                 size: isCompact ? 20 : 22,
               ),
-              padding: EdgeInsets.zero,
-              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
-              onPressed: widget.onToggleFavorite,
+              onPressed: () {
+                widget.onToggleFavorite?.call();
+                _startControlsTimer();
+              },
             ),
           ],
           if (!widget.isFullscreen && widget.onClose != null) ...[
@@ -609,26 +702,101 @@ class _LivePlayerViewState extends State<LivePlayerView> {
     );
   }
 
-  Widget _buildCenterPlayButton(bool isPlaying) {
+  Widget _buildCenterControls(bool isPlaying) {
     return Center(
-      child: IconButton(
-        iconSize: widget.isFullscreen ? 64 : 44,
-        icon: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.black45,
-            shape: BoxShape.circle,
-            border: Border.all(color: const Color(0xFF00E5FF), width: 1.5),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Botão Canal Anterior (visível em tela cheia)
+          if (widget.isFullscreen && widget.onPreviousChannel != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 28),
+              child: _PlayerTvIconButton(
+                buttonKey: const Key('btn_prev_channel'),
+                tooltip: 'Canal anterior',
+                focusNode: _prevChannelFocusNode,
+                padding: const EdgeInsets.all(8),
+                icon: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white24, width: 1.2),
+                  ),
+                  child: const Icon(
+                    Icons.skip_previous_rounded,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                ),
+                onPressed: () {
+                  widget.onPreviousChannel?.call();
+                  _startControlsTimer();
+                },
+              ),
+            ),
+
+          // Botão Play/Pause Central
+          _PlayerTvIconButton(
+            buttonKey: const Key('btn_center_play_pause'),
+            tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
+            focusNode: _playPauseFocusNode,
+            padding: const EdgeInsets.all(8),
+            icon: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFF00E5FF), width: 1.8),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.25),
+                    blurRadius: 10,
+                  ),
+                ],
+              ),
+              child: Icon(
+                isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                color: const Color(0xFF00E5FF),
+                size: widget.isFullscreen ? 48 : 36,
+              ),
+            ),
+            onPressed: () {
+              widget.onTogglePlayPause();
+              _startControlsTimer();
+            },
           ),
-          child: Icon(
-            isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-            color: const Color(0xFF00E5FF),
-          ),
-        ),
-        onPressed: () {
-          widget.onTogglePlayPause();
-          _startControlsTimer();
-        },
+
+          // Botão Próximo Canal (visível em tela cheia)
+          if (widget.isFullscreen && widget.onNextChannel != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 28),
+              child: _PlayerTvIconButton(
+                buttonKey: const Key('btn_next_channel'),
+                tooltip: 'Próximo canal',
+                focusNode: _nextChannelFocusNode,
+                padding: const EdgeInsets.all(8),
+                icon: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white24, width: 1.2),
+                  ),
+                  child: const Icon(
+                    Icons.skip_next_rounded,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                ),
+                onPressed: () {
+                  widget.onNextChannel?.call();
+                  _startControlsTimer();
+                },
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -643,48 +811,79 @@ class _LivePlayerViewState extends State<LivePlayerView> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Controle Play/Pause pequeno
-          IconButton(
-            tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
-            icon: Icon(
-              isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded,
-              color: const Color(0xFF00E5FF),
-              size: isCompact ? 24 : 26,
-            ),
-            padding: isCompact ? EdgeInsets.zero : const EdgeInsets.all(8),
-            constraints: isCompact
-                ? const BoxConstraints(minWidth: 36, minHeight: 36)
-                : const BoxConstraints(minWidth: 48, minHeight: 48),
-            onPressed: () {
-              widget.onTogglePlayPause();
-              _startControlsTimer();
-            },
-          ),
+          // Controles de canal e Play/Pause no rodapé (mini player)
+          if (!widget.isFullscreen)
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
+                  icon: Icon(
+                    isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded,
+                    color: const Color(0xFF00E5FF),
+                    size: 24,
+                  ),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  onPressed: () {
+                    widget.onTogglePlayPause();
+                    _startControlsTimer();
+                  },
+                ),
+              ],
+            )
+          else
+            const SizedBox.shrink(),
 
           Row(
             children: [
               // Alternador de Enquadramento (Fit Mode) tanto em tela cheia quanto em mini player
               if (widget.onFitModeChanged != null)
-                widget.isFullscreen
-                    ? TextButton.icon(
-                        onPressed: _cycleFitMode,
-                        icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
-                        label: Text(
+                _PlayerTvIconButton(
+                  buttonKey: const Key('btn_fit_mode'),
+                  tooltip: 'Proporção: $_fitModeLabel',
+                  focusNode: _fitFocusNode,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  icon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
+                      if (widget.isFullscreen) ...[
+                        const SizedBox(width: 4),
+                        Text(
                           _fitModeLabel,
                           style: const TextStyle(color: Colors.white70, fontSize: 11),
                         ),
-                      )
-                    : IconButton(
-                        tooltip: 'Proporção: $_fitModeLabel',
-                        icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 20),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                        onPressed: _cycleFitMode,
-                      ),
+                      ],
+                    ],
+                  ),
+                  onPressed: _cycleFitMode,
+                ),
+
+              // Botão Picture-in-Picture (se suportado e não for TV)
+              if (!DeviceUtils.isTv)
+                IconButton(
+                  key: const Key('btn_pip'),
+                  tooltip: 'Janela flutuante (PiP)',
+                  icon: const Icon(Icons.picture_in_picture_alt_rounded, color: Colors.white70, size: 20),
+                  padding: isCompact ? EdgeInsets.zero : const EdgeInsets.all(8),
+                  constraints: isCompact
+                      ? const BoxConstraints(minWidth: 36, minHeight: 36)
+                      : const BoxConstraints(minWidth: 48, minHeight: 48),
+                  onPressed: () {
+                    DeviceUtils.enterPip();
+                  },
+                ),
 
               // Botão Alternar Tela Cheia / Mini Player
-              IconButton(
+              _PlayerTvIconButton(
+                buttonKey: const Key('btn_toggle_fullscreen'),
                 tooltip: widget.isFullscreen ? 'Sair da tela cheia' : 'Tela cheia',
+                focusNode: _fsFocusNode,
+                padding: isCompact ? EdgeInsets.zero : const EdgeInsets.all(8),
+                constraints: isCompact
+                    ? const BoxConstraints(minWidth: 36, minHeight: 36)
+                    : const BoxConstraints(minWidth: 48, minHeight: 48),
                 icon: Icon(
                   widget.isFullscreen
                       ? Icons.fullscreen_exit_rounded
@@ -692,10 +891,6 @@ class _LivePlayerViewState extends State<LivePlayerView> {
                   color: Colors.white,
                   size: isCompact ? 22 : 24,
                 ),
-                padding: isCompact ? EdgeInsets.zero : const EdgeInsets.all(8),
-                constraints: isCompact
-                    ? const BoxConstraints(minWidth: 36, minHeight: 36)
-                    : const BoxConstraints(minWidth: 48, minHeight: 48),
                 onPressed: widget.onToggleFullscreen,
               ),
             ],
@@ -731,6 +926,77 @@ class _LivePlayerViewState extends State<LivePlayerView> {
           cacheHeight: 120,
           fit: BoxFit.contain,
           errorBuilder: (ctx, err, stack) => fallback,
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão de controle sobreposto adaptado para Smart TV e controle remoto D-pad.
+/// Exibe anel neon com brilho ao receber foco e processa ativação no OK/Select/Espaço.
+class _PlayerTvIconButton extends StatefulWidget {
+  final Widget icon;
+  final VoidCallback onPressed;
+  final String tooltip;
+  final Key? buttonKey;
+  final FocusNode? focusNode;
+  final BoxConstraints? constraints;
+  final EdgeInsetsGeometry padding;
+
+  const _PlayerTvIconButton({
+    required this.icon,
+    required this.onPressed,
+    required this.tooltip,
+    this.buttonKey,
+    this.focusNode,
+    this.constraints,
+    this.padding = const EdgeInsets.all(6),
+  });
+
+  @override
+  State<_PlayerTvIconButton> createState() => _PlayerTvIconButtonState();
+}
+
+class _PlayerTvIconButtonState extends State<_PlayerTvIconButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      key: widget.buttonKey,
+      focusNode: widget.focusNode,
+      actions: DeviceUtils.activateAction(widget.onPressed),
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      child: Tooltip(
+        message: widget.tooltip,
+        child: InkWell(
+          canRequestFocus: false,
+          onTap: widget.onPressed,
+          borderRadius: BorderRadius.circular(24),
+          splashColor: const Color(0x3300E5FF),
+          child: Container(
+            constraints: widget.constraints,
+            padding: widget.padding,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _isFocused ? const Color(0x3300E5FF) : Colors.transparent,
+              border: Border.all(
+                color: _isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+                width: 2.0,
+              ),
+              boxShadow: _isFocused
+                  ? const [
+                      BoxShadow(
+                        color: Color(0x6600E5FF),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      )
+                    ]
+                  : null,
+            ),
+            child: widget.icon,
+          ),
         ),
       ),
     );

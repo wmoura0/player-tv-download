@@ -36,50 +36,111 @@ class XmltvParser {
         .replaceAll('&#34;', '"');
   }
 
-  /// Converte carimbo de data/hora padrão XMLTV (`YYYYMMDDhhmmss [+/-]ZZZZ`) para [DateTime].
-  /// Trata com precisão o deslocamento de fuso horário internacional (ex.: +0000, -0300, Z).
+  /// Converte carimbo de data/hora padrão XMLTV (`YYYYMMDDhhmmss [+/-]ZZZZ`), ISO-8601
+  /// ou timestamp UNIX para [DateTime] normalizado em UTC.
+  /// Trata com precisão o deslocamento de fuso horário internacional (ex.: +0000, -0300, -03:00, Z).
   static DateTime? parseXmltvDate(String? raw) {
     if (raw == null || raw.trim().isEmpty) return null;
     final text = raw.trim();
 
-    // Regex para extrair YYYY MM DD hh mm [ss] [offset]
-    final reg = RegExp(r'^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?\s*([+-]\d{4}|Z)?$');
-    final match = reg.firstMatch(text);
-    if (match == null) {
-      // Fallback para ISO-8601 comum se fornecido em formato ISO
-      return DateTime.tryParse(text);
+    // 1. Se for timestamp numérico (segundos desde a época UNIX)
+    if (RegExp(r'^\d{10,13}$').hasMatch(text)) {
+      final val = int.tryParse(text);
+      if (val != null) {
+        final ms = text.length == 10 ? val * 1000 : val;
+        return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+      }
     }
 
+    // 2. Regex para padrão XMLTV compacto: YYYYMMDDhhmm[ss] [offset]
+    // Suporta: +0000, -0300, -03:00, -03, Z
+    final compactReg = RegExp(
+      r'^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?\s*([+-]\d{2}:?\d{2}|[+-]\d{2}|Z)?$',
+    );
+    final compactMatch = compactReg.firstMatch(text);
+    if (compactMatch != null) {
+      try {
+        final year = int.parse(compactMatch.group(1)!);
+        final month = int.parse(compactMatch.group(2)!);
+        final day = int.parse(compactMatch.group(3)!);
+        final hour = int.parse(compactMatch.group(4)!);
+        final minute = int.parse(compactMatch.group(5)!);
+        final second = compactMatch.group(6) != null ? int.parse(compactMatch.group(6)!) : 0;
+        final tz = compactMatch.group(7);
+
+        return _buildUtcWithOffset(year, month, day, hour, minute, second, tz);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // 3. Regex para data com separadores: YYYY-MM-DD[ T]hh:mm[:ss] [offset]
+    final sepReg = RegExp(
+      r'^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):?(\d{2})?\s*([+-]\d{2}:?\d{2}|[+-]\d{2}|Z)?$',
+    );
+    final sepMatch = sepReg.firstMatch(text);
+    if (sepMatch != null) {
+      try {
+        final year = int.parse(sepMatch.group(1)!);
+        final month = int.parse(sepMatch.group(2)!);
+        final day = int.parse(sepMatch.group(3)!);
+        final hour = int.parse(sepMatch.group(4)!);
+        final minute = int.parse(sepMatch.group(5)!);
+        final second = sepMatch.group(6) != null ? int.parse(sepMatch.group(6)!) : 0;
+        final tz = sepMatch.group(7);
+
+        return _buildUtcWithOffset(year, month, day, hour, minute, second, tz);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // 4. Fallback padrão ISO-8601
     try {
-      final year = int.parse(match.group(1)!);
-      final month = int.parse(match.group(2)!);
-      final day = int.parse(match.group(3)!);
-      final hour = int.parse(match.group(4)!);
-      final minute = int.parse(match.group(5)!);
-      final second = match.group(6) != null ? int.parse(match.group(6)!) : 0;
-      final tz = match.group(7);
-
-      if (tz == null || tz == 'Z') {
-        // Se explicitamente 'Z' ou sem offset, trata como UTC
-        return DateTime.utc(year, month, day, hour, minute, second);
+      final parsed = DateTime.tryParse(text);
+      if (parsed != null) {
+        return parsed.toUtc();
       }
+    } catch (_) {}
 
-      // Trata offset no formato +HHMM ou -HHMM
-      final sign = tz.startsWith('-') ? -1 : 1;
-      final offsetClean = tz.replaceAll(RegExp(r'[+-]'), '');
-      if (offsetClean.length == 4) {
-        final tzHour = int.parse(offsetClean.substring(0, 2));
-        final tzMin = int.parse(offsetClean.substring(2, 4));
-        final offsetDuration = Duration(hours: tzHour, minutes: tzMin) * sign;
+    return null;
+  }
 
-        // Horário fornecido menos o offset = Horário UTC correspondente
-        final dtUtc = DateTime.utc(year, month, day, hour, minute, second).subtract(offsetDuration);
-        return dtUtc;
-      }
+  static DateTime _buildUtcWithOffset(
+    int year,
+    int month,
+    int day,
+    int hour,
+    int minute,
+    int second,
+    String? tz,
+  ) {
+    final baseUtc = DateTime.utc(year, month, day, hour, minute, second);
+    if (tz == null || tz.trim().isEmpty || tz.trim() == 'Z') {
+      // Se não houver offset ou for explicitamente Z, a especificação XMLTV define UTC
+      return baseUtc;
+    }
 
-      return DateTime.utc(year, month, day, hour, minute, second);
-    } catch (_) {
-      return null;
+    final trimmed = tz.trim();
+    final isNegative = trimmed.startsWith('-');
+    // Mantém apenas dígitos para extrair horas e minutos do fuso
+    final clean = trimmed.replaceAll(RegExp(r'[^0-9]'), '');
+    int tzHour = 0;
+    int tzMin = 0;
+    if (clean.length >= 4) {
+      tzHour = int.tryParse(clean.substring(0, 2)) ?? 0;
+      tzMin = int.tryParse(clean.substring(2, 4)) ?? 0;
+    } else if (clean.length >= 2) {
+      tzHour = int.tryParse(clean.substring(0, 2)) ?? 0;
+    }
+
+    final delta = Duration(hours: tzHour, minutes: tzMin);
+    // Local = UTC + Offset => UTC = Local - Offset
+    // Se o offset é negativo (ex: Brasília -0300), UTC = Local - (-3h) = Local + 3h
+    if (isNegative) {
+      return baseUtc.add(delta);
+    } else {
+      return baseUtc.subtract(delta);
     }
   }
 

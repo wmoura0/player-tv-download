@@ -48,6 +48,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
   void initState() {
     super.initState();
     DeviceUtils.setVideoOrientation();
+    DeviceUtils.setKeepScreenOn(true);
 
     if (widget.testController != null) {
       _controller = widget.testController;
@@ -61,6 +62,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
 
   @override
   void dispose() {
+    DeviceUtils.setKeepScreenOn(false);
     _progressSaveTimer?.cancel();
     _saveCurrentProgress(); // Salva posição ao fechar
 

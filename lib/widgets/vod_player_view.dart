@@ -67,6 +67,14 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   bool _isDraggingSlider = false;
   double _dragSliderValue = 0.0;
 
+  // Variáveis para controle de avanço e retrocesso contínuo (hold seek)
+  bool _isContinuousSeeking = false;
+  int _continuousSeekTargetMs = 0;
+  int _continuousSeekDeltaSeconds = 0;
+  Timer? _keyHoldTimer;
+  Timer? _keyReleaseDebounceTimer;
+  int _repeatCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -76,14 +84,20 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   @override
   void dispose() {
     _controlsTimer?.cancel();
+    _keyHoldTimer?.cancel();
+    _keyReleaseDebounceTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
 
   void _startControlsTimer() {
     _controlsTimer?.cancel();
+    // Exibição de progresso com vídeo pausado: não auto-oculta enquanto estiver pausado ou em seek contínuo
     _controlsTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && (widget.controller?.value.isPlaying ?? false) && !_isDraggingSlider) {
+      if (mounted &&
+          (widget.controller?.value.isPlaying ?? false) &&
+          !_isDraggingSlider &&
+          !_isContinuousSeeking) {
         setState(() => _showControls = false);
       }
     });
@@ -110,43 +124,139 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+
+    // 1. Processa KeyUpEvent: se soltar antes do tempo de hold, executa toque rápido (+/-10s).
+    // Se soltar durante seek contínuo, finaliza e envia um único comando de seek ao player.
+    if (event is KeyUpEvent) {
+      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        _keyReleaseDebounceTimer?.cancel();
+        if (_isContinuousSeeking) {
+          _commitContinuousSeek();
+          return KeyEventResult.handled;
+        } else if (_keyHoldTimer != null) {
+          _keyHoldTimer?.cancel();
+          _keyHoldTimer = null;
+          final isForward = key == LogicalKeyboardKey.arrowRight;
+          widget.onSeekRelative?.call(isForward ? 10 : -10);
+          _startControlsTimer();
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.ignored;
+    }
+
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-    if (event.logicalKey == LogicalKeyboardKey.select ||
-        event.logicalKey == LogicalKeyboardKey.enter ||
-        event.logicalKey == LogicalKeyboardKey.space) {
+    // 2. Play/Pause
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.mediaPlayPause) {
       widget.onTogglePlayPause();
+      setState(() => _showControls = true);
       _startControlsTimer();
       return KeyEventResult.handled;
     }
 
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      widget.onSeekRelative?.call(-10);
-      _startControlsTimer();
-      return KeyEventResult.handled;
-    }
-
-    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      widget.onSeekRelative?.call(10);
-      _startControlsTimer();
-      return KeyEventResult.handled;
-    }
-
-    if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
-      widget.onTogglePlayPause();
-      _startControlsTimer();
-      return KeyEventResult.handled;
-    }
-
-    if (event.logicalKey == LogicalKeyboardKey.escape ||
-        event.logicalKey == LogicalKeyboardKey.goBack) {
+    // 3. Voltar
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
       widget.onBack?.call();
+      return KeyEventResult.handled;
+    }
+
+    // 4. Avanço e retrocesso contínuo no controle remoto (Hold / Repeat)
+    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+      final isForward = key == LogicalKeyboardKey.arrowRight;
+      setState(() => _showControls = true);
+
+      if (!_isContinuousSeeking) {
+        if (_keyHoldTimer == null) {
+          // Primeiro toque: inicializa o timer de detecção de hold (300ms)
+          _repeatCount = 1;
+          _keyHoldTimer = Timer(const Duration(milliseconds: 300), () {
+            if (mounted) {
+              _startContinuousSeeking(isForward);
+            }
+          });
+        } else {
+          // Tecla repetida rapidamente (hardware repeat): entra imediatamente em seek contínuo
+          _keyHoldTimer?.cancel();
+          _startContinuousSeeking(isForward);
+        }
+      } else {
+        // Já está em seek contínuo: incrementa posição com aceleração progressiva
+        _stepContinuousSeek(isForward);
+      }
       return KeyEventResult.handled;
     }
 
     setState(() => _showControls = true);
     _startControlsTimer();
     return KeyEventResult.ignored;
+  }
+
+  void _startContinuousSeeking(bool isForward) {
+    _keyHoldTimer?.cancel();
+    _keyHoldTimer = null;
+    final pos = widget.controller?.value.position.inMilliseconds ?? 0;
+    _continuousSeekTargetMs = pos;
+    _continuousSeekDeltaSeconds = 0;
+    _isContinuousSeeking = true;
+    _stepContinuousSeek(isForward);
+  }
+
+  void _stepContinuousSeek(bool isForward) {
+    _repeatCount++;
+    int step = 5;
+    if (_repeatCount > 15) {
+      step = 30;
+    } else if (_repeatCount > 8) {
+      step = 15;
+    } else if (_repeatCount > 3) {
+      step = 10;
+    }
+
+    final delta = isForward ? step : -step;
+    _continuousSeekDeltaSeconds += delta;
+
+    final totalMs = widget.controller?.value.duration.inMilliseconds ?? 0;
+    _continuousSeekTargetMs =
+        (_continuousSeekTargetMs + delta * 1000).clamp(0, totalMs > 0 ? totalMs : 0);
+
+    _keyReleaseDebounceTimer?.cancel();
+    // Fallback de liberação caso o dispositivo Fire TV não envie KeyUpEvent
+    _keyReleaseDebounceTimer = Timer(const Duration(milliseconds: 380), () {
+      if (mounted) {
+        _commitContinuousSeek();
+      }
+    });
+
+    setState(() {});
+  }
+
+  void _commitContinuousSeek() {
+    _keyReleaseDebounceTimer?.cancel();
+    _keyHoldTimer?.cancel();
+    _keyHoldTimer = null;
+
+    if (!_isContinuousSeeking) return;
+
+    final target = Duration(milliseconds: _continuousSeekTargetMs);
+    setState(() {
+      _isContinuousSeeking = false;
+      _repeatCount = 0;
+    });
+
+    final c = widget.controller;
+    if (c != null && c.value.isInitialized) {
+      c.seekTo(target);
+      // Retoma imediatamente da posição final escolhida
+      c.play();
+    } else {
+      widget.onSeekRelative?.call(_continuousSeekDeltaSeconds);
+    }
+    _startControlsTimer();
   }
 
   @override
@@ -512,68 +622,140 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   }
 
   Widget _buildCenterControls(bool isPlaying) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        IconButton(
-          tooltip: 'Retroceder 10s',
-          iconSize: 42,
-          icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
-          onPressed: () {
-            widget.onSeekRelative?.call(-10);
-            _startControlsTimer();
-          },
-        ),
-        const SizedBox(width: 20),
-        IconButton(
-          tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
-          iconSize: 64,
-          icon: Container(
-            padding: const EdgeInsets.all(8),
+        if (!isPlaying)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             decoration: BoxDecoration(
-              color: Colors.black45,
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFFE50914), width: 1.5),
+              color: Colors.black87,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xFFFFA726), width: 1.2),
             ),
-            child: Icon(
-              isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-              color: const Color(0xFFE50914),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.pause_circle_filled_rounded, color: Color(0xFFFFA726), size: 16),
+                SizedBox(width: 6),
+                Text(
+                  'PAUSADO',
+                  style: TextStyle(
+                    color: Color(0xFFFFA726),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ],
             ),
           ),
-          onPressed: () {
-            widget.onTogglePlayPause();
-            _startControlsTimer();
-          },
-        ),
-        const SizedBox(width: 20),
-        IconButton(
-          tooltip: 'Avançar 10s',
-          iconSize: 42,
-          icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
-          onPressed: () {
-            widget.onSeekRelative?.call(10);
-            _startControlsTimer();
-          },
-        ),
-        if (widget.onNextEpisode != null) ...[
-          const SizedBox(width: 20),
-          IconButton(
-            tooltip: 'Próximo episódio',
-            iconSize: 42,
-            icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
-            onPressed: () {
-              widget.onNextEpisode?.call();
-              _startControlsTimer();
-            },
+        if (_isContinuousSeeking)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xDD000000),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF00E5FF), width: 1.5),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x6600E5FF),
+                  blurRadius: 12,
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _continuousSeekDeltaSeconds >= 0
+                      ? Icons.fast_forward_rounded
+                      : Icons.fast_rewind_rounded,
+                  color: const Color(0xFF00E5FF),
+                  size: 20,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${_continuousSeekDeltaSeconds >= 0 ? "+" : ""}${_continuousSeekDeltaSeconds}s  ➜  ${PlaybackProgressService.formatDuration(Duration(milliseconds: _continuousSeekTargetMs))}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              tooltip: 'Retroceder 10s',
+              iconSize: 42,
+              icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
+              onPressed: () {
+                widget.onSeekRelative?.call(-10);
+                _startControlsTimer();
+              },
+            ),
+            const SizedBox(width: 20),
+            IconButton(
+              tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
+              iconSize: 64,
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFE50914), width: 1.5),
+                ),
+                child: Icon(
+                  isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  color: const Color(0xFFE50914),
+                ),
+              ),
+              onPressed: () {
+                widget.onTogglePlayPause();
+                setState(() => _showControls = true);
+                _startControlsTimer();
+              },
+            ),
+            const SizedBox(width: 20),
+            IconButton(
+              tooltip: 'Avançar 10s',
+              iconSize: 42,
+              icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
+              onPressed: () {
+                widget.onSeekRelative?.call(10);
+                _startControlsTimer();
+              },
+            ),
+            if (widget.onNextEpisode != null) ...[
+              const SizedBox(width: 20),
+              IconButton(
+                tooltip: 'Próximo episódio',
+                iconSize: 42,
+                icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
+                onPressed: () {
+                  widget.onNextEpisode?.call();
+                  _startControlsTimer();
+                },
+              ),
+            ],
+          ],
+        ),
       ],
     );
   }
 
   Widget _buildBottomBar(Duration position, Duration duration, bool isPlaying) {
+    final effectivePosition = _isContinuousSeeking
+        ? Duration(milliseconds: _continuousSeekTargetMs)
+        : position;
     final totalMs = duration.inMilliseconds.toDouble();
-    final currentMs = position.inMilliseconds.toDouble().clamp(0.0, totalMs > 0 ? totalMs : 0.0);
+    final currentMs = effectivePosition.inMilliseconds.toDouble().clamp(0.0, totalMs > 0 ? totalMs : 0.0);
 
     final sliderValue = _isDraggingSlider
         ? _dragSliderValue
@@ -581,7 +763,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
     final currentDisplayDuration = _isDraggingSlider && totalMs > 0
         ? Duration(milliseconds: (_dragSliderValue * totalMs).round())
-        : position;
+        : effectivePosition;
+
+    final remaining = duration > currentDisplayDuration ? duration - currentDisplayDuration : Duration.zero;
+    final elapsedStr = PlaybackProgressService.formatDuration(currentDisplayDuration);
+    final totalStr = PlaybackProgressService.formatDuration(duration);
+    final remainingStr = '-${PlaybackProgressService.formatDuration(remaining)}';
 
     final fitLabel = widget.fitMode == LiveVideoFitMode.contain ? 'Original' : 'Preencher';
 
@@ -623,13 +810,36 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '${PlaybackProgressService.formatDuration(currentDisplayDuration)} / ${PlaybackProgressService.formatDuration(duration)}',
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$elapsedStr / $totalStr',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (duration > Duration.zero) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        'Restante: $remainingStr',
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
               if (widget.onFitModeChanged != null)
                 TextButton.icon(

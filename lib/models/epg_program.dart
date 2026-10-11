@@ -1,3 +1,4 @@
+import '../services/xmltv_parser.dart';
 import 'xtream_catalog.dart';
 
 /// Representa um programa individual da grade do Guia Eletrônico de Programação (EPG).
@@ -19,29 +20,37 @@ class EpgProgram {
   });
 
   /// Verifica se o programa está no ar no momento indicado (padrão DateTime.now()).
+  /// Realiza comparação estrita em UTC para eliminar inconsistências entre fusos horários.
   bool isAiringAt([DateTime? now]) {
     if (forcedNowPlaying == true) return true;
-    final current = now ?? DateTime.now();
-    if (startTime != null && endTime != null) {
-      return (current.isAfter(startTime!) || current.isAtSameMomentAs(startTime!)) &&
-          current.isBefore(endTime!);
+    if (startTime == null) return false;
+    final currentUtc = (now ?? DateTime.now()).toUtc();
+    final sUtc = startTime!.toUtc();
+    if (endTime != null) {
+      final eUtc = endTime!.toUtc();
+      return (currentUtc.isAfter(sUtc) || currentUtc.isAtSameMomentAs(sUtc)) && currentUtc.isBefore(eUtc);
     }
-    return false;
+    // Se não tem término declarado, considera ativo se iniciado há menos de 4 horas
+    return (currentUtc.isAfter(sUtc) || currentUtc.isAtSameMomentAs(sUtc)) &&
+        currentUtc.difference(sUtc) < const Duration(hours: 4);
   }
 
   /// Retorna o progresso de 0.0 a 1.0 do programa no ar, ou null se horários não disponíveis.
   double? getProgress([DateTime? now]) {
     if (startTime == null || endTime == null) return null;
-    final current = now ?? DateTime.now();
-    if (current.isBefore(startTime!)) return 0.0;
-    if (current.isAfter(endTime!)) return 1.0;
-    final total = endTime!.difference(startTime!).inMilliseconds;
+    final currentUtc = (now ?? DateTime.now()).toUtc();
+    final sUtc = startTime!.toUtc();
+    final eUtc = endTime!.toUtc();
+    if (currentUtc.isBefore(sUtc)) return 0.0;
+    if (currentUtc.isAfter(eUtc)) return 1.0;
+    final total = eUtc.difference(sUtc).inMilliseconds;
     if (total <= 0) return 0.0;
-    final elapsed = current.difference(startTime!).inMilliseconds;
+    final elapsed = currentUtc.difference(sUtc).inMilliseconds;
     return (elapsed / total).clamp(0.0, 1.0);
   }
 
-  /// Formatação limpa de horário de início e fim no formato HH:mm - HH:mm.
+  /// Formatação limpa de horário de início e fim no formato HH:mm - HH:mm,
+  /// convertida com precisão para o fuso horário local do dispositivo (ex.: Horário de Brasília).
   String get formattedTimeRange {
     if (startTime == null) return '';
     final startStr = _formatTime(startTime!);
@@ -58,20 +67,26 @@ class EpgProgram {
     return '$h:$m';
   }
 
-  /// Constrói a partir de um programa retornado pela API Xtream Codes
+  /// Constrói a partir de um programa retornado pela API Xtream Codes,
+  /// priorizando timestamps UNIX em UTC sobre strings não qualificadas de fuso.
   factory EpgProgram.fromXtream(XtreamEpgProgram p, {required String channelId}) {
-    DateTime? parseXtreamDate(String? str) {
-      if (str == null || str.trim().isEmpty) return null;
-      try {
-        // Tenta ISO-8601 direto
-        return DateTime.tryParse(str) ?? DateTime.tryParse(str.replaceAll(' ', 'T'));
-      } catch (_) {
-        return null;
-      }
+    DateTime? start;
+    if (p.startTimestamp != null && p.startTimestamp! > 0) {
+      start = DateTime.fromMillisecondsSinceEpoch(p.startTimestamp! * 1000, isUtc: true);
+    } else if (p.start != null) {
+      start = XmltvParser.parseXmltvDate(p.start);
     }
 
-    final start = parseXtreamDate(p.start);
-    final end = parseXtreamDate(p.end);
+    DateTime? end;
+    if (p.stopTimestamp != null && p.stopTimestamp! > 0) {
+      end = DateTime.fromMillisecondsSinceEpoch(p.stopTimestamp! * 1000, isUtc: true);
+    } else if (p.end != null) {
+      end = XmltvParser.parseXmltvDate(p.end);
+    }
+
+    if (start != null && end != null && end.isBefore(start)) {
+      end = null;
+    }
 
     return EpgProgram(
       channelId: channelId,
@@ -87,8 +102,8 @@ class EpgProgram {
     'channelId': channelId,
     'title': title,
     if (description != null) 'description': description,
-    if (startTime != null) 'startTime': startTime!.toIso8601String(),
-    if (endTime != null) 'endTime': endTime!.toIso8601String(),
+    if (startTime != null) 'startTime': startTime!.toUtc().toIso8601String(),
+    if (endTime != null) 'endTime': endTime!.toUtc().toIso8601String(),
     if (forcedNowPlaying != null) 'forcedNowPlaying': forcedNowPlaying,
   };
 
@@ -97,40 +112,66 @@ class EpgProgram {
       channelId: json['channelId']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
       description: json['description']?.toString(),
-      startTime: json['startTime'] != null ? DateTime.tryParse(json['startTime'] as String) : null,
-      endTime: json['endTime'] != null ? DateTime.tryParse(json['endTime'] as String) : null,
+      startTime: json['startTime'] != null ? DateTime.tryParse(json['startTime'] as String)?.toUtc() : null,
+      endTime: json['endTime'] != null ? DateTime.tryParse(json['endTime'] as String)?.toUtc() : null,
       forcedNowPlaying: json['forcedNowPlaying'] as bool?,
     );
   }
 }
 
-/// Agrupamento de programação de um canal
+/// Agrupamento de programação de um canal, com ordenação cronológica e derivação consistente de horários.
 class EpgChannelSchedule {
   final String channelId;
   final List<EpgProgram> programs;
 
-  const EpgChannelSchedule({
+  EpgChannelSchedule({
     required this.channelId,
-    required this.programs,
-  });
+    required List<EpgProgram> programs,
+  }) : programs = _preparePrograms(programs);
 
-  /// Programa atualmente no ar (ou null se nenhum estiver passando no momento)
-  EpgProgram? get currentProgram {
-    final now = DateTime.now();
+  static List<EpgProgram> _preparePrograms(List<EpgProgram> list) {
+    final sorted = List<EpgProgram>.from(list)..sort((a, b) {
+      if (a.startTime == null && b.startTime == null) return 0;
+      if (a.startTime == null) return 1;
+      if (b.startTime == null) return -1;
+      return a.startTime!.compareTo(b.startTime!);
+    });
+
+    final result = <EpgProgram>[];
+    for (int i = 0; i < sorted.length; i++) {
+      final cur = sorted[i];
+      if (cur.endTime == null && i + 1 < sorted.length && sorted[i + 1].startTime != null) {
+        result.add(EpgProgram(
+          channelId: cur.channelId,
+          title: cur.title,
+          description: cur.description,
+          startTime: cur.startTime,
+          endTime: sorted[i + 1].startTime,
+          forcedNowPlaying: cur.forcedNowPlaying,
+        ));
+      } else {
+        result.add(cur);
+      }
+    }
+    return List<EpgProgram>.unmodifiable(result);
+  }
+
+  /// Programa atualmente no ar no horário especificado (ou agora se omitido)
+  EpgProgram? findCurrentProgram([DateTime? atTime]) {
+    final now = atTime ?? DateTime.now();
     for (final p in programs) {
       if (p.isAiringAt(now)) return p;
     }
-    // Se não encontrou por data estrita, verifica se algum tem forcedNowPlaying
     for (final p in programs) {
       if (p.forcedNowPlaying == true) return p;
     }
     return null;
   }
 
-  /// Próximo programa a ser transmitido imediatamente após o atual
-  EpgProgram? get nextProgram {
-    final now = DateTime.now();
-    final current = currentProgram;
+  /// Próximo programa a ser transmitido após o horário especificado (ou agora se omitido)
+  EpgProgram? findNextProgram([DateTime? atTime]) {
+    final now = atTime ?? DateTime.now();
+    final current = findCurrentProgram(now);
     if (current != null) {
       final idx = programs.indexOf(current);
       if (idx >= 0 && idx + 1 < programs.length) {
@@ -138,16 +179,18 @@ class EpgChannelSchedule {
       }
     }
 
-    // Fallback: primeiro programa cujo início seja futuro
+    final nowUtc = now.toUtc();
     for (final p in programs) {
-      if (p.startTime != null && p.startTime!.isAfter(now)) {
+      if (p.startTime != null && p.startTime!.toUtc().isAfter(nowUtc)) {
         return p;
       }
     }
     return null;
   }
 
-  /// Aliases de conveniência
-  EpgProgram? getNowPlaying() => currentProgram;
-  EpgProgram? getNextProgram() => nextProgram;
+  /// Programa atualmente no ar (ou null se nenhum estiver passando no momento)
+  EpgProgram? get currentProgram => findCurrentProgram();
+
+  /// Próximo programa a ser transmitido imediatamente após o atual
+  EpgProgram? get nextProgram => findNextProgram();
 }

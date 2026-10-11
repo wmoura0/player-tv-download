@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/services/url_sanitizer.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
+import 'package:projeto_tv/utils/device_utils.dart';
 import 'package:projeto_tv/widgets/live_player_view.dart';
 
 void main() {
@@ -281,6 +282,144 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(currentMode, equals(LiveVideoFitMode.contain));
+    });
+
+    testWidgets('Exibe botões de canal anterior e próximo em tela cheia e aciona callbacks', (tester) async {
+      bool prevCalled = false;
+      bool nextCalled = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LivePlayerView(
+              controller: null,
+              channelName: 'Globo SP HD',
+              groupTitle: 'Abertos',
+              isFullscreen: true,
+              isLoading: false,
+              onTogglePlayPause: () {},
+              onToggleFullscreen: () {},
+              onPreviousChannel: () => prevCalled = true,
+              onNextChannel: () => nextCalled = true,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final prevButton = find.byKey(const Key('btn_prev_channel'));
+      final nextButton = find.byKey(const Key('btn_next_channel'));
+
+      expect(prevButton, findsOneWidget);
+      expect(nextButton, findsOneWidget);
+
+      await tester.tap(prevButton);
+      expect(prevCalled, isTrue);
+
+      await tester.tap(nextButton);
+      expect(nextCalled, isTrue);
+    });
+
+    test('DeviceUtils.setKeepScreenOn executa sem lançar exceção', () async {
+      // Invocação em ambiente de teste não deve crashar
+      await DeviceUtils.setKeepScreenOn(true);
+      await DeviceUtils.setKeepScreenOn(false);
+    });
+
+    testWidgets('Exibe botão de PiP na barra de controles em dispositivos móveis e oculta em TV', (tester) async {
+      DeviceUtils.setMockIsTv(false);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LivePlayerView(
+              controller: null,
+              channelName: 'Globo SP HD',
+              isFullscreen: true,
+              isLoading: false,
+              onTogglePlayPause: () {},
+              onToggleFullscreen: () {},
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final pipButton = find.byKey(const Key('btn_pip'));
+      expect(pipButton, findsOneWidget);
+
+      // Em TV, o botão de PiP de celular não deve existir
+      DeviceUtils.setMockIsTv(true);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LivePlayerView(
+              controller: null,
+              channelName: 'Globo SP HD',
+              isFullscreen: true,
+              isLoading: false,
+              onTogglePlayPause: () {},
+              onToggleFullscreen: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('btn_pip')), findsNothing);
+      DeviceUtils.setMockIsTv(null);
+    });
+
+    testWidgets('Em modo PiP (isPipMode == true), LivePlayerView oculta controles e exibe superfície limpa', (tester) async {
+      DeviceUtils.isPipMode.value = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LivePlayerView(
+              controller: null,
+              channelName: 'Canal Teste PiP',
+              isFullscreen: true,
+              isLoading: false,
+              onTogglePlayPause: () {},
+              onToggleFullscreen: () {},
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('btn_center_play_pause')), findsOneWidget);
+
+      // Ativa PiP
+      DeviceUtils.isPipMode.value = true;
+      await tester.pumpAndSettle();
+
+      // Controles normais devem desaparecer da tela flutuante
+      expect(find.byKey(const Key('btn_center_play_pause')), findsNothing);
+      expect(find.byKey(const Key('btn_pip')), findsNothing);
+
+      // Restaura para teste subsequente
+      DeviceUtils.isPipMode.value = false;
+      await tester.pumpAndSettle();
+    });
+
+    test('DeviceUtils PiP helpers funcionam e protegem ambiente de TV', () async {
+      DeviceUtils.setMockIsTv(true);
+      expect(await DeviceUtils.isPipSupported(), isFalse);
+      expect(await DeviceUtils.enterPip(), isFalse);
+
+      DeviceUtils.setMockIsTv(false);
+      DeviceUtils.setMockIsPipSupported(true);
+      expect(await DeviceUtils.isPipSupported(), isTrue);
+
+      await DeviceUtils.setPipState(enabled: true, aspectNumerator: 16, aspectDenominator: 9);
+      await DeviceUtils.setPipState(enabled: false);
+
+      DeviceUtils.setMockIsTv(null);
+      DeviceUtils.setMockIsPipSupported(null);
     });
   });
 }

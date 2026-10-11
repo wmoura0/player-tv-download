@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -6,6 +7,7 @@ import 'package:projeto_tv/models/epg_program.dart';
 import 'package:projeto_tv/services/epg_service.dart';
 import 'package:projeto_tv/services/player_stability_manager.dart';
 import 'package:projeto_tv/services/xmltv_parser.dart';
+import 'package:projeto_tv/widgets/epg_guide_view.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -245,6 +247,208 @@ void main() {
       // Aguarda qualquer timer pendente
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(reconnectCalls, equals(0));
+    });
+
+    test('categorizeError sanitiza mensagens e oculta credenciais ou tokens', () {
+      final safe1 = PlayerStabilityManager.categorizeError('SocketException: failed to connect to http://user:pass123@server.tv:8080/live.m3u8');
+      expect(safe1, isNot(contains('pass123')));
+      expect(safe1, contains('Falha de conexão com a rede'));
+
+      final safe2 = PlayerStabilityManager.categorizeError('HttpException 404: stream http://secret:token@stream.tv/404.ts not found');
+      expect(safe2, isNot(contains('token')));
+      expect(safe2, contains('Transmissão não encontrada'));
+    });
+
+    test('Suprime eventos concorrentes ou duplicados de falha idêntica em menos de 600ms', () {
+      int reconnectCalls = 0;
+      final manager = PlayerStabilityManager(
+        maxRetries: 3,
+        onReconnectRequest: (count) async => reconnectCalls++,
+      );
+
+      // Primeiro erro
+      manager.scheduleRetry('Falha na rede');
+      expect(manager.retryCount, equals(1));
+
+      // Erro idêntico disparado imediatamente (< 600ms)
+      manager.scheduleRetry('Falha na rede');
+      expect(manager.retryCount, equals(1)); // Não deve ter incrementado
+
+      manager.dispose();
+    });
+
+    test('pauseMonitoring limpa watchdogs e timers de stall ativos', () {
+      final manager = PlayerStabilityManager(
+        onReconnectRequest: (count) async {},
+      );
+
+      manager.startOpenWatchdog(() {});
+      manager.pauseMonitoring();
+
+      // Não deve falhar nem lançar exceção
+      expect(manager.isDisposed, isFalse);
+      manager.dispose();
+    });
+
+    test('attemptSoftRecovery lida com controller nulo de forma segura', () async {
+      final manager = PlayerStabilityManager(
+        onReconnectRequest: (count) async {},
+      );
+
+      final result = await manager.attemptSoftRecovery(null);
+      expect(result, isFalse);
+
+      manager.dispose();
+    });
+  });
+
+  group('XMLTV Edge-Cases & Timezone Offsets', () {
+    test('Faz parse de offsets com dois-pontos (-03:00, +02:00), época UNIX e ISO-8601', () {
+      // 1. Offset de Brasília com formato ISO/XMLTV com dois-pontos (-03:00)
+      final dtColon = XmltvParser.parseXmltvDate('20261011153000 -03:00');
+      expect(dtColon, isNotNull);
+      // 15:30 -03:00 = 18:30 UTC
+      expect(dtColon, equals(DateTime.utc(2026, 10, 11, 18, 30, 0)));
+
+      // 2. Offset positivo com dois-pontos (+02:00)
+      final dtPos = XmltvParser.parseXmltvDate('20261011153000 +02:00');
+      expect(dtPos, isNotNull);
+      // 15:30 +02:00 = 13:30 UTC
+      expect(dtPos, equals(DateTime.utc(2026, 10, 11, 13, 30, 0)));
+
+      // 3. Timestamp UNIX em segundos
+      // 1791720000 = 2026-10-11 12:00:00 UTC
+      final dtUnix = XmltvParser.parseXmltvDate('1791720000');
+      expect(dtUnix, isNotNull);
+      expect(dtUnix, equals(DateTime.fromMillisecondsSinceEpoch(1791720000 * 1000, isUtc: true)));
+
+      // 4. ISO-8601 completo
+      final dtIso = XmltvParser.parseXmltvDate('2026-10-11T12:00:00Z');
+      expect(dtIso, isNotNull);
+      expect(dtIso, equals(DateTime.utc(2026, 10, 11, 12, 0, 0)));
+    });
+
+    test('Transição cronológica entre programa anterior, atual e próximo', () {
+      final refTime = DateTime.utc(2026, 10, 11, 14, 30, 0);
+
+      final p1 = EpgProgram(
+        channelId: 'ch1',
+        title: 'Jornal da Manhã',
+        startTime: DateTime.utc(2026, 10, 11, 12, 0, 0),
+        endTime: DateTime.utc(2026, 10, 11, 14, 0, 0),
+      );
+
+      final p2 = EpgProgram(
+        channelId: 'ch1',
+        title: 'Filme da Tarde',
+        startTime: DateTime.utc(2026, 10, 11, 14, 0, 0),
+        endTime: DateTime.utc(2026, 10, 11, 16, 0, 0),
+      );
+
+      final p3 = EpgProgram(
+        channelId: 'ch1',
+        title: 'Novela da Noite',
+        startTime: DateTime.utc(2026, 10, 11, 16, 0, 0),
+        endTime: DateTime.utc(2026, 10, 11, 17, 30, 0),
+      );
+
+      final schedule = EpgChannelSchedule(
+        channelId: 'ch1',
+        programs: [p3, p1, p2], // Desordenado propositalmente
+      );
+
+      // Confirma ordenação cronológica automática
+      expect(schedule.programs[0].title, equals('Jornal da Manhã'));
+      expect(schedule.programs[1].title, equals('Filme da Tarde'));
+      expect(schedule.programs[2].title, equals('Novela da Noite'));
+
+      // Verifica programa em exibição no instante refTime (14:30 UTC)
+      final current = schedule.findCurrentProgram(refTime);
+      expect(current, isNotNull);
+      expect(current!.title, equals('Filme da Tarde'));
+      expect(current.isAiringAt(refTime), isTrue);
+
+      // Verifica próximo programa
+      final next = schedule.findNextProgram(refTime);
+      expect(next, isNotNull);
+      expect(next!.title, equals('Novela da Noite'));
+
+      // Programa anterior já encerrou
+      expect(p1.isAiringAt(refTime), isFalse);
+    });
+  });
+
+  group('EpgGuideDialog UI Tests', () {
+    testWidgets('Exibe estado informativo honesto quando não há programação (sem dados falsos)', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: EpgGuideDialog(
+              channelName: 'Canal Sem EPG',
+              schedule: null,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Canal Sem EPG'), findsOneWidget);
+      expect(find.text('Guia de Programação (EPG)'), findsOneWidget);
+      expect(find.text('Programação indisponível para este canal.'), findsOneWidget);
+      expect(find.textContaining('Nenhum dado de guia (EPG) foi fornecido pelo servidor'), findsOneWidget);
+      // Não exibe horários falsos ou badges fictícios
+      expect(find.text('NO AR'), findsNothing);
+    });
+
+    testWidgets('Destaque visual do programa NO AR com badge vermelho e barra de progresso', (tester) async {
+      final now = DateTime.now();
+
+      final schedule = EpgChannelSchedule(
+        channelId: 'test_ch',
+        programs: [
+          EpgProgram(
+            channelId: 'test_ch',
+            title: 'Programa Anterior',
+            startTime: now.subtract(const Duration(hours: 2)),
+            endTime: now.subtract(const Duration(minutes: 10)),
+          ),
+          EpgProgram(
+            channelId: 'test_ch',
+            title: 'Programa ao Vivo Atual',
+            startTime: now.subtract(const Duration(minutes: 10)),
+            endTime: now.add(const Duration(minutes: 50)),
+          ),
+          EpgProgram(
+            channelId: 'test_ch',
+            title: 'Próximo Programa',
+            startTime: now.add(const Duration(minutes: 50)),
+            endTime: now.add(const Duration(hours: 2)),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: EpgGuideDialog(
+              channelName: 'Canal Brasil',
+              schedule: schedule,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Confirma que os 3 programas estão listados
+      expect(find.text('Programa Anterior'), findsOneWidget);
+      expect(find.text('Programa ao Vivo Atual'), findsOneWidget);
+      expect(find.text('Próximo Programa'), findsOneWidget);
+
+      // Exatamente 1 badge "NO AR" para o programa que está passando agora
+      expect(find.text('NO AR'), findsOneWidget);
+
+      // Indicador de progresso presente para o programa atual
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
     });
   });
 }

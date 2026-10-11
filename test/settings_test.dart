@@ -1,4 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:projeto_tv/screens/settings_screen.dart';
 import 'package:projeto_tv/services/settings_service.dart';
 import 'package:projeto_tv/widgets/live_player_view.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -81,6 +83,70 @@ void main() {
       expect(settings.defaultAspectRatio, equals(LiveVideoFitMode.cover));
       expect(settings.enableResumePlayback, isFalse);
       expect(settings.enableAutoPlayNextEpisode, isTrue);
+    });
+  });
+
+  group('SettingsScreen Widget & UI Simplification Tests', () {
+    testWidgets('Remoção completa de Preferências de reprodução e controles de proporção na interface', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: SettingsScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Confirma que a seção "Preferências de reprodução" e controles de aspect ratio foram removidos
+      expect(find.text('Preferências de Reprodução'), findsNothing);
+      expect(find.text('Preferências de reprodução'), findsNothing);
+      expect(find.text('Proporção de Tela Padrão do Player'), findsNothing);
+      expect(find.text('Proporção de vídeo'), findsNothing);
+      expect(find.text('Original'), findsNothing);
+      expect(find.text('Preencher'), findsNothing);
+      expect(find.text('Densidade de pôsteres'), findsNothing);
+      expect(find.text('Reduzir animações'), findsNothing);
+      expect(find.text('Edição de aparência'), findsNothing);
+      expect(find.text('Edição de reprodutor de vídeo'), findsNothing);
+
+      // Confirma opções mantidas essenciais
+      expect(find.text('Conta e Acesso'), findsOneWidget);
+      expect(find.text('Gerenciar Listas M3U'), findsOneWidget);
+      expect(find.text('Armazenamento e Catálogo'), findsOneWidget);
+      expect(find.text('Limpar Cache'), findsOneWidget);
+      expect(find.text('Sobre o Aplicativo'), findsOneWidget);
+      expect(find.text('Versão 1.0.1 (Build 2)'), findsOneWidget);
+    });
+
+    testWidgets('Botão Voltar retorna corretamente à tela anterior', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  ),
+                  child: const Text('Abrir Ajustes'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Abre Settings
+      await tester.tap(find.text('Abrir Ajustes'));
+      await tester.pumpAndSettle();
+      expect(find.text('Configurações'), findsOneWidget);
+
+      // Clica no botão Voltar
+      await tester.tap(find.byTooltip('Voltar'));
+      await tester.pumpAndSettle();
+
+      // Deve estar de volta na tela anterior
+      expect(find.text('Abrir Ajustes'), findsOneWidget);
+      expect(find.text('Configurações'), findsNothing);
     });
   });
 }

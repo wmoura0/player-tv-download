@@ -79,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   XtreamCatalogService? _sharedCatalogService;
   String _accountKey = '';
-  int _currentBottomNavIndex = 0;
 
   @override
   void initState() {
@@ -552,33 +551,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return shouldExit ?? false;
   }
 
-  void _onBottomNavTapped(int index) {
-    setState(() => _currentBottomNavIndex = index);
-    switch (index) {
-      case 0:
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            0,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
-        break;
-      case 1:
-        _onCategorySelected('TV ao vivo');
-        break;
-      case 2:
-        _onCategorySelected('Filmes');
-        break;
-      case 3:
-        _onCategorySelected('Séries');
-        break;
-      case 4:
-        _onOpenFavorites();
-        break;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -597,120 +569,111 @@ class _HomeScreenState extends State<HomeScreen> {
             builder: (context, constraints) {
               final isLandscape = constraints.maxWidth > constraints.maxHeight;
               final isWideScreen = constraints.maxWidth >= 900;
-              final horizontalPadding = isLandscape ? (isWideScreen ? 36.0 : 24.0) : 16.0;
+              final horizontalPadding = isLandscape ? (isWideScreen ? 48.0 : 32.0) : 16.0;
 
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Barra lateral de navegação
-                  _HomeSidebar(
-                    selectedIndex: _currentBottomNavIndex,
-                    isCompact: !isLandscape,
-                    onItemSelected: _onBottomNavTapped,
-                    onSearchTap: _onSearchPressed,
-                    onFavoritesTap: _onOpenFavorites,
-                    onSettingsTap: _onSettingsPressed,
-                    onLogoutTap: _onLogout,
-                    xtreamAccount: widget.xtreamAccount,
-                  ),
-
-                  // Área de conteúdo da Home
-                  Expanded(
-                    child: CustomScrollView(
-                      controller: _scrollController,
-                      slivers: [
-                        // Cabeçalho superior compacto
-                        SliverToBoxAdapter(
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: horizontalPadding,
-                              vertical: 12.0,
-                            ),
-                            child: _AppHeader(
-                              xtreamAccount: widget.xtreamAccount,
-                              onSearchTap: _onSearchPressed,
-                              onFavoritesTap: _onOpenFavorites,
-                              onSettingsTap: _onSettingsPressed,
-                              onLogoutTap: _onLogout,
-                            ),
-                          ),
-                        ),
-
-                        // Seção "Continuar assistindo" (só exibida com itens salvos)
-                        if (_continuarAssistindo.isNotEmpty)
-                          SliverToBoxAdapter(
-                            child: _ContinueWatchingSection(
-                              items: _continuarAssistindo,
-                              isLandscape: isLandscape,
-                              horizontalPadding: horizontalPadding,
-                              onItemTap: _onSelectContinueWatching,
-                              onItemDelete: _confirmRemoveContinueWatching,
-                            ),
-                          ),
-
-                // Seção "Filmes recentes" (só com dados confiáveis em cache)
-                if (_recentMovies.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: _RecentMoviesSection(
-                      movies: _recentMovies,
-                      isLandscape: isLandscape,
-                      horizontalPadding: horizontalPadding,
-                      onMovieTap: _onSelectRecentMovie,
-                    ),
-                  ),
-
-                // Seção "Séries recentes" (só com dados confiáveis em cache)
-                if (_recentSeries.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: _RecentSeriesSection(
-                      seriesList: _recentSeries,
-                      isLandscape: isLandscape,
-                      horizontalPadding: horizontalPadding,
-                      onSeriesTap: _onSelectRecentSeries,
-                    ),
-                  ),
-
-                // Banner discreto de boas-vindas quando não houver itens em andamento ou recentes
-                if (_continuarAssistindo.isEmpty && _recentMovies.isEmpty && _recentSeries.isEmpty)
+              return CustomScrollView(
+                controller: _scrollController,
+                slivers: [
+                  // Cabeçalho superior compacto
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: EdgeInsets.symmetric(
                         horizontal: horizontalPadding,
-                        vertical: 16.0,
+                        vertical: 12.0,
                       ),
-                      child: const _ExploreCatalogBanner(),
+                      child: _AppHeader(
+                        xtreamAccount: widget.xtreamAccount,
+                        onSearchTap: _onSearchPressed,
+                        onSettingsTap: _onSettingsPressed,
+                        onLogoutTap: _onLogout,
+                      ),
                     ),
                   ),
 
-                      // Espaço inferior de respiro
-                      const SliverToBoxAdapter(
-                        child: SizedBox(height: 28),
+                  // Cards principais de categorias (TV ao vivo, Filmes, Séries, Favoritos)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: horizontalPadding,
+                        vertical: 8.0,
                       ),
-                    ],
+                      child: _MainCategoriesSection(
+                        isLandscape: isLandscape,
+                        onCategoryTap: _onCategorySelected,
+                      ),
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
+
+                  // Seção "Continuar assistindo" (só exibida com itens salvos)
+                  if (_continuarAssistindo.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _ContinueWatchingSection(
+                        items: _continuarAssistindo,
+                        isLandscape: isLandscape,
+                        horizontalPadding: horizontalPadding,
+                        onItemTap: _onSelectContinueWatching,
+                        onItemDelete: _confirmRemoveContinueWatching,
+                      ),
+                    ),
+
+                  // Seção "Filmes recentes" (só com dados confiáveis em cache)
+                  if (_recentMovies.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _RecentMoviesSection(
+                        movies: _recentMovies,
+                        isLandscape: isLandscape,
+                        horizontalPadding: horizontalPadding,
+                        onMovieTap: _onSelectRecentMovie,
+                      ),
+                    ),
+
+                  // Seção "Séries recentes" (só com dados confiáveis em cache)
+                  if (_recentSeries.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _RecentSeriesSection(
+                        seriesList: _recentSeries,
+                        isLandscape: isLandscape,
+                        horizontalPadding: horizontalPadding,
+                        onSeriesTap: _onSelectRecentSeries,
+                      ),
+                    ),
+
+                  // Banner discreto de boas-vindas quando não houver itens em andamento ou recentes
+                  if (_continuarAssistindo.isEmpty && _recentMovies.isEmpty && _recentSeries.isEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: horizontalPadding,
+                          vertical: 16.0,
+                        ),
+                        child: const _ExploreCatalogBanner(),
+                      ),
+                    ),
+
+                  // Espaço inferior de respiro
+                  const SliverToBoxAdapter(
+                    child: SizedBox(height: 28),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 }
 
 /// Cabeçalho minimalista com o nome do aplicativo, status da conta Xtream, busca e ações.
 class _AppHeader extends StatelessWidget {
   final XtreamAccount? xtreamAccount;
   final VoidCallback onSearchTap;
-  final VoidCallback onFavoritesTap;
   final VoidCallback onSettingsTap;
   final VoidCallback onLogoutTap;
 
   const _AppHeader({
     this.xtreamAccount,
     required this.onSearchTap,
-    required this.onFavoritesTap,
     required this.onSettingsTap,
     required this.onLogoutTap,
   });
@@ -821,14 +784,6 @@ class _AppHeader extends StatelessWidget {
               isCompact: isCompact,
               onTap: onSearchTap,
             ),
-            _HeaderActionButton(
-              key: const Key('header_favorites_btn'),
-              icon: Icons.favorite_rounded,
-              tooltip: 'Meus Favoritos',
-              iconColor: const Color(0xFFEF5350),
-              isCompact: isCompact,
-              onTap: onFavoritesTap,
-            ),
             if (xtreamAccount != null)
               _HeaderActionButton(
                 key: const Key('header_logout_btn'),
@@ -935,8 +890,8 @@ class _ContinueWatchingSection extends StatelessWidget {
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
 
-    final cardWidth = isLandscape ? 220.0 : 185.0;
-    final cardHeight = isLandscape ? 136.0 : 118.0;
+    final cardWidth = isLandscape ? (DeviceUtils.isTv ? 240.0 : 220.0) : 185.0;
+    final cardHeight = isLandscape ? (DeviceUtils.isTv ? 148.0 : 136.0) : 118.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -1033,7 +988,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: AnimatedScale(
-        scale: isHighlighted ? 1.03 : 1.0,
+        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
         duration: const Duration(milliseconds: 160),
         child: Container(
           width: widget.width,
@@ -1043,7 +998,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1D263B),
-              width: isHighlighted ? 2.0 : 1.0,
+              width: 2.0,
             ),
             boxShadow: isHighlighted
                 ? [
@@ -1346,7 +1301,7 @@ class _RecentMoviesSection extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: 168,
+            height: DeviceUtils.isTv ? 190 : 168,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: movies.length,
@@ -1410,7 +1365,7 @@ class _RecentSeriesSection extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: 168,
+            height: DeviceUtils.isTv ? 190 : 168,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: seriesList.length,
@@ -1460,16 +1415,16 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
       shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       child: AnimatedScale(
-        scale: _isFocused ? 1.04 : 1.0,
+        scale: DeviceUtils.isTv ? 1.0 : (_isFocused ? 1.04 : 1.0),
         duration: const Duration(milliseconds: 160),
         child: Container(
-          width: 110,
+          width: DeviceUtils.isTv ? 124 : 110,
           decoration: BoxDecoration(
             color: const Color(0xFF0E1424),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF1D263B),
-              width: _isFocused ? 2.0 : 1.0,
+              width: 2.0,
             ),
             boxShadow: _isFocused
                 ? [
@@ -1611,296 +1566,298 @@ class _ExploreCatalogBanner extends StatelessWidget {
   }
 }
 
-/// Barra lateral de navegação adaptada para Smart TV / Fire TV e celular.
-/// Posiciona as opções principais (TV ao vivo, Filmes, Séries, Favoritos, Busca e Configurações)
-/// com alto contraste, foco por controle remoto e navegação por D-pad.
-class _HomeSidebar extends StatefulWidget {
-  final int selectedIndex;
-  final bool isCompact;
-  final ValueChanged<int> onItemSelected;
-  final VoidCallback onSearchTap;
-  final VoidCallback onFavoritesTap;
-  final VoidCallback onSettingsTap;
-  final VoidCallback onLogoutTap;
-  final XtreamAccount? xtreamAccount;
+class _CategoryItem {
+  final Key key;
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color accentColor;
+  final bool autofocus;
 
-  const _HomeSidebar({
-    required this.selectedIndex,
-    required this.isCompact,
-    required this.onItemSelected,
-    required this.onSearchTap,
-    required this.onFavoritesTap,
-    required this.onSettingsTap,
-    required this.onLogoutTap,
-    this.xtreamAccount,
+  const _CategoryItem({
+    required this.key,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.accentColor,
+    this.autofocus = false,
+  });
+}
+
+/// Seção que organiza os 4 cards principais de categorias (TV ao vivo, Filmes, Séries e Favoritos).
+class _MainCategoriesSection extends StatelessWidget {
+  final bool isLandscape;
+  final ValueChanged<String> onCategoryTap;
+
+  const _MainCategoriesSection({
+    required this.isLandscape,
+    required this.onCategoryTap,
   });
 
   @override
-  State<_HomeSidebar> createState() => _HomeSidebarState();
-}
-
-class _HomeSidebarState extends State<_HomeSidebar> {
-  @override
   Widget build(BuildContext context) {
-    final isCompact = widget.isCompact;
-    final width = isCompact ? 56.0 : 76.0;
-
-    final items = [
-      (
-        key: const Key('sidebar_home'),
-        label: 'Início',
-        icon: Icons.home_rounded,
-        accent: const Color(0xFF00E5FF),
-        onTap: () => widget.onItemSelected(0),
-        isSelected: widget.selectedIndex == 0,
-        autofocus: false,
-      ),
-      (
-        key: const Key('cat_live_tv'),
-        label: 'TV ao vivo',
+    final categories = [
+      const _CategoryItem(
+        key: Key('cat_live_tv'),
+        title: 'TV ao vivo',
+        subtitle: 'Canais em tempo real',
         icon: Icons.live_tv_rounded,
-        accent: const Color(0xFF00E5FF),
-        onTap: () => widget.onItemSelected(1),
-        isSelected: widget.selectedIndex == 1,
+        accentColor: Color(0xFF00E5FF),
         autofocus: true,
       ),
-      (
-        key: const Key('cat_movies'),
-        label: 'Filmes',
+      const _CategoryItem(
+        key: Key('cat_movies'),
+        title: 'Filmes',
+        subtitle: 'Catálogo sob demanda',
         icon: Icons.movie_outlined,
-        accent: const Color(0xFF29B6F6),
-        onTap: () => widget.onItemSelected(2),
-        isSelected: widget.selectedIndex == 2,
-        autofocus: false,
+        accentColor: Color(0xFF29B6F6),
       ),
-      (
-        key: const Key('cat_series'),
-        label: 'Séries',
+      const _CategoryItem(
+        key: Key('cat_series'),
+        title: 'Séries',
+        subtitle: 'Temporadas e episódios',
         icon: Icons.video_library_outlined,
-        accent: const Color(0xFF1E88E5),
-        onTap: () => widget.onItemSelected(3),
-        isSelected: widget.selectedIndex == 3,
-        autofocus: false,
+        accentColor: Color(0xFF1E88E5),
       ),
-      (
-        key: const Key('cat_favorites'),
-        label: 'Favoritos',
+      const _CategoryItem(
+        key: Key('cat_favorites'),
+        title: 'Favoritos',
+        subtitle: 'Seus itens marcados',
         icon: Icons.favorite_rounded,
-        accent: const Color(0xFFEF5350),
-        onTap: widget.onFavoritesTap,
-        isSelected: widget.selectedIndex == 4,
-        autofocus: false,
+        accentColor: Color(0xFFEF5350),
       ),
     ];
 
-    return Container(
-      width: width,
-      decoration: const BoxDecoration(
-        color: Color(0xFF0C1220),
-        border: Border(
-          right: BorderSide(
-            color: Color(0xFF192238),
-            width: 1.5,
-          ),
-        ),
-      ),
-      child: Column(
-        children: [
-          const SizedBox(height: 12),
-          // Logotipo do aplicativo no topo da barra
-          Container(
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF00E5FF), Color(0xFF1E88E5)],
-              ),
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.play_arrow_rounded,
-              color: Color(0xFF070A12),
-              size: 16,
-            ),
-          ),
-          const SizedBox(height: 14),
-          const Divider(color: Color(0xFF192238), height: 1, indent: 8, endIndent: 8),
-          const SizedBox(height: 8),
-
-          // Itens principais de navegação
-          Expanded(
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: [
-                for (var i = 0; i < items.length; i++) ...[
-                  _SidebarItemWidget(
-                    itemKey: items[i].key,
-                    label: items[i].label,
-                    icon: items[i].icon,
-                    accentColor: items[i].accent,
-                    isSelected: items[i].isSelected,
-                    isCompact: isCompact,
-                    autofocus: items[i].autofocus,
-                    onTap: items[i].onTap,
+    if (isLandscape) {
+      return Row(
+        children: categories
+            .map(
+              (category) => Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                  child: _CategoryCard(
+                    item: category,
+                    isLandscape: true,
+                    onTap: () => onCategoryTap(category.title),
                   ),
-                  const SizedBox(height: 6),
-                ],
-              ],
+                ),
+              ),
+            )
+            .toList(),
+      );
+    }
+
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 10,
+      crossAxisSpacing: 10,
+      childAspectRatio: 2.2,
+      children: categories
+          .map(
+            (category) => _CategoryCard(
+              item: category,
+              isLandscape: false,
+              onTap: () => onCategoryTap(category.title),
             ),
-          ),
-
-          const Divider(color: Color(0xFF192238), height: 1, indent: 8, endIndent: 8),
-          const SizedBox(height: 8),
-
-          // Botões de Ação Inferiores: Busca e Configurações
-          _SidebarItemWidget(
-            itemKey: const Key('sidebar_search'),
-            label: 'Buscar',
-            icon: Icons.search_rounded,
-            accentColor: const Color(0xFF00E5FF),
-            isSelected: false,
-            isCompact: isCompact,
-            onTap: widget.onSearchTap,
-          ),
-          const SizedBox(height: 4),
-          _SidebarItemWidget(
-            itemKey: const Key('sidebar_settings'),
-            label: 'Ajustes',
-            icon: Icons.tune_rounded,
-            accentColor: const Color(0xFF00E5FF),
-            isSelected: false,
-            isCompact: isCompact,
-            onTap: widget.onSettingsTap,
-          ),
-          const SizedBox(height: 12),
-        ],
-      ),
+          )
+          .toList(),
     );
   }
 }
 
-class _SidebarItemWidget extends StatefulWidget {
-  final Key? itemKey;
-  final String label;
-  final IconData icon;
-  final Color accentColor;
-  final bool isSelected;
-  final bool isCompact;
-  final bool autofocus;
+/// Card de categoria com suporte a foco (D-Pad para Android/Fire TV), hover e toque.
+class _CategoryCard extends StatefulWidget {
+  final _CategoryItem item;
+  final bool isLandscape;
   final VoidCallback onTap;
 
-  const _SidebarItemWidget({
-    this.itemKey,
-    required this.label,
-    required this.icon,
-    required this.accentColor,
-    required this.isSelected,
-    required this.isCompact,
-    this.autofocus = false,
+  const _CategoryCard({
+    required this.item,
+    required this.isLandscape,
     required this.onTap,
   });
 
   @override
-  State<_SidebarItemWidget> createState() => _SidebarItemWidgetState();
+  State<_CategoryCard> createState() => _CategoryCardState();
 }
 
-class _SidebarItemWidgetState extends State<_SidebarItemWidget> {
+class _CategoryCardState extends State<_CategoryCard> {
   bool _isFocused = false;
   bool _isHovered = false;
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    final activeColor = widget.accentColor;
-    const inactiveColor = Color(0xFF64748B);
-    final currentColor = (isHighlighted || widget.isSelected) ? activeColor : inactiveColor;
 
     return FocusableActionDetector(
-      key: widget.itemKey,
-      autofocus: widget.autofocus,
+      key: widget.item.key,
+      autofocus: widget.item.autofocus,
       actions: DeviceUtils.activateAction(widget.onTap),
       shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: Tooltip(
-        message: widget.label,
-        waitDuration: const Duration(milliseconds: 500),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            canRequestFocus: false,
-            onTap: widget.onTap,
-            borderRadius: BorderRadius.circular(10),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
-              margin: EdgeInsets.symmetric(horizontal: widget.isCompact ? 4 : 6),
-              padding: EdgeInsets.symmetric(
-                vertical: widget.isCompact ? 10 : 8,
-                horizontal: widget.isCompact ? 2 : 4,
-              ),
-              decoration: BoxDecoration(
-                color: isHighlighted
-                    ? activeColor.withValues(alpha: 0.18)
-                    : (widget.isSelected
-                        ? activeColor.withValues(alpha: 0.08)
-                        : Colors.transparent),
-                borderRadius: BorderRadius.circular(10),
-                border: isHighlighted
-                    ? Border.all(color: activeColor, width: 2.0)
-                    : (widget.isSelected
-                        ? Border.all(color: activeColor.withValues(alpha: 0.4), width: 1.0)
-                        : null),
-                boxShadow: isHighlighted
-                    ? [
-                        BoxShadow(
-                          color: activeColor.withValues(alpha: 0.35),
-                          blurRadius: 8,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    widget.icon,
-                    size: widget.isCompact ? 22 : 24,
-                    color: currentColor,
-                  ),
-                  if (!widget.isCompact) ...[
-                    const SizedBox(height: 3),
-                    Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: (widget.isSelected || isHighlighted)
-                            ? FontWeight.bold
-                            : FontWeight.w500,
-                        color: (isHighlighted || widget.isSelected)
-                            ? const Color(0xFFF0F4F8)
-                            : inactiveColor,
-                        letterSpacing: 0.2,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
+      onShowFocusHighlight: (value) {
+        setState(() => _isFocused = value);
+      },
+      onShowHoverHighlight: (value) {
+        setState(() => _isHovered = value);
+      },
+      child: AnimatedScale(
+        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? (widget.isLandscape ? 1.04 : 1.02) : 1.0),
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          decoration: BoxDecoration(
+            color: isHighlighted ? const Color(0xFF131B2E) : const Color(0xFF0E1424),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isHighlighted
+                  ? widget.item.accentColor
+                  : const Color(0xFF1D263B),
+              width: 2.0,
+            ),
+            boxShadow: isHighlighted
+                ? [
+                    BoxShadow(
+                      color: widget.item.accentColor.withValues(alpha: 0.25),
+                      blurRadius: 14,
+                      offset: const Offset(0, 3),
+                    ),
+                  ]
+                : const [
+                    BoxShadow(
+                      color: Color(0x33000000),
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
                     ),
                   ],
-                ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              canRequestFocus: false,
+              onTap: widget.onTap,
+              borderRadius: BorderRadius.circular(14),
+              splashColor: widget.item.accentColor.withValues(alpha: 0.15),
+              highlightColor: widget.item.accentColor.withValues(alpha: 0.08),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: widget.isLandscape
+                    ? _buildLandscapeContent(isHighlighted)
+                    : _buildPortraitContent(isHighlighted),
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildLandscapeContent(bool isHighlighted) {
+    final isTv = DeviceUtils.isTv;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: EdgeInsets.all(isTv ? 9 : 8),
+          decoration: BoxDecoration(
+            color: widget.item.accentColor.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: widget.item.accentColor.withValues(alpha: 0.35),
+              width: 1.2,
+            ),
+          ),
+          child: Icon(
+            widget.item.icon,
+            color: widget.item.accentColor,
+            size: isTv ? 24 : 22,
+          ),
+        ),
+        SizedBox(width: isTv ? 12 : 10),
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                widget.item.title,
+                style: TextStyle(
+                  fontSize: isTv ? 15 : 14,
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFFF5F8FC),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 1),
+              Text(
+                widget.item.subtitle,
+                style: TextStyle(
+                  fontSize: isTv ? 11 : 10,
+                  color: const Color(0xFF94A3B8),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPortraitContent(bool isHighlighted) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: widget.item.accentColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: widget.item.accentColor.withValues(alpha: 0.3),
+              width: 1,
+            ),
+          ),
+          child: Icon(
+            widget.item.icon,
+            color: widget.item.accentColor,
+            size: 22,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                widget.item.title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFF5F8FC),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 1),
+              Text(
+                widget.item.subtitle,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF94A3B8),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

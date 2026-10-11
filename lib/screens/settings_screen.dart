@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/xtream_account.dart';
-import '../services/settings_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
-import '../widgets/live_player_view.dart';
 import 'playlists_screen.dart';
 import 'xtream_login_screen.dart';
 
@@ -26,7 +24,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final SettingsService _settings = SettingsService.instance;
   bool _isRefreshingCatalog = false;
   DateTime? _lastUpdatedTime;
 
@@ -167,18 +164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 28),
 
-          // 2. PREFERÊNCIAS DE REPRODUÇÃO
-          _buildSectionHeader('Preferências de Reprodução', Icons.play_circle_outline_rounded, accent),
-          const SizedBox(height: 12),
-          _buildDefaultAspectRatioCard(accent),
-          const SizedBox(height: 12),
-          _buildResumePlaybackCard(accent),
-          const SizedBox(height: 12),
-          _buildAutoPlayNextEpisodeCard(accent),
-
-          const SizedBox(height: 28),
-
-          // 3. ARMAZENAMENTO E CATÁLOGO
+          // 2. ARMAZENAMENTO E CATÁLOGO
           _buildSectionHeader('Armazenamento e Catálogo', Icons.storage_rounded, accent),
           const SizedBox(height: 12),
           _buildCatalogCacheCard(accent),
@@ -326,150 +312,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildDefaultAspectRatioCard(Color accent) {
-    final isCover = _settings.defaultAspectRatio == LiveVideoFitMode.cover;
-    return _buildCardContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Proporção de Tela Padrão do Player',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Define como o vídeo será ajustado na tela (Original sem cortes ou Preencher tela inteira).',
-            style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: _buildChoiceChip(
-                  label: 'Original (Proporcional)',
-                  icon: Icons.aspect_ratio_rounded,
-                  isSelected: !isCover,
-                  accent: accent,
-                  onTap: () {
-                    setState(() {
-                      _settings.setDefaultAspectRatio(LiveVideoFitMode.contain);
-                    });
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildChoiceChip(
-                  label: 'Preencher (Tela Cheia)',
-                  icon: Icons.fullscreen_rounded,
-                  isSelected: isCover,
-                  accent: accent,
-                  onTap: () {
-                    setState(() {
-                      _settings.setDefaultAspectRatio(LiveVideoFitMode.cover);
-                    });
-                  },
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChoiceChip({
-    required String label,
-    required IconData icon,
-    required bool isSelected,
-    required Color accent,
-    required VoidCallback onTap,
-  }) {
-    return FocusableActionDetector(
-      actions: DeviceUtils.activateAction(onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-          decoration: BoxDecoration(
-            color: isSelected ? accent.withValues(alpha: 0.15) : const Color(0xFF141C33),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected ? accent : const Color(0xFF263352),
-              width: isSelected ? 2 : 1,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: isSelected ? accent : const Color(0xFF94A3B8), size: 18),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    color: isSelected ? accent : const Color(0xFFE2E8F0),
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildResumePlaybackCard(Color accent) {
-    return _buildCardContainer(
-      child: SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text(
-          'Retomar Reprodução Automaticamente',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-        ),
-        subtitle: const Text(
-          'Continua de onde você parou ao abrir filmes ou episódios em andamento.',
-          style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-        ),
-        activeThumbColor: accent,
-        value: _settings.enableResumePlayback,
-        onChanged: (val) {
-          setState(() {
-            _settings.setEnableResumePlayback(val);
-          });
-        },
-      ),
-    );
-  }
-
-  Widget _buildAutoPlayNextEpisodeCard(Color accent) {
-    return _buildCardContainer(
-      child: SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text(
-          'Avanço Automático de Episódios',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
-        ),
-        subtitle: const Text(
-          'Inicia o próximo episódio automaticamente com contagem regressiva ao término.',
-          style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-        ),
-        activeThumbColor: accent,
-        value: _settings.enableAutoPlayNextEpisode,
-        onChanged: (val) {
-          setState(() {
-            _settings.setEnableAutoPlayNextEpisode(val);
-          });
-        },
-      ),
-    );
-  }
-
   Widget _buildCatalogCacheCard(Color accent) {
     final lastUpdatedStr = XtreamCatalogService.formatLastUpdated(_lastUpdatedTime);
 
@@ -594,7 +436,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
-        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Color(0xFFF5F8FC))),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Color(0xFFF5F8FC)),
+          ),
+        ),
       ],
     );
   }

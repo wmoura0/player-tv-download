@@ -202,6 +202,8 @@ class XtreamEpgProgram {
   final String? description;
   final String? start;
   final String? end;
+  final int? startTimestamp;
+  final int? stopTimestamp;
   final bool isNowPlaying;
 
   const XtreamEpgProgram({
@@ -209,6 +211,8 @@ class XtreamEpgProgram {
     this.description,
     this.start,
     this.end,
+    this.startTimestamp,
+    this.stopTimestamp,
     this.isNowPlaying = false,
   });
 
@@ -227,15 +231,32 @@ class XtreamEpgProgram {
       return str;
     }
 
+    int? parseTimestamp(dynamic val) {
+      if (val == null) return null;
+      if (val is int) return val;
+      if (val is num) return val.toInt();
+      final str = val.toString().trim();
+      return int.tryParse(str);
+    }
+
     final rawTitle = decodeField(json['title']);
     final rawDesc = decodeField(json['description']);
     final isNow = json['now_playing'] == 1 || json['now_playing'] == '1';
+
+    final startTs = parseTimestamp(
+      json['start_timestamp'] ?? json['startTimestamp'] ?? json['start_time'],
+    );
+    final stopTs = parseTimestamp(
+      json['stop_timestamp'] ?? json['stopTimestamp'] ?? json['end_timestamp'] ?? json['end_time'],
+    );
 
     return XtreamEpgProgram(
       title: rawTitle.isNotEmpty ? rawTitle : 'Programa sem título',
       description: rawDesc.isNotEmpty ? rawDesc : null,
       start: json['start']?.toString(),
       end: json['end']?.toString(),
+      startTimestamp: startTs,
+      stopTimestamp: stopTs,
       isNowPlaying: isNow,
     );
   }
@@ -245,6 +266,8 @@ class XtreamEpgProgram {
     if (description != null) 'description': description,
     if (start != null) 'start': start,
     if (end != null) 'end': end,
+    if (startTimestamp != null) 'start_timestamp': startTimestamp,
+    if (stopTimestamp != null) 'stop_timestamp': stopTimestamp,
     'now_playing': isNowPlaying ? 1 : 0,
   };
 }

@@ -66,6 +66,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     _updateNextEpisode();
 
     DeviceUtils.setVideoOrientation();
+    DeviceUtils.setKeepScreenOn(true);
 
     if (widget.testController != null) {
       _controller = widget.testController;
@@ -79,6 +80,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
 
   @override
   void dispose() {
+    DeviceUtils.setKeepScreenOn(false);
     _cancelCountdown();
     _progressSaveTimer?.cancel();
     _saveCurrentProgress();

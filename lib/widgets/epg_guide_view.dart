@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/epg_program.dart';
 import '../utils/device_utils.dart';
 
 /// Diálogo/Painel do Guia de Programação (EPG) adaptado para TV e controle remoto.
-class EpgGuideDialog extends StatelessWidget {
+class EpgGuideDialog extends StatefulWidget {
   final String channelName;
   final String? channelLogo;
   final EpgChannelSchedule? schedule;
@@ -32,10 +33,32 @@ class EpgGuideDialog extends StatelessWidget {
   }
 
   @override
+  State<EpgGuideDialog> createState() => _EpgGuideDialogState();
+}
+
+class _EpgGuideDialogState extends State<EpgGuideDialog> {
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Atualiza a cada 15 segundos para atualizar a barra de progresso e transição de programas
+    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     const accent = Color(0xFF00E5FF);
-    final programs = schedule?.programs ?? [];
-    final current = schedule?.currentProgram;
+    final programs = widget.schedule?.programs ?? [];
+    final current = widget.schedule?.currentProgram;
 
     return Dialog(
       backgroundColor: const Color(0xFF0C1220),
@@ -74,7 +97,7 @@ class EpgGuideDialog extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          channelName,
+                          widget.channelName,
                           style: const TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.bold,
@@ -104,38 +127,40 @@ class EpgGuideDialog extends StatelessWidget {
             Expanded(
               child: programs.isEmpty
                   ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.event_busy_rounded,
-                            size: 48,
-                            color: const Color(0xFF64748B).withValues(alpha: 0.6),
-                          ),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Programação indisponível para este canal.',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w500,
-                              color: Color(0xFF94A3B8),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.event_busy_rounded,
+                              size: 48,
+                              color: const Color(0xFF64748B).withValues(alpha: 0.6),
                             ),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'A transmissão ao vivo continua funcionando normalmente.',
-                            style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                          ),
-                        ],
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Programação indisponível para este canal.',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF94A3B8),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'A transmissão ao vivo continua funcionando normalmente.\nNenhum dado de guia (EPG) foi fornecido pelo servidor.',
+                              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
                       ),
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       itemCount: programs.length,
-                      separatorBuilder: (_, index) => const Divider(
-                        color: Color(0xFF1E283D),
-                        height: 1,
-                      ),
+                      separatorBuilder: (_, index) => const SizedBox(height: 6),
                       itemBuilder: (ctx, i) {
                         final prog = programs[i];
                         final isNow = prog == current || prog.isAiringAt();
@@ -146,7 +171,7 @@ class EpgGuideDialog extends StatelessWidget {
                           isNowPlaying: isNow,
                           progress: progress,
                           accentColor: accent,
-                          autofocus: i == 0,
+                          autofocus: isNow || i == 0,
                         );
                       },
                     ),
@@ -185,47 +210,76 @@ class _EpgProgramTileState extends State<_EpgProgramTile> {
     final prog = widget.program;
     final timeStr = prog.formattedTimeRange;
 
+    // Cores e decorações distintas para o programa NO AR
+    final isNow = widget.isNowPlaying;
+    final backgroundColor = _isFocused
+        ? widget.accentColor.withValues(alpha: 0.22)
+        : (isNow ? const Color(0xFF0F2644) : const Color(0xFF111827).withValues(alpha: 0.6));
+
+    final borderColor = _isFocused
+        ? widget.accentColor
+        : (isNow ? widget.accentColor.withValues(alpha: 0.85) : const Color(0xFF1E283D));
+
+    final borderWidth = _isFocused ? 2.0 : (isNow ? 1.6 : 1.0);
+
     return FocusableActionDetector(
       autofocus: widget.autofocus,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       shortcuts: DeviceUtils.dpadSelectShortcuts,
       actions: DeviceUtils.activateAction(() {}),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        margin: const EdgeInsets.symmetric(vertical: 2),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: _isFocused
-              ? widget.accentColor.withValues(alpha: 0.15)
-              : (widget.isNowPlaying
-                  ? const Color(0xFF162138)
-                  : Colors.transparent),
+          color: backgroundColor,
           borderRadius: BorderRadius.circular(10),
-          border: _isFocused
-              ? Border.all(color: widget.accentColor, width: 1.5)
-              : (widget.isNowPlaying
-                  ? Border.all(color: widget.accentColor.withValues(alpha: 0.4), width: 1)
-                  : null),
+          border: Border.all(color: borderColor, width: borderWidth),
+          boxShadow: isNow
+              ? [
+                  BoxShadow(
+                    color: widget.accentColor.withValues(alpha: 0.12),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                if (widget.isNowPlaying) ...[
+                if (isNow) ...[
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                     margin: const EdgeInsets.only(right: 8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE50914),
+                      color: const Color(0xFFEF4444),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text(
-                      'NO AR',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 5,
+                          height: 5,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'NO AR',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -234,8 +288,8 @@ class _EpgProgramTileState extends State<_EpgProgramTile> {
                     timeStr,
                     style: TextStyle(
                       fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: widget.isNowPlaying ? widget.accentColor : const Color(0xFF94A3B8),
+                      fontWeight: isNow ? FontWeight.w700 : FontWeight.w500,
+                      color: isNow ? widget.accentColor : const Color(0xFF94A3B8),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -245,8 +299,8 @@ class _EpgProgramTileState extends State<_EpgProgramTile> {
                     prog.title,
                     style: TextStyle(
                       fontSize: 14,
-                      fontWeight: widget.isNowPlaying ? FontWeight.bold : FontWeight.w500,
-                      color: const Color(0xFFF5F8FC),
+                      fontWeight: isNow ? FontWeight.bold : FontWeight.w500,
+                      color: isNow ? Colors.white : const Color(0xFFE2E8F0),
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -254,25 +308,25 @@ class _EpgProgramTileState extends State<_EpgProgramTile> {
                 ),
               ],
             ),
-            if (widget.isNowPlaying && widget.progress != null) ...[
-              const SizedBox(height: 6),
+            if (isNow && widget.progress != null) ...[
+              const SizedBox(height: 8),
               ClipRRect(
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(3),
                 child: LinearProgressIndicator(
-                  value: widget.progress,
+                  value: widget.progress!.clamp(0.0, 1.0),
                   backgroundColor: const Color(0xFF1E283D),
                   valueColor: AlwaysStoppedAnimation<Color>(widget.accentColor),
-                  minHeight: 3,
+                  minHeight: 4,
                 ),
               ),
             ],
             if (prog.description != null && prog.description!.isNotEmpty) ...[
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               Text(
                 prog.description!,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: Color(0xFF94A3B8),
+                  color: isNow ? const Color(0xFFCBD5E1) : const Color(0xFF94A3B8),
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,

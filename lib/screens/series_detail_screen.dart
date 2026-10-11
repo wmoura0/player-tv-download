@@ -79,6 +79,18 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     final isFav = await FavoritesService.instance.toggleFavorite(item);
     if (mounted) {
       setState(() => _isFavorite = isFav);
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isFav ? 'Série adicionada aos favoritos' : 'Série removida dos favoritos',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          duration: const Duration(seconds: 2),
+          backgroundColor: isFav ? const Color(0xFF1E88E5) : const Color(0xFF424242),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -212,6 +224,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
+                    autofocus: true,
                     onPressed: () {
                       Navigator.of(ctx).pop();
                       _startPlayback(episode, initialPosition: prog.position);
@@ -282,33 +295,46 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0F1523),
-        title: Text(
-          widget.series.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFF0F4F8),
+    return Shortcuts(
+      shortcuts: DeviceUtils.dpadChannelShortcuts,
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FavoriteToggleIntent: CallbackAction<FavoriteToggleIntent>(
+            onInvoke: (_) {
+              _toggleFavorite();
+              return null;
+            },
+          ),
+        },
+        child: Scaffold(
+          backgroundColor: const Color(0xFF090D14),
+          appBar: AppBar(
+            backgroundColor: const Color(0xFF0F1523),
+            title: Text(
+              widget.series.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFFF0F4F8),
+              ),
+            ),
+            actions: [
+              IconButton(
+                tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
+                icon: Icon(
+                  _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+                  color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+                ),
+                onPressed: _toggleFavorite,
+              ),
+            ],
+          ),
+          body: SafeArea(
+            child: _buildBody(),
           ),
         ),
-        actions: [
-          IconButton(
-            tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
-            icon: Icon(
-              _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-              color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
-            ),
-            onPressed: _toggleFavorite,
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: _buildBody(),
       ),
     );
   }
@@ -529,41 +555,9 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
                 '•  $genre',
                 style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
               ),
-            InkWell(
-              onTap: _toggleFavorite,
-              borderRadius: BorderRadius.circular(4),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: _isFavorite
-                      ? const Color(0xFFEF5350).withValues(alpha: 0.2)
-                      : const Color(0xFF1E283D),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFF37474F),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                      size: 13,
-                      color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      _isFavorite ? 'Favorito' : 'Favoritar',
-                      style: TextStyle(
-                        color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            _DetailFavoriteButton(
+              isFavorite: _isFavorite,
+              onToggle: _toggleFavorite,
             ),
           ],
         ),
@@ -681,23 +675,11 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
           final isSelected = season.seasonNumber == _selectedSeasonNumber;
           return Padding(
             padding: const EdgeInsets.only(right: 8.0),
-            child: ChoiceChip(
-              label: Text(season.name),
-              selected: isSelected,
-              selectedColor: const Color(0xFF1E88E5),
-              backgroundColor: const Color(0xFF141C2A),
-              labelStyle: TextStyle(
-                color: isSelected ? Colors.white : const Color(0xFFB0BEC5),
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                fontSize: 13,
-              ),
-              side: BorderSide(
-                color: isSelected ? const Color(0xFF00E5FF) : const Color(0xFF263238),
-              ),
-              onSelected: (selected) {
-                if (selected) {
-                  setState(() => _selectedSeasonNumber = season.seasonNumber);
-                }
+            child: _SeasonChip(
+              season: season,
+              isSelected: isSelected,
+              onSelected: () {
+                setState(() => _selectedSeasonNumber = season.seasonNumber);
               },
             ),
           );
@@ -728,128 +710,336 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       itemBuilder: (context, index) {
         final ep = episodes[index];
         final prog = _episodesProgress[ep.id];
-        final hasProgress = prog != null && prog.canResume;
-        final progressFraction = (hasProgress && prog.duration.inMilliseconds > 0)
-            ? (prog.position.inMilliseconds / prog.duration.inMilliseconds).clamp(0.0, 1.0)
-            : 0.0;
 
-        return InkWell(
+        return _EpisodeTile(
+          episode: ep,
+          progress: prog,
           onTap: () => _onEpisodeTap(ep),
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF121824),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: hasProgress ? const Color(0xFF1E88E5) : const Color(0xFF1C2434),
-                width: 1,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    // Badge do número do episódio
-                    Container(
-                      width: 36,
-                      height: 36,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C2638),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        'E${ep.episodeNum}',
-                        style: const TextStyle(
-                          color: Color(0xFF00E5FF),
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-
-                    // Título e Duração
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            ep.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Color(0xFFF0F4F8),
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              if (ep.duration != null && ep.duration!.isNotEmpty) ...[
-                                Text(
-                                  ep.duration!,
-                                  style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
-                                ),
-                                const SizedBox(width: 8),
-                              ],
-                              if (hasProgress) ...[
-                                Text(
-                                  '•  ${PlaybackProgressService.formatDuration(prog.position)} assistido',
-                                  style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Ícone de Play
-                    const Icon(
-                      Icons.play_circle_fill_rounded,
-                      color: Color(0xFFE50914),
-                      size: 32,
-                    ),
-                  ],
-                ),
-
-                // Barra de progresso visual se tiver progresso salvo
-                if (hasProgress) ...[
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(2),
-                    child: LinearProgressIndicator(
-                      value: progressFraction,
-                      minHeight: 3,
-                      backgroundColor: Colors.white12,
-                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE50914)),
-                    ),
-                  ),
-                ],
-
-                // Sinopse do episódio (se disponível)
-                if (ep.plot != null && ep.plot!.trim().isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    ep.plot!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFF78909C),
-                      fontSize: 12,
-                      height: 1.3,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
         );
       },
+    );
+  }
+}
+
+class _DetailFavoriteButton extends StatefulWidget {
+  final bool isFavorite;
+  final VoidCallback onToggle;
+
+  const _DetailFavoriteButton({
+    required this.isFavorite,
+    required this.onToggle,
+  });
+
+  @override
+  State<_DetailFavoriteButton> createState() => _DetailFavoriteButtonState();
+}
+
+class _DetailFavoriteButtonState extends State<_DetailFavoriteButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onToggle();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onToggle,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: widget.isFavorite
+                ? const Color(0xFFEF5350).withValues(alpha: 0.25)
+                : (_isFocused ? const Color(0xFF1E283D) : const Color(0xFF141C2A)),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _isFocused
+                  ? const Color(0xFF00E5FF)
+                  : (widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF37474F)),
+              width: 2.0,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+                size: 14,
+                color: widget.isFavorite
+                    ? const Color(0xFFEF5350)
+                    : (_isFocused ? const Color(0xFF00E5FF) : const Color(0xFF8A99AD)),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                widget.isFavorite ? 'Favorito' : 'Favoritar',
+                style: TextStyle(
+                  color: widget.isFavorite
+                      ? const Color(0xFFEF5350)
+                      : (_isFocused ? const Color(0xFF00E5FF) : const Color(0xFF8A99AD)),
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeasonChip extends StatefulWidget {
+  final XtreamSeriesSeason season;
+  final bool isSelected;
+  final VoidCallback onSelected;
+
+  const _SeasonChip({
+    required this.season,
+    required this.isSelected,
+    required this.onSelected,
+  });
+
+  @override
+  State<_SeasonChip> createState() => _SeasonChipState();
+}
+
+class _SeasonChipState extends State<_SeasonChip> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onSelected();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onSelected,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: widget.isSelected
+                ? const Color(0xFF1E88E5)
+                : (_isFocused ? const Color(0xFF1C2638) : const Color(0xFF141C2A)),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _isFocused
+                  ? const Color(0xFF00E5FF)
+                  : (widget.isSelected ? const Color(0xFF00E5FF) : const Color(0xFF263238)),
+              width: 2.0,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Text(
+            widget.season.name,
+            style: TextStyle(
+              color: widget.isSelected || _isFocused ? Colors.white : const Color(0xFFB0BEC5),
+              fontWeight: widget.isSelected || _isFocused ? FontWeight.bold : FontWeight.normal,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EpisodeTile extends StatefulWidget {
+  final XtreamSeriesEpisode episode;
+  final PlaybackProgress? progress;
+  final VoidCallback onTap;
+
+  const _EpisodeTile({
+    required this.episode,
+    required this.progress,
+    required this.onTap,
+  });
+
+  @override
+  State<_EpisodeTile> createState() => _EpisodeTileState();
+}
+
+class _EpisodeTileState extends State<_EpisodeTile> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final ep = widget.episode;
+    final prog = widget.progress;
+    final hasProgress = prog != null && prog.canResume;
+    final progressFraction = (hasProgress && prog.duration.inMilliseconds > 0)
+        ? (prog.position.inMilliseconds / prog.duration.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
+
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onTap();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFF1E283D) : const Color(0xFF121824),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: _isFocused
+                  ? const Color(0xFF00E5FF)
+                  : (hasProgress ? const Color(0xFF1E88E5) : const Color(0xFF1C2434)),
+              width: 2.0,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  // Badge do número do episódio
+                  Container(
+                    width: 38,
+                    height: 38,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: _isFocused
+                          ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
+                          : const Color(0xFF1C2638),
+                      borderRadius: BorderRadius.circular(8),
+                      border: _isFocused ? Border.all(color: const Color(0xFF00E5FF), width: 1.5) : null,
+                    ),
+                    child: Text(
+                      'E${ep.episodeNum}',
+                      style: TextStyle(
+                        color: _isFocused ? Colors.white : const Color(0xFF00E5FF),
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Título e Duração
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          ep.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            if (ep.duration != null && ep.duration!.isNotEmpty) ...[
+                              Text(
+                                ep.duration!,
+                                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            if (hasProgress) ...[
+                              Text(
+                                '•  ${PlaybackProgressService.formatDuration(prog.position)} assistido',
+                                style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Ícone de Play
+                  Icon(
+                    Icons.play_circle_fill_rounded,
+                    color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFE50914),
+                    size: 32,
+                  ),
+                ],
+              ),
+
+              // Barra de progresso visual se tiver progresso salvo
+              if (hasProgress) ...[
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: progressFraction,
+                    minHeight: 3,
+                    backgroundColor: Colors.white12,
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE50914)),
+                  ),
+                ),
+              ],
+
+              // Sinopse do episódio (se disponível)
+              if (ep.plot != null && ep.plot!.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  ep.plot!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 12,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
