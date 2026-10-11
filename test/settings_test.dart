@@ -112,6 +112,10 @@ void main() {
       expect(find.text('Gerenciar Listas M3U'), findsOneWidget);
       expect(find.text('Armazenamento e Catálogo'), findsOneWidget);
       expect(find.text('Limpar Cache'), findsOneWidget);
+      expect(find.text('Preferências de Conteúdo'), findsOneWidget);
+      expect(find.text('Gerenciar Categorias Ocultas'), findsOneWidget);
+
+      await tester.scrollUntilVisible(find.text('Sobre o Aplicativo'), 300);
       expect(find.text('Sobre o Aplicativo'), findsOneWidget);
       expect(find.text('Versão 1.0.1 (Build 2)'), findsOneWidget);
     });

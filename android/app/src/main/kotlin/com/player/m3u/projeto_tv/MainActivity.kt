@@ -83,6 +83,21 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
+    private var isKeepScreenOnEnabled: Boolean = false
+
+    private fun applyKeepScreenOn(enable: Boolean) {
+        try {
+            if (enable) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = true
+            } else {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = false
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).apply {
@@ -93,11 +108,8 @@ class MainActivity : FlutterActivity() {
                     }
                     "keepScreenOn" -> {
                         val enable = call.argument<Boolean>("enable") ?: true
-                        if (enable) {
-                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                        } else {
-                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                        }
+                        isKeepScreenOnEnabled = enable
+                        applyKeepScreenOn(enable)
                         result.success(true)
                     }
                     "isPipSupported" -> {
@@ -133,6 +145,20 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (isKeepScreenOnEnabled) {
+            applyKeepScreenOn(true)
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && isKeepScreenOnEnabled) {
+            applyKeepScreenOn(true)
         }
     }
 

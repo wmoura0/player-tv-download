@@ -55,6 +55,12 @@ class PlayerStabilityManager {
   DateTime _bufferingStartTime = DateTime.now();
   bool _isBuffering = false;
 
+  bool _isUserPaused = false;
+  bool get isUserPaused => _isUserPaused;
+  void setUserPaused(bool paused) {
+    _isUserPaused = paused;
+  }
+
   /// Inicia monitoramento de timeout na abertura do stream
   void startOpenWatchdog(VoidCallback onTimeoutAction) {
     _openTimeoutTimer?.cancel();
@@ -72,8 +78,8 @@ class PlayerStabilityManager {
   }
 
   /// Inicia monitoramento ativo de travamento/congelamento durante reprodução.
-  /// Para transmissões ao vivo (`isLive: true`), tolera variações e não utiliza
-  /// a posição estática da timeline para forçar reinícios indevidos.
+  /// Detecta interrupções de servidor (STATE_ENDED / socket drop), buffering estagnado
+  /// e congelamento de posição tanto em canais ao vivo quanto em VOD.
   void startStallMonitoring(VideoPlayerController controller, {bool? isLive}) {
     _stallCheckTimer?.cancel();
     _lastPosition = controller.value.position;
@@ -85,34 +91,70 @@ class PlayerStabilityManager {
 
     _stallCheckTimer = Timer.periodic(stallDetectionInterval, (_) {
       if (_isDisposed || !controller.value.isInitialized) return;
+      if (_isUserPaused) return;
 
       final val = controller.value;
       final now = DateTime.now();
 
-      // Monitoramento de buffering prolongado com alta tolerância (25s) para variações de rede
+      // 1. Falha reportada pelo controller
+      if (val.hasError) {
+        final safeErr = UrlSanitizer.sanitizeErrorMessage(
+          val.errorDescription ?? 'Erro interno de reprodução',
+        );
+        debugPrint('[PLAYER STABILITY] Erro reportado pelo reprodutor: $safeErr');
+        _handleStall('Erro na transmissão: $safeErr');
+        return;
+      }
+
+      // 2. Monitoramento de buffering prolongado com tolerância configurada
       if (val.isBuffering) {
         if (!_isBuffering) {
           _isBuffering = true;
           _bufferingStartTime = now;
+          debugPrint('[PLAYER STABILITY] Início de buffering detectado.');
         } else if (now.difference(_bufferingStartTime) > maxBufferingDuration) {
           debugPrint('[PLAYER STABILITY] Buffering estagnado por mais de ${maxBufferingDuration.inSeconds} segundos.');
           _handleStall('Buffering contínuo estagnado');
           return;
         }
       } else {
-        _isBuffering = false;
+        if (_isBuffering) {
+          final dur = now.difference(_bufferingStartTime).inMilliseconds;
+          debugPrint('[PLAYER STABILITY] Buffering finalizado com sucesso (${dur}ms).');
+          _isBuffering = false;
+        }
       }
 
-      // Em canais ao vivo (live streams), o relógio de posição pode ser constante (0:00) ou
-      // atrelado a chunks temporários da playlist HLS/TS. Não usamos a posição para disparar
-      // reconexões se o player estiver tocando normalmente sem buffering.
-      if (!live && val.isPlaying && !val.isBuffering) {
+      // 3. Detecção de encerramento inesperado do stream ao vivo
+      // Se o canal estava tocando e repentinamente parou sem o usuário pausar,
+      // indica que o servidor encerrou a conexão TCP (ex: timeout de 15 minutos do proxy IPTV)
+      if (live && !val.isPlaying && !val.isBuffering && !_isUserPaused) {
+        debugPrint('[PLAYER STABILITY] Transmissão ao vivo interrompida inesperadamente pelo servidor (STATE_ENDED/disconnect).');
+        _handleStall('Conexão com a transmissão ao vivo encerrada');
+        return;
+      }
+
+      // 4. Detecção de congelamento de frames / estagnação de posição
+      if (val.isPlaying && !val.isBuffering && !_isUserPaused) {
         if (val.position != _lastPosition) {
           _lastPosition = val.position;
           _lastPositionAdvanceTime = now;
-        } else if (now.difference(_lastPositionAdvanceTime) > maxStallDuration) {
-          debugPrint('[PLAYER STABILITY] Reprodução congelada por mais de ${maxStallDuration.inSeconds} segundos.');
-          _handleStall('Reprodução congelada');
+          // Reseta retries se a reprodução avançar estavelmente por mais de 10s
+          if (_retryCount > 0 && now.difference(_lastRetryTime) > const Duration(seconds: 10)) {
+            debugPrint('[PLAYER STABILITY] Transmissão estabilizada. Resetando contagem de tentativas.');
+            _retryCount = 0;
+            _lastRetryReason = null;
+          }
+        } else {
+          final stallDuration = now.difference(_lastPositionAdvanceTime);
+          final timeout = (live && val.position == Duration.zero)
+              ? const Duration(seconds: 25)
+              : maxStallDuration;
+          if (stallDuration > timeout) {
+            debugPrint('[PLAYER STABILITY] Reprodução congelada por mais de ${stallDuration.inSeconds} segundos.');
+            _handleStall('Reprodução congelada');
+            return;
+          }
         }
       }
     });
@@ -130,10 +172,13 @@ class PlayerStabilityManager {
   }
 
   /// Tenta recuperação suave sem desmontar o controlador.
-  /// Se o controlador for um stream HLS ao vivo com janela de timeline,
-  /// posiciona na borda mais recente (live edge) para evitar reprisar trechos antigos.
+  /// Para streams ao vivo com conexão encerrada pelo servidor, play() simples
+  /// não recria o socket TCP; nestes casos, retorna false para forçar reinicialização limpa.
   Future<bool> attemptSoftRecovery(VideoPlayerController? controller) async {
     if (controller == null || _isDisposed || !controller.value.isInitialized || controller.value.hasError) {
+      return false;
+    }
+    if (isLiveStream && !controller.value.isPlaying) {
       return false;
     }
     try {
@@ -141,7 +186,7 @@ class PlayerStabilityManager {
         await controller.seekTo(controller.value.duration);
       }
       await controller.play();
-      return true;
+      return controller.value.isPlaying;
     } catch (e) {
       debugPrint('[PLAYER STABILITY] Falha na recuperação suave: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
       return false;

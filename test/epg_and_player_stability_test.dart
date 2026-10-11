@@ -7,6 +7,7 @@ import 'package:projeto_tv/models/epg_program.dart';
 import 'package:projeto_tv/services/epg_service.dart';
 import 'package:projeto_tv/services/player_stability_manager.dart';
 import 'package:projeto_tv/services/xmltv_parser.dart';
+import 'package:projeto_tv/utils/device_utils.dart';
 import 'package:projeto_tv/widgets/epg_guide_view.dart';
 
 void main() {
@@ -299,6 +300,46 @@ void main() {
       expect(result, isFalse);
 
       manager.dispose();
+    });
+
+    test('setUserPaused altera o estado de pausa do usuário corretamente', () {
+      final manager = PlayerStabilityManager(
+        onReconnectRequest: (count) async {},
+      );
+
+      expect(manager.isUserPaused, isFalse);
+      manager.setUserPaused(true);
+      expect(manager.isUserPaused, isTrue);
+      manager.setUserPaused(false);
+      expect(manager.isUserPaused, isFalse);
+
+      manager.dispose();
+    });
+  });
+
+  group('DeviceUtils Screen Keep Alive Tests', () {
+    setUp(() {
+      DeviceUtils.resetScreenKeepAliveForTesting();
+    });
+
+    tearDown(() {
+      DeviceUtils.resetScreenKeepAliveForTesting();
+    });
+
+    test('updateScreenKeepAlive e setKeepScreenOn gerenciam o estado ativo da tela', () async {
+      expect(DeviceUtils.isScreenKeepOnActive, isFalse);
+
+      await DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      expect(DeviceUtils.isScreenKeepOnActive, isTrue);
+
+      await DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
+      expect(DeviceUtils.isScreenKeepOnActive, isFalse);
+
+      await DeviceUtils.setKeepScreenOn(true);
+      expect(DeviceUtils.isScreenKeepOnActive, isTrue);
+
+      await DeviceUtils.setKeepScreenOn(false);
+      expect(DeviceUtils.isScreenKeepOnActive, isFalse);
     });
   });
 

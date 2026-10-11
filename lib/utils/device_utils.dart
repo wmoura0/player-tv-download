@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -90,13 +91,66 @@ class DeviceUtils {
     await setNormalOrientation(context: context, isTv: isTv);
   }
 
+  static bool _isScreenKeepOnActive = false;
+  static Timer? _screenKeepOnReleaseTimer;
+
+  /// Retorna se o bloqueio de suspensão (KEEP_SCREEN_ON) está ativo.
+  static bool get isScreenKeepOnActive => _isScreenKeepOnActive;
+
+  /// Atualiza o bloqueio de suspensão da tela de forma coordenada.
+  /// Se [shouldKeepOn] for `true`, cancela qualquer liberação pendente e assegura a tela ativa.
+  /// Se [shouldKeepOn] for `false`, utiliza um período de tolerância ([gracePeriod]) para não
+  /// desativar acidentalmente a tela durante transições (como troca de canais ou alternância de tela cheia),
+  /// a menos que [immediate] seja `true` (ex: fechar player ou sair do app).
+  static Future<void> updateScreenKeepAlive({
+    required bool shouldKeepOn,
+    bool immediate = true,
+    Duration gracePeriod = const Duration(seconds: 8),
+  }) async {
+    if (shouldKeepOn) {
+      _screenKeepOnReleaseTimer?.cancel();
+      _screenKeepOnReleaseTimer = null;
+      if (!_isScreenKeepOnActive) {
+        _isScreenKeepOnActive = true;
+        debugPrint('[DEVICE] Bloqueio de suspensão da tela ativado (KEEP_SCREEN_ON = true).');
+        try {
+          await _deviceChannel.invokeMethod('keepScreenOn', {'enable': true});
+        } catch (_) {}
+      }
+    } else {
+      if (immediate) {
+        _screenKeepOnReleaseTimer?.cancel();
+        _screenKeepOnReleaseTimer = null;
+        if (_isScreenKeepOnActive) {
+          _isScreenKeepOnActive = false;
+          debugPrint('[DEVICE] Bloqueio de suspensão da tela liberado imediatamente (KEEP_SCREEN_ON = false).');
+          try {
+            await _deviceChannel.invokeMethod('keepScreenOn', {'enable': false});
+          } catch (_) {}
+        }
+      } else if (_isScreenKeepOnActive && _screenKeepOnReleaseTimer == null) {
+        _screenKeepOnReleaseTimer = Timer(gracePeriod, () async {
+          _screenKeepOnReleaseTimer = null;
+          _isScreenKeepOnActive = false;
+          debugPrint('[DEVICE] Bloqueio de suspensão liberado após período de tolerância (KEEP_SCREEN_ON = false).');
+          try {
+            await _deviceChannel.invokeMethod('keepScreenOn', {'enable': false});
+          } catch (_) {}
+        });
+      }
+    }
+  }
+
   /// Mantém a tela ligada durante a reprodução de vídeo para impedir bloqueio acidental.
   static Future<void> setKeepScreenOn(bool enable) async {
-    try {
-      await _deviceChannel.invokeMethod('keepScreenOn', {'enable': enable});
-    } catch (_) {
-      // Ignora falhas em ambientes sem o plugin nativo (ex: testes, desktop)
-    }
+    await updateScreenKeepAlive(shouldKeepOn: enable, immediate: !enable);
+  }
+
+  @visibleForTesting
+  static void resetScreenKeepAliveForTesting() {
+    _screenKeepOnReleaseTimer?.cancel();
+    _screenKeepOnReleaseTimer = null;
+    _isScreenKeepOnActive = false;
   }
 
   /// Verifica se o dispositivo possui suporte nativo a Picture-in-Picture (PiP).

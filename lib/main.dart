@@ -12,6 +12,7 @@ import 'screens/vod_detail_screen.dart';
 import 'screens/vod_player_screen.dart';
 import 'screens/xtream_catalog_screen.dart';
 import 'screens/xtream_login_screen.dart';
+import 'services/hidden_categories_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
@@ -21,6 +22,7 @@ import 'utils/device_utils.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SettingsService.instance.loadSettings();
+  await HiddenCategoriesService.instance.init();
   await DeviceUtils.init();
   await DeviceUtils.setNormalOrientation();
   runApp(const PlayerTvApp());

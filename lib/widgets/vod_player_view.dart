@@ -67,13 +67,15 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   bool _isDraggingSlider = false;
   double _dragSliderValue = 0.0;
 
-  // Variáveis para controle de avanço e retrocesso contínuo (hold seek)
+  // Variáveis para controle de avanço e retrocesso contínuo fluido (active ticker)
   bool _isContinuousSeeking = false;
   int _continuousSeekTargetMs = 0;
   int _continuousSeekDeltaSeconds = 0;
-  Timer? _keyHoldTimer;
-  Timer? _keyReleaseDebounceTimer;
-  int _repeatCount = 0;
+  int _seekDirection = 0; // +1 = avanço, -1 = retrocesso
+  Timer? _initialHoldTimer;
+  Timer? _continuousSeekTicker;
+  Timer? _inactivityWatchdogTimer;
+  DateTime? _seekStartTime;
 
   @override
   void initState() {
@@ -84,8 +86,9 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   @override
   void dispose() {
     _controlsTimer?.cancel();
-    _keyHoldTimer?.cancel();
-    _keyReleaseDebounceTimer?.cancel();
+    _initialHoldTimer?.cancel();
+    _continuousSeekTicker?.cancel();
+    _inactivityWatchdogTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -126,17 +129,15 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     final key = event.logicalKey;
 
-    // 1. Processa KeyUpEvent: se soltar antes do tempo de hold, executa toque rápido (+/-10s).
-    // Se soltar durante seek contínuo, finaliza e envia um único comando de seek ao player.
+    // 1. Processa KeyUpEvent: se soltar antes do tempo de hold, executa salto curto (+/-10s).
+    // Se soltar durante seek contínuo, finaliza e envia um único comando seekTo ao player.
     if (event is KeyUpEvent) {
       if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-        _keyReleaseDebounceTimer?.cancel();
         if (_isContinuousSeeking) {
           _commitContinuousSeek();
           return KeyEventResult.handled;
-        } else if (_keyHoldTimer != null) {
-          _keyHoldTimer?.cancel();
-          _keyHoldTimer = null;
+        } else if (_initialHoldTimer != null) {
+          _cancelHoldTimer();
           final isForward = key == LogicalKeyboardKey.arrowRight;
           widget.onSeekRelative?.call(isForward ? 10 : -10);
           _startControlsTimer();
@@ -146,117 +147,168 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.ignored;
     }
 
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-
     // 2. Play/Pause
     if (key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.space ||
         key == LogicalKeyboardKey.mediaPlayPause) {
-      widget.onTogglePlayPause();
-      setState(() => _showControls = true);
-      _startControlsTimer();
+      if (event is KeyDownEvent) {
+        widget.onTogglePlayPause();
+        setState(() => _showControls = true);
+        _startControlsTimer();
+      }
       return KeyEventResult.handled;
     }
 
     // 3. Voltar
     if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
-      widget.onBack?.call();
+      if (event is KeyDownEvent) {
+        widget.onBack?.call();
+      }
       return KeyEventResult.handled;
     }
 
     // 4. Avanço e retrocesso contínuo no controle remoto (Hold / Repeat)
     if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
       final isForward = key == LogicalKeyboardKey.arrowRight;
+      final newDir = isForward ? 1 : -1;
       setState(() => _showControls = true);
+      _controlsTimer?.cancel();
 
-      if (!_isContinuousSeeking) {
-        if (_keyHoldTimer == null) {
-          // Primeiro toque: inicializa o timer de detecção de hold (300ms)
-          _repeatCount = 1;
-          _keyHoldTimer = Timer(const Duration(milliseconds: 300), () {
-            if (mounted) {
-              _startContinuousSeeking(isForward);
-            }
-          });
-        } else {
-          // Tecla repetida rapidamente (hardware repeat): entra imediatamente em seek contínuo
-          _keyHoldTimer?.cancel();
-          _startContinuousSeeking(isForward);
+      // Mantém o watchdog de inatividade atualizado (750ms de tolerância contra remotes sem KeyUp)
+      _resetInactivityWatchdog();
+
+      if (_isContinuousSeeking) {
+        if (_seekDirection != newDir) {
+          _seekDirection = newDir;
         }
-      } else {
-        // Já está em seek contínuo: incrementa posição com aceleração progressiva
-        _stepContinuousSeek(isForward);
+        return KeyEventResult.handled;
       }
+
+      // Se o sistema já enviar KeyRepeatEvent diretamente, entra imediatamente em continuous seeking
+      if (event is KeyRepeatEvent) {
+        _cancelHoldTimer();
+        _startContinuousSeeking(newDir);
+        return KeyEventResult.handled;
+      }
+
+      // Primeiro KeyDownEvent
+      if (event is KeyDownEvent) {
+        _seekDirection = newDir;
+        _cancelHoldTimer();
+        _initialHoldTimer = Timer(const Duration(milliseconds: 250), () {
+          if (mounted) {
+            _startContinuousSeeking(newDir);
+          }
+        });
+        return KeyEventResult.handled;
+      }
+
       return KeyEventResult.handled;
     }
 
-    setState(() => _showControls = true);
-    _startControlsTimer();
+    if (event is KeyDownEvent) {
+      setState(() => _showControls = true);
+      _startControlsTimer();
+    }
     return KeyEventResult.ignored;
   }
 
-  void _startContinuousSeeking(bool isForward) {
-    _keyHoldTimer?.cancel();
-    _keyHoldTimer = null;
+  void _startContinuousSeeking(int direction) {
+    _cancelHoldTimer();
+    _seekDirection = direction;
     final pos = widget.controller?.value.position.inMilliseconds ?? 0;
     _continuousSeekTargetMs = pos;
     _continuousSeekDeltaSeconds = 0;
     _isContinuousSeeking = true;
-    _stepContinuousSeek(isForward);
+    _seekStartTime = DateTime.now();
+
+    _continuousSeekTicker?.cancel();
+    _continuousSeekTicker = Timer.periodic(const Duration(milliseconds: 80), (_) {
+      if (!mounted) return;
+      _tickContinuousSeek();
+    });
+
+    _tickContinuousSeek();
   }
 
-  void _stepContinuousSeek(bool isForward) {
-    _repeatCount++;
-    int step = 5;
-    if (_repeatCount > 15) {
-      step = 30;
-    } else if (_repeatCount > 8) {
-      step = 15;
-    } else if (_repeatCount > 3) {
-      step = 10;
+  void _tickContinuousSeek() {
+    if (!_isContinuousSeeking) return;
+
+    final elapsedMs = _seekStartTime != null
+        ? DateTime.now().difference(_seekStartTime!).inMilliseconds
+        : 0;
+
+    // Curva de aceleração progressiva rápida e perceptível
+    int stepSec;
+    if (elapsedMs > 5000) {
+      stepSec = 60;
+    } else if (elapsedMs > 2500) {
+      stepSec = 30;
+    } else if (elapsedMs > 1000) {
+      stepSec = 15;
+    } else {
+      stepSec = 5;
     }
 
-    final delta = isForward ? step : -step;
+    final delta = _seekDirection * stepSec;
     _continuousSeekDeltaSeconds += delta;
 
     final totalMs = widget.controller?.value.duration.inMilliseconds ?? 0;
-    _continuousSeekTargetMs =
-        (_continuousSeekTargetMs + delta * 1000).clamp(0, totalMs > 0 ? totalMs : 0);
-
-    _keyReleaseDebounceTimer?.cancel();
-    // Fallback de liberação caso o dispositivo Fire TV não envie KeyUpEvent
-    _keyReleaseDebounceTimer = Timer(const Duration(milliseconds: 380), () {
-      if (mounted) {
-        _commitContinuousSeek();
-      }
-    });
+    final maxMs = totalMs > 0 ? totalMs : 0;
+    _continuousSeekTargetMs = (_continuousSeekTargetMs + delta * 1000).clamp(0, maxMs);
 
     setState(() {});
   }
 
+  void _resetInactivityWatchdog() {
+    _inactivityWatchdogTimer?.cancel();
+    _inactivityWatchdogTimer = Timer(const Duration(milliseconds: 750), () {
+      if (mounted && _isContinuousSeeking) {
+        _commitContinuousSeek();
+      }
+    });
+  }
+
+  void _cancelHoldTimer() {
+    _initialHoldTimer?.cancel();
+    _initialHoldTimer = null;
+  }
+
   void _commitContinuousSeek() {
-    _keyReleaseDebounceTimer?.cancel();
-    _keyHoldTimer?.cancel();
-    _keyHoldTimer = null;
+    _inactivityWatchdogTimer?.cancel();
+    _inactivityWatchdogTimer = null;
+    _continuousSeekTicker?.cancel();
+    _continuousSeekTicker = null;
+    _cancelHoldTimer();
 
     if (!_isContinuousSeeking) return;
 
     final target = Duration(milliseconds: _continuousSeekTargetMs);
+    final deltaSecs = _continuousSeekDeltaSeconds;
     setState(() {
       _isContinuousSeeking = false;
-      _repeatCount = 0;
+      _continuousSeekDeltaSeconds = 0;
+      _seekStartTime = null;
     });
 
     final c = widget.controller;
     if (c != null && c.value.isInitialized) {
       c.seekTo(target);
-      // Retoma imediatamente da posição final escolhida
       c.play();
     } else {
-      widget.onSeekRelative?.call(_continuousSeekDeltaSeconds);
+      widget.onSeekRelative?.call(deltaSecs);
     }
     _startControlsTimer();
+  }
+
+  String _formatSeekDelta(int seconds) {
+    final sign = seconds >= 0 ? '+' : '-';
+    final abs = seconds.abs();
+    if (abs < 60) return '$sign${abs}s';
+    final m = abs ~/ 60;
+    final s = abs % 60;
+    return s > 0 ? '$sign${m}m ${s}s' : '$sign${m}m';
   }
 
   @override
@@ -267,6 +319,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
     return Focus(
       focusNode: _focusNode,
+      autofocus: true,
       onKeyEvent: _handleKeyEvent,
       child: GestureDetector(
         onTap: _toggleControls,
@@ -678,7 +731,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  '${_continuousSeekDeltaSeconds >= 0 ? "+" : ""}${_continuousSeekDeltaSeconds}s  ➜  ${PlaybackProgressService.formatDuration(Duration(milliseconds: _continuousSeekTargetMs))}',
+                  '${_formatSeekDelta(_continuousSeekDeltaSeconds)}  ➜  ${PlaybackProgressService.formatDuration(Duration(milliseconds: _continuousSeekTargetMs))}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,

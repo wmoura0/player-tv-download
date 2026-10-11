@@ -83,14 +83,40 @@ class _LivePlayerViewState extends State<LivePlayerView> {
     super.initState();
     _currentFitMode = widget.fitMode;
     _startControlsTimer();
-    DeviceUtils.setKeepScreenOn(true);
+    _attachControllerListener(widget.controller);
+    if (widget.controller?.value.isPlaying ?? false) {
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
+  }
+
+  void _attachControllerListener(VideoPlayerController? controller) {
+    controller?.addListener(_onControllerStateChanged);
+  }
+
+  void _detachControllerListener(VideoPlayerController? controller) {
+    controller?.removeListener(_onControllerStateChanged);
+  }
+
+  void _onControllerStateChanged() {
+    if (!mounted) return;
+    final isPlaying = widget.controller?.value.isPlaying ?? false;
+    if (isPlaying) {
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
   }
 
   @override
   void didUpdateWidget(covariant LivePlayerView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final isPlaying = widget.controller?.value.isPlaying ?? false;
-    DeviceUtils.setKeepScreenOn(isPlaying);
+    if (widget.controller != oldWidget.controller) {
+      _detachControllerListener(oldWidget.controller);
+      _attachControllerListener(widget.controller);
+      if (widget.controller?.value.isPlaying ?? false) {
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      }
+    } else if (widget.controller?.value.isPlaying ?? false) {
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
 
     if (widget.fitMode != oldWidget.fitMode) {
       _currentFitMode = widget.fitMode;
@@ -104,7 +130,7 @@ class _LivePlayerViewState extends State<LivePlayerView> {
 
   @override
   void dispose() {
-    DeviceUtils.setKeepScreenOn(false);
+    _detachControllerListener(widget.controller);
     _controlsTimer?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();

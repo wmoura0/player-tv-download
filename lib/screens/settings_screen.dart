@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import '../models/xtream_account.dart';
+import '../services/playback_progress_service.dart';
+import '../services/playlist_storage.dart';
+import '../services/secure_storage_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
+import 'hidden_categories_screen.dart';
 import 'playlists_screen.dart';
 import 'xtream_login_screen.dart';
 
@@ -168,6 +172,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _buildSectionHeader('Armazenamento e Catálogo', Icons.storage_rounded, accent),
           const SizedBox(height: 12),
           _buildCatalogCacheCard(accent),
+
+          const SizedBox(height: 28),
+
+          // 3. PREFERÊNCIAS DE CONTEÚDO
+          _buildSectionHeader('Preferências de Conteúdo', Icons.filter_list_rounded, accent),
+          const SizedBox(height: 12),
+          _buildHiddenCategoriesCard(accent),
 
           const SizedBox(height: 28),
 
@@ -382,6 +393,134 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildHiddenCategoriesCard(Color accent) {
+    return _buildCardContainer(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.visibility_off_rounded, color: accent, size: 20),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Categorias ocultas da TV ao vivo',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: Color(0xFFF5F8FC),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Escolha individualmente quais categorias de canais deseja ocultar da navegação normal, lista geral e busca.',
+            style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: accent,
+                foregroundColor: const Color(0xFF070A12),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _openHiddenCategories,
+              icon: const Icon(Icons.tune_rounded, size: 18),
+              label: const Text(
+                'Gerenciar Categorias Ocultas',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openHiddenCategories() async {
+    // 1. Se há conexão Xtream ativa, carrega as categorias reais de TV ao vivo
+    XtreamCatalogService? service = widget.catalogService;
+    if (service == null) {
+      try {
+        final storage = SecureStorageService();
+        final server = await storage.getServerUrl();
+        final user = await storage.getUsername();
+        final pass = await storage.getPassword();
+        if (server != null && user != null && pass != null) {
+          service = XtreamCatalogService(
+            serverUrl: server,
+            username: user,
+            password: pass,
+          );
+        }
+      } catch (_) {}
+    }
+
+    if (service != null) {
+      try {
+        final cats = await service.fetchLiveCategories();
+        if (mounted) {
+          final items = cats.map((c) => HiddenCategoryItem(id: c.id, name: c.name)).toList();
+          final scopeKey = PlaybackProgressService.buildAccountKey(
+            service.serverUrl,
+            service.username,
+          );
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => HiddenCategoriesScreen(
+                scopeKey: scopeKey,
+                sourceTitle: 'Conta Xtream (${widget.xtreamAccount?.username ?? service!.username})',
+                categories: items,
+              ),
+            ),
+          );
+          return;
+        }
+      } catch (e) {
+        _showSnackbar('Erro ao carregar categorias Xtream: $e');
+      }
+    }
+
+    // 2. Se for playlist M3U, carrega as categorias reais da playlist salva
+    try {
+      final storage = PlaylistStorageService();
+      final playlists = await storage.getPlaylists();
+      if (playlists.isNotEmpty) {
+        final p = playlists.first;
+        final channels = await storage.loadChannels(p.id);
+        final uniqueGroups = <String>{};
+        for (final ch in channels) {
+          if (ch.groupTitle.trim().isNotEmpty) {
+            uniqueGroups.add(ch.groupTitle.trim());
+          }
+        }
+        final items = uniqueGroups.map((g) => HiddenCategoryItem(id: g, name: g)).toList();
+        items.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        if (mounted) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => HiddenCategoriesScreen(
+                scopeKey: p.id,
+                sourceTitle: 'Playlist M3U (${p.name})',
+                categories: items,
+              ),
+            ),
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      _showSnackbar('Erro ao carregar categorias M3U: $e');
+    }
+
+    _showSnackbar('Nenhuma fonte de canais de TV ao vivo encontrada.');
   }
 
   Widget _buildAppInfoCard(Color accent) {

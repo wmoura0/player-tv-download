@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -6,6 +7,7 @@ import '../models/favorite_item.dart';
 import '../models/playlist.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
+import '../services/hidden_categories_service.dart';
 import '../services/player_stability_manager.dart';
 import '../services/playlist_storage.dart';
 import '../services/url_sanitizer.dart';
@@ -50,6 +52,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   late final PlayerStabilityManager _stabilityManager;
   bool _isConnecting = false;
+  bool _userPaused = false;
 
   @override
   void initState() {
@@ -73,6 +76,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     );
     FavoritesService.instance.addListener(_onFavoritesChanged);
     FavoritesService.instance.loadFavorites(_currentPlaylist.id);
+    HiddenCategoriesService.instance.addListener(_onHiddenCategoriesChanged);
     EpgService.instance.addListener(_onEpgUpdated);
     DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     if (_currentPlaylist.epgUrl != null && _currentPlaylist.epgUrl!.isNotEmpty) {
@@ -106,11 +110,13 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _stabilityManager.pauseMonitoring();
       _playerController?.pause();
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else if (state == AppLifecycleState.resumed) {
       if (mounted &&
           _activeChannel != null &&
           _playerController != null &&
           _playerController!.value.isInitialized) {
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         _stabilityManager.startStallMonitoring(_playerController!);
         if (_playerController!.value.duration > Duration.zero) {
           _playerController!
@@ -124,12 +130,14 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
   @override
   void dispose() {
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
     WidgetsBinding.instance.removeObserver(this);
     _stabilityManager.dispose();
     EpgService.instance.removeListener(_onEpgUpdated);
     FavoritesService.instance.removeListener(_onFavoritesChanged);
+    HiddenCategoriesService.instance.removeListener(_onHiddenCategoriesChanged);
     _searchController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
@@ -144,6 +152,18 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
   void _onFavoritesChanged() {
     if (mounted) setState(() {});
+  }
+
+  void _onHiddenCategoriesChanged() {
+    if (!mounted) return;
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_currentPlaylist.id);
+    if (_selectedCategory != 'TODOS' &&
+        _selectedCategory != 'Todos' &&
+        _selectedCategory != '❤️ Favoritos' &&
+        hidden.contains(_selectedCategory.trim())) {
+      _selectedCategory = 'TODOS';
+    }
+    setState(() {});
   }
 
   Future<void> _loadChannels() async {
@@ -219,8 +239,9 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   List<String> get _categories {
     final list = <String>['TODOS', '❤️ Favoritos'];
     final groups = <String>{};
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_currentPlaylist.id);
     for (final channel in _allChannels) {
-      if (channel.groupTitle.isNotEmpty) {
+      if (channel.groupTitle.isNotEmpty && !hidden.contains(channel.groupTitle.trim())) {
         groups.add(channel.groupTitle);
       }
     }
@@ -229,6 +250,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   }
 
   List<M3uChannel> get _filteredChannels {
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_currentPlaylist.id);
     return _allChannels.where((c) {
       final bool matchesCategory;
       if (_selectedCategory == '❤️ Favoritos') {
@@ -242,10 +264,20 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           type: FavoriteType.m3uChannel,
           id: channelId,
         );
+        final matchesSearch = _searchQuery.isEmpty ||
+            c.name.toLowerCase().contains(_searchQuery.toLowerCase());
+        return matchesCategory && matchesSearch;
+      }
+
+      // Se a categoria do canal estiver oculta, não exibe na lista geral nem na busca
+      if (c.groupTitle.isNotEmpty && hidden.contains(c.groupTitle.trim())) {
+        return false;
+      }
+
+      if (_selectedCategory == 'TODOS' || _selectedCategory == 'Todos') {
+        matchesCategory = true;
       } else {
-        matchesCategory = _selectedCategory == 'TODOS' ||
-            _selectedCategory == 'Todos' ||
-            c.groupTitle == _selectedCategory;
+        matchesCategory = c.groupTitle == _selectedCategory;
       }
       final matchesSearch = _searchQuery.isEmpty ||
           c.name.toLowerCase().contains(_searchQuery.toLowerCase());
@@ -253,10 +285,52 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     }).toList();
   }
 
+  Future<void> _toggleChannelFavorite(M3uChannel channel) async {
+    final item = FavoriteItem.fromM3uChannel(
+      playlistId: _currentPlaylist.id,
+      channel: channel,
+    );
+    final wasFav = FavoritesService.instance.isFavorite(
+      scopeKey: _currentPlaylist.id,
+      type: FavoriteType.m3uChannel,
+      id: item.id,
+    );
+    await FavoritesService.instance.toggleFavorite(item);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF14243B),
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              !wasFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              color: !wasFav ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              !wasFav ? 'Adicionado aos favoritos' : 'Removido dos favoritos',
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _onPlayerStateChanged() {
     final c = _playerController;
     if (c == null || !mounted) return;
     final val = c.value;
+
+    if (val.isPlaying) {
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
+
     if (val.hasError && _playerError == null) {
       final safeErr = UrlSanitizer.sanitizeErrorMessage(
         val.errorDescription ?? 'Falha na transmissão do canal.',
@@ -272,6 +346,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       setState(() {
         _isPlayerBuffering = val.isBuffering;
       });
+    } else if (!val.isPlaying && !val.isBuffering && !_userPaused && !_isPlayerLoading && _playerError == null) {
+      // Queda silenciosa ou término de socket após 15 minutos sem erro formal
+      debugPrint('[PLAYER] Transmissão interrompida inesperadamente pelo servidor (queda de socket).');
+      _stabilityManager.scheduleRetry('Transmissão encerrada pelo servidor');
     }
   }
 
@@ -286,6 +364,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       }
       return;
     }
+
+    _userPaused = false;
+    _stabilityManager.setUserPaused(false);
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
 
     if (!isRetry) {
       _stabilityManager.resetRetries();
@@ -354,7 +436,9 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
         _stabilityManager.clearOpenWatchdog();
-        _stabilityManager.resetRetries();
+        if (!isRetry) {
+          _stabilityManager.resetRetries();
+        }
         _stabilityManager.startStallMonitoring(controller);
 
         if (controller.value.duration > Duration.zero) {
@@ -365,6 +449,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         setState(() {
           _isPlayerLoading = false;
           _playerError = null;
@@ -414,11 +499,17 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     final c = _playerController;
     if (c == null || !c.value.isInitialized) return;
     if (c.value.isPlaying) {
+      _userPaused = true;
+      _stabilityManager.setUserPaused(true);
       c.pause();
       DeviceUtils.setPipState(enabled: false);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else {
+      _userPaused = false;
+      _stabilityManager.setUserPaused(false);
       c.play();
       DeviceUtils.setPipState(enabled: true);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
     }
     setState(() {});
   }
@@ -435,7 +526,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   }
 
   Future<void> _closeMiniPlayer() async {
+    _userPaused = false;
+    _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     _stabilityManager.clearOpenWatchdog();
     _stabilityManager.resetRetries();
     final oldController = _playerController;
@@ -465,7 +559,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     _stabilityManager.clearOpenWatchdog();
 
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError) {
+    if (c != null && c.value.isInitialized && !c.value.hasError && c.value.isPlaying) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {
@@ -478,7 +572,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       }
     }
 
-    _stabilityManager.resetRetries();
+    // Reinicialização controlada (hard recovery) sem resetar contagem de retries prematuramente
     await _playM3uChannel(_activeChannel!, isRetry: true, keepFullscreen: _isFullscreen);
   }
 
@@ -891,9 +985,21 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
             itemCount: _filteredChannels.length,
             itemBuilder: (context, index) {
               final channel = _filteredChannels[index];
+              final channelId = FavoriteItem.buildM3uChannelId(
+                name: channel.name,
+                streamUrl: channel.streamUrl,
+                tvgId: channel.tvgId,
+              );
+              final isFav = FavoritesService.instance.isFavorite(
+                scopeKey: _currentPlaylist.id,
+                type: FavoriteType.m3uChannel,
+                id: channelId,
+              );
               return _ChannelTile(
                 channel: channel,
                 isPlaying: _activeChannel?.streamUrl == channel.streamUrl,
+                isFavorite: isFav,
+                onToggleFavorite: () => _toggleChannelFavorite(channel),
                 onTap: () => _onChannelTap(channel),
               );
             },
@@ -922,14 +1028,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
                 channel: channel,
                 isPlaying: _activeChannel?.streamUrl == channel.streamUrl,
                 isFavorite: isFav,
-                onToggleFavorite: () async {
-                  await FavoritesService.instance.toggleFavorite(
-                    FavoriteItem.fromM3uChannel(
-                      playlistId: _currentPlaylist.id,
-                      channel: channel,
-                    ),
-                  );
-                },
+                onToggleFavorite: () => _toggleChannelFavorite(channel),
                 onTap: () => _onChannelTap(channel),
               ),
             );
@@ -1021,159 +1120,211 @@ class _ChannelTileState extends State<_ChannelTile> {
   bool _isFocused = false;
   bool _isHovered = false;
 
+  Timer? _longPressTimer;
+  bool _longPressTriggered = false;
+  bool _isKeyDown = false;
+
+  @override
+  void dispose() {
+    _longPressTimer?.cancel();
+    super.dispose();
+  }
+
+  bool _isSelectKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA ||
+        key == LogicalKeyboardKey.numpadEnter;
+  }
+
+  bool _isMenuKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.contextMenu ||
+        key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.gameButtonX;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (_isSelectKey(event.logicalKey)) {
+      if (event is KeyDownEvent) {
+        if (!_isKeyDown) {
+          _isKeyDown = true;
+          _longPressTriggered = false;
+          _longPressTimer?.cancel();
+          _longPressTimer = Timer(const Duration(milliseconds: 700), () {
+            if (mounted && _isKeyDown) {
+              _longPressTriggered = true;
+              HapticFeedback.mediumImpact();
+              widget.onToggleFavorite?.call();
+            }
+          });
+        }
+        return KeyEventResult.handled;
+      } else if (event is KeyRepeatEvent) {
+        return KeyEventResult.handled;
+      } else if (event is KeyUpEvent) {
+        _longPressTimer?.cancel();
+        _isKeyDown = false;
+        if (!_longPressTriggered) {
+          widget.onTap();
+        }
+        _longPressTriggered = false;
+        return KeyEventResult.handled;
+      }
+    } else if (_isMenuKey(event.logicalKey)) {
+      if (event is KeyUpEvent) {
+        widget.onToggleFavorite?.call();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.channelActions(
-        onTap: widget.onTap,
-        onToggleFavorite: widget.onToggleFavorite,
-      ),
-      shortcuts: DeviceUtils.dpadChannelShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: isHighlighted ? 1.02 : 1.0,
-        duration: const Duration(milliseconds: 150),
-        child: AnimatedContainer(
+    return Focus(
+      onFocusChange: (focused) {
+        if (!focused) {
+          _longPressTimer?.cancel();
+          _isKeyDown = false;
+          _longPressTriggered = false;
+        }
+        setState(() => _isFocused = focused);
+      },
+      onKeyEvent: _handleKeyEvent,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: AnimatedScale(
+          scale: isHighlighted ? 1.02 : 1.0,
           duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A2436),
-              width: widget.isPlaying ? 2.0 : 1.5,
-            ),
-            boxShadow: isHighlighted
-                ? [
-                    BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
-                      blurRadius: 10,
-                      offset: const Offset(0, 2),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              canRequestFocus: false,
-              onTap: widget.onTap,
-              onLongPress: widget.onToggleFavorite,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
               borderRadius: BorderRadius.circular(10),
-              splashColor: const Color(0xFF00E5FF).withValues(alpha: 0.15),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  children: [
-                    // Logo do Canal ou Ícone de TV
-                    _buildLogo(widget.channel.logoUrl),
-                    const SizedBox(width: 12),
+              border: Border.all(
+                color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A2436),
+                width: widget.isPlaying ? 2.0 : 1.5,
+              ),
+              boxShadow: isHighlighted
+                  ? [
+                      BoxShadow(
+                        color: const Color(0xFF00E5FF).withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
+                        blurRadius: 10,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                canRequestFocus: false,
+                onTap: widget.onTap,
+                onLongPress: widget.onToggleFavorite,
+                borderRadius: BorderRadius.circular(10),
+                splashColor: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      // Logo do Canal ou Ícone de TV
+                      _buildLogo(widget.channel.logoUrl),
+                      const SizedBox(width: 12),
 
-                    // Nome e Categoria
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.channel.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFF0F4F8),
+                      // Nome e Categoria
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.channel.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFFF0F4F8),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 3),
-                          if (widget.isPlaying)
-                            const Row(
-                              children: [
-                                Icon(Icons.graphic_eq_rounded, size: 12, color: Color(0xFF00E5FF)),
-                                SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    'EM REPRODUÇÃO • Toque p/ tela cheia',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFF00E5FF),
+                            const SizedBox(height: 3),
+                            if (widget.isPlaying)
+                              const Row(
+                                children: [
+                                  Icon(Icons.graphic_eq_rounded, size: 12, color: Color(0xFF00E5FF)),
+                                  SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      'EM REPRODUÇÃO • Toque p/ tela cheia',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF00E5FF),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
-                            )
-                          else ...[
-                            Builder(
-                              builder: (context) {
-                                final nowProg = EpgService.instance.getNowAndNext(
-                                  channelId: widget.channel.tvgId,
-                                  channelName: widget.channel.name,
-                                ).now;
+                                ],
+                              )
+                            else ...[
+                              Builder(
+                                builder: (context) {
+                                  final nowProg = EpgService.instance.getNowAndNext(
+                                    channelId: widget.channel.tvgId,
+                                    channelName: widget.channel.name,
+                                  ).now;
 
-                                if (nowProg != null && nowProg.title.isNotEmpty) {
-                                  return Row(
-                                    children: [
-                                      const Icon(Icons.schedule_rounded, size: 11, color: Color(0xFF00E5FF)),
-                                      const SizedBox(width: 4),
-                                      Expanded(
-                                        child: Text(
-                                          nowProg.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            color: Color(0xFF00E5FF),
+                                  if (nowProg != null && nowProg.title.isNotEmpty) {
+                                    return Row(
+                                      children: [
+                                        const Icon(Icons.schedule_rounded, size: 11, color: Color(0xFF00E5FF)),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: Text(
+                                            nowProg.title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Color(0xFF00E5FF),
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    );
+                                  }
+
+                                  return Text(
+                                    widget.channel.groupTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF8A99AD),
+                                    ),
                                   );
-                                }
-
-                                return Text(
-                                  widget.channel.groupTitle,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xFF8A99AD),
-                                  ),
-                                );
-                              },
-                            ),
+                                },
+                              ),
+                            ],
                           ],
-                        ],
-                      ),
-                    ),
-
-                    if (widget.onToggleFavorite != null)
-                      Focus(
-                        canRequestFocus: false,
-                        skipTraversal: true,
-                        child: IconButton(
-                          tooltip: widget.isFavorite ? 'Remover dos favoritos (Menu no controle)' : 'Favoritar canal (Menu no controle)',
-                          icon: Icon(
-                            widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                            size: 20,
-                            color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
-                          ),
-                          onPressed: widget.onToggleFavorite,
                         ),
                       ),
 
-                    Icon(
-                      widget.isPlaying
-                          ? Icons.play_circle_filled_rounded
-                          : Icons.play_circle_outline_rounded,
-                      size: 22,
-                      color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF3E506B),
-                    ),
-                  ],
+                      Icon(
+                        widget.isPlaying
+                            ? Icons.play_circle_filled_rounded
+                            : Icons.play_circle_outline_rounded,
+                        size: 22,
+                        color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF3E506B),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

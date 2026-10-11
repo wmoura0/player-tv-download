@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
+import '../services/hidden_categories_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
@@ -68,6 +71,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   late XtreamCatalogType _currentType;
   bool _isSidebarVisible = true;
   bool _isConnecting = false;
+  bool _userPaused = false;
 
   @override
   void initState() {
@@ -90,6 +94,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       },
     );
     FavoritesService.instance.addListener(_onFavoritesChanged);
+    HiddenCategoriesService.instance.addListener(_onHiddenCategoriesChanged);
     DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     _initialize();
   }
@@ -118,11 +123,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _stabilityManager.pauseMonitoring();
       _playerController?.pause();
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else if (state == AppLifecycleState.resumed) {
       if (mounted &&
           _activeLiveStream != null &&
           _playerController != null &&
           _playerController!.value.isInitialized) {
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         _stabilityManager.startStallMonitoring(_playerController!);
         // Pula para a borda ao vivo (live edge) ao retornar do segundo plano
         if (_playerController!.value.duration > Duration.zero) {
@@ -153,11 +160,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   @override
   void dispose() {
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
     WidgetsBinding.instance.removeObserver(this);
     _stabilityManager.dispose();
     FavoritesService.instance.removeListener(_onFavoritesChanged);
+    HiddenCategoriesService.instance.removeListener(_onHiddenCategoriesChanged);
     _searchController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
@@ -173,6 +182,21 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     } else {
       setState(() {});
     }
+  }
+
+  void _onHiddenCategoriesChanged() {
+    if (!mounted) return;
+    if (_currentType == XtreamCatalogType.live) {
+      final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+      if (_selectedCategoryId != 'all' &&
+          _selectedCategoryId != 'favorites' &&
+          (hidden.contains(_selectedCategoryId) ||
+              hidden.contains(_getCategoryName(_selectedCategoryId).trim()))) {
+        _selectedCategoryId = 'all';
+        _loadItemsForCategory('all');
+      }
+    }
+    setState(() {});
   }
 
   String get _accountKey {
@@ -417,15 +441,79 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
   }
 
+  List<XtreamCategory> get _visibleCategories {
+    if (_currentType != XtreamCatalogType.live) return _categories;
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+    if (hidden.isEmpty) return _categories;
+    return _categories.where((cat) {
+      if (cat.id == 'all' || cat.id == 'favorites') return true;
+      return !hidden.contains(cat.id) && !hidden.contains(cat.name.trim());
+    }).toList();
+  }
+
   List<dynamic> get _filteredItems {
-    if (_searchQuery.trim().isEmpty) return _currentItems;
+    final hidden = _currentType == XtreamCatalogType.live
+        ? HiddenCategoriesService.instance.getHiddenCategories(_accountKey)
+        : const <String>{};
+
+    final items = _currentItems.where((item) {
+      if (_currentType == XtreamCatalogType.live && item is XtreamLiveStream) {
+        // Preserva favoritos existentes mesmo que sua categoria original esteja oculta
+        if (_selectedCategoryId != 'favorites' && hidden.isNotEmpty) {
+          if (hidden.contains(item.categoryId) ||
+              hidden.contains(_getCategoryName(item.categoryId).trim())) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }).toList();
+
+    if (_searchQuery.trim().isEmpty) return items;
     final q = _searchQuery.toLowerCase();
-    return _currentItems.where((item) {
+    return items.where((item) {
       if (item is XtreamLiveStream) return item.name.toLowerCase().contains(q);
       if (item is XtreamVodStream) return item.name.toLowerCase().contains(q);
       if (item is XtreamSeriesItem) return item.name.toLowerCase().contains(q);
       return false;
     }).toList();
+  }
+
+  Future<void> _toggleLiveFavorite(XtreamLiveStream stream) async {
+    final item = FavoriteItem.fromLiveStream(
+      accountKey: _accountKey,
+      stream: stream,
+    );
+    final wasFav = FavoritesService.instance.isFavorite(
+      scopeKey: _accountKey,
+      type: FavoriteType.live,
+      id: item.id,
+    );
+    await FavoritesService.instance.toggleFavorite(item);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF14243B),
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              !wasFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              color: !wasFav ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              !wasFav ? 'Adicionado aos favoritos' : 'Removido dos favoritos',
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _getCategoryName(String categoryId) {
@@ -439,6 +527,11 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final c = _playerController;
     if (c == null || !mounted) return;
     final val = c.value;
+
+    if (val.isPlaying) {
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
+
     if (val.hasError && _playerError == null) {
       final safeErr = UrlSanitizer.sanitizeErrorMessage(
         val.errorDescription ?? 'Falha na transmissão do canal.',
@@ -454,6 +547,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       setState(() {
         _isPlayerBuffering = val.isBuffering;
       });
+    } else if (!val.isPlaying && !val.isBuffering && !_userPaused && !_isPlayerLoading && _playerError == null) {
+      // Queda silenciosa ou término de socket após 15 minutos sem erro formal
+      debugPrint('[PLAYER] Transmissão ao vivo interrompida inesperadamente pelo servidor (queda de socket).');
+      _stabilityManager.scheduleRetry('Transmissão encerrada pelo servidor');
     }
   }
 
@@ -467,6 +564,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       }
       return;
     }
+
+    _userPaused = false;
+    _stabilityManager.setUserPaused(false);
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
 
     _stabilityManager.resetRetries();
 
@@ -586,7 +687,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
         _stabilityManager.clearOpenWatchdog();
-        _stabilityManager.resetRetries();
         _stabilityManager.startStallMonitoring(controller);
 
         // Se for HLS ao vivo com duração reportada pelo player, pula para live edge
@@ -598,6 +698,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         setState(() {
           _isPlayerLoading = false;
           _playerError = null;
@@ -633,11 +734,17 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final c = _playerController;
     if (c == null || !c.value.isInitialized) return;
     if (c.value.isPlaying) {
+      _userPaused = true;
+      _stabilityManager.setUserPaused(true);
       c.pause();
       DeviceUtils.setPipState(enabled: false);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else {
+      _userPaused = false;
+      _stabilityManager.setUserPaused(false);
       c.play();
       DeviceUtils.setPipState(enabled: true);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
     }
     setState(() {});
   }
@@ -654,7 +761,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   Future<void> _closeMiniPlayer() async {
+    _userPaused = false;
+    _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     _stabilityManager.clearOpenWatchdog();
     _stabilityManager.resetRetries();
     final oldController = _playerController;
@@ -685,7 +795,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     // Tenta soft recovery antes de descartar o controlador se ele ainda estiver vivo
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError) {
+    if (c != null && c.value.isInitialized && !c.value.hasError && c.value.isPlaying) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {
@@ -698,15 +808,20 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       }
     }
 
+    // Rotaciona candidatos caso haja mais de um (ex: .ts -> .m3u8) para contornar limitações do proxy
+    if (_candidateUrls.length > 1) {
+      _currentCandidateIndex = (_currentCandidateIndex + 1) % _candidateUrls.length;
+      debugPrint('[PLAYER] Tentando formato alternativo: candidato $_currentCandidateIndex de ${_candidateUrls.length}');
+    }
+
     setState(() {
       _reconnectAttempts++;
       _isPlayerLoading = true;
       _playerError = null;
-      _currentCandidateIndex = 0;
     });
     debugPrint('[PLAYER] Reconectando (tentativa $_reconnectAttempts)...');
     if (_candidateUrls.isNotEmpty) {
-      await _initControllerWithUrl(_candidateUrls[0]);
+      await _initControllerWithUrl(_candidateUrls[_currentCandidateIndex]);
     }
   }
 
@@ -1004,7 +1119,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     children: [
                       if (_isSidebarVisible)
                         CatalogSidebar(
-                          categories: _categories,
+                          categories: _visibleCategories,
                           selectedCategoryId: _selectedCategoryId,
                           searchQuery: _searchQuery,
                           searchController: _searchController,
@@ -1211,14 +1326,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                   accentColor: _accentColor,
                   isPlaying: _activeLiveStream?.streamId == item.streamId,
                   isFavorite: isFav,
-                  onToggleFavorite: () async {
-                    await FavoritesService.instance.toggleFavorite(
-                      FavoriteItem.fromLiveStream(
-                        accountKey: _accountKey,
-                        stream: item,
-                      ),
-                    );
-                  },
+                  onToggleFavorite: () => _toggleLiveFavorite(item),
                   onTap: () => _onItemTap(item),
                 );
               },
@@ -1241,14 +1349,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     accentColor: _accentColor,
                     isPlaying: _activeLiveStream?.streamId == item.streamId,
                     isFavorite: isFav,
-                    onToggleFavorite: () async {
-                      await FavoritesService.instance.toggleFavorite(
-                        FavoriteItem.fromLiveStream(
-                          accountKey: _accountKey,
-                          stream: item,
-                        ),
-                      );
-                    },
+                    onToggleFavorite: () => _toggleLiveFavorite(item),
                     onTap: () => _onItemTap(item),
                   ),
                 );
@@ -1536,121 +1637,173 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
   bool _isFocused = false;
   bool _isHovered = false;
 
+  Timer? _longPressTimer;
+  bool _longPressTriggered = false;
+  bool _isKeyDown = false;
+
+  @override
+  void dispose() {
+    _longPressTimer?.cancel();
+    super.dispose();
+  }
+
+  bool _isSelectKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA ||
+        key == LogicalKeyboardKey.numpadEnter;
+  }
+
+  bool _isMenuKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.contextMenu ||
+        key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.gameButtonX;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (_isSelectKey(event.logicalKey)) {
+      if (event is KeyDownEvent) {
+        if (!_isKeyDown) {
+          _isKeyDown = true;
+          _longPressTriggered = false;
+          _longPressTimer?.cancel();
+          _longPressTimer = Timer(const Duration(milliseconds: 700), () {
+            if (mounted && _isKeyDown) {
+              _longPressTriggered = true;
+              HapticFeedback.mediumImpact();
+              widget.onToggleFavorite?.call();
+            }
+          });
+        }
+        return KeyEventResult.handled;
+      } else if (event is KeyRepeatEvent) {
+        return KeyEventResult.handled;
+      } else if (event is KeyUpEvent) {
+        _longPressTimer?.cancel();
+        _isKeyDown = false;
+        if (!_longPressTriggered) {
+          widget.onTap();
+        }
+        _longPressTriggered = false;
+        return KeyEventResult.handled;
+      }
+    } else if (_isMenuKey(event.logicalKey)) {
+      if (event is KeyUpEvent) {
+        widget.onToggleFavorite?.call();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.channelActions(
-        onTap: widget.onTap,
-        onToggleFavorite: widget.onToggleFavorite,
-      ),
-      shortcuts: DeviceUtils.dpadChannelShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: isHighlighted ? 1.02 : 1.0,
-        duration: const Duration(milliseconds: 150),
-        child: AnimatedContainer(
+    return Focus(
+      onFocusChange: (focused) {
+        if (!focused) {
+          _longPressTimer?.cancel();
+          _isKeyDown = false;
+          _longPressTriggered = false;
+        }
+        setState(() => _isFocused = focused);
+      },
+      onKeyEvent: _handleKeyEvent,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: AnimatedScale(
+          scale: isHighlighted ? 1.02 : 1.0,
           duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isHighlighted ? widget.accentColor : const Color(0xFF1A2436),
-              width: widget.isPlaying ? 2.0 : (isHighlighted ? 1.5 : 1.0),
-            ),
-            boxShadow: isHighlighted
-                ? [
-                    BoxShadow(
-                      color: widget.accentColor.withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
-                      blurRadius: 10,
-                      offset: const Offset(0, 2),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              canRequestFocus: false,
-              onTap: widget.onTap,
-              onLongPress: widget.onToggleFavorite,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
               borderRadius: BorderRadius.circular(10),
-              splashColor: widget.accentColor.withValues(alpha: 0.15),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  children: [
-                    // Logo do Canal
-                    _buildLogo(widget.stream.streamIcon),
-                    const SizedBox(width: 12),
+              border: Border.all(
+                color: isHighlighted ? widget.accentColor : const Color(0xFF1A2436),
+                width: widget.isPlaying ? 2.0 : (isHighlighted ? 1.5 : 1.0),
+              ),
+              boxShadow: isHighlighted
+                  ? [
+                      BoxShadow(
+                        color: widget.accentColor.withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
+                        blurRadius: 10,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                canRequestFocus: false,
+                onTap: widget.onTap,
+                onLongPress: widget.onToggleFavorite,
+                borderRadius: BorderRadius.circular(10),
+                splashColor: widget.accentColor.withValues(alpha: 0.15),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      // Logo do Canal
+                      _buildLogo(widget.stream.streamIcon),
+                      const SizedBox(width: 12),
 
-                    // Nome do canal e status
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            widget.stream.name,
-                            maxLines: widget.isPlaying ? 1 : 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFF0F4F8),
-                            ),
-                          ),
-                          if (widget.isPlaying)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2.0),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.graphic_eq_rounded, size: 12, color: widget.accentColor),
-                                  const SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      'EM REPRODUÇÃO • Toque p/ tela cheia',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        color: widget.accentColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                      // Nome do canal e status
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              widget.stream.name,
+                              maxLines: widget.isPlaying ? 1 : 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFFF0F4F8),
                               ),
                             ),
-                        ],
-                      ),
-                    ),
-
-                    if (widget.onToggleFavorite != null)
-                      Focus(
-                        canRequestFocus: false,
-                        skipTraversal: true,
-                        child: IconButton(
-                          tooltip: widget.isFavorite ? 'Remover dos favoritos' : 'Favoritar canal',
-                          icon: Icon(
-                            widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                            size: 20,
-                            color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF8A99AD),
-                          ),
-                          onPressed: widget.onToggleFavorite,
+                            if (widget.isPlaying)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2.0),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.graphic_eq_rounded, size: 12, color: widget.accentColor),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        'EM REPRODUÇÃO • Toque p/ tela cheia',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: widget.accentColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
                         ),
                       ),
 
-                    Icon(
-                      widget.isPlaying
-                          ? Icons.play_circle_filled_rounded
-                          : Icons.play_circle_outline_rounded,
-                      size: 22,
-                      color: isHighlighted ? widget.accentColor : const Color(0xFF3E506B),
-                    ),
-                  ],
+                      Icon(
+                        widget.isPlaying
+                            ? Icons.play_circle_filled_rounded
+                            : Icons.play_circle_outline_rounded,
+                        size: 22,
+                        color: isHighlighted ? widget.accentColor : const Color(0xFF3E506B),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
