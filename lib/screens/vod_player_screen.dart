@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/xtream_catalog.dart';
+import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/settings_service.dart';
 import '../services/url_sanitizer.dart';
@@ -35,6 +36,7 @@ class VodPlayerScreen extends StatefulWidget {
 class _VodPlayerScreenState extends State<VodPlayerScreen> {
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
+  late final PlaybackMetrics _metrics;
 
   bool _isLoading = true;
   bool _isBuffering = false;
@@ -50,9 +52,17 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     DeviceUtils.setVideoOrientation();
     DeviceUtils.setKeepScreenOn(true);
 
+    _metrics = PlaybackMetrics(
+      mediaType: PlaybackMediaType.movie,
+      title: widget.movie.name,
+    );
+    _metrics.markRequestStart();
+
     if (widget.testController != null) {
       _controller = widget.testController;
       _isLoading = false;
+      _metrics.markPlayerInitialized();
+      _metrics.markFirstFrame();
     } else {
       _initPlayer();
     }
@@ -161,10 +171,16 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     _controller = controller;
     controller.addListener(_onControllerUpdate);
 
+    final hasAlternatives = (_currentUrlIndex + 1 < widget.streamUrls.length);
+    final timeoutDuration = hasAlternatives ? const Duration(seconds: 7) : const Duration(seconds: 15);
+
     try {
-      await controller.initialize().timeout(const Duration(seconds: 20));
+      await controller.initialize().timeout(timeoutDuration);
 
       if (!mounted || _controller != controller) return;
+
+      _metrics.markConnectionEstablished();
+      _metrics.markPlayerInitialized();
 
       // Se houver posição inicial para continuar de onde parou
       if (widget.initialPosition != null && widget.initialPosition! > Duration.zero) {
@@ -195,6 +211,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
       }
 
       final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
+      _metrics.markError(safeErr);
       setState(() {
         _isLoading = false;
         _errorMessage = 'Não foi possível carregar o filme. $safeErr';
@@ -211,13 +228,22 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
       final safeErr = UrlSanitizer.sanitizeErrorMessage(
         val.errorDescription ?? 'Erro durante a reprodução do filme.',
       );
+      _metrics.markError(safeErr);
       setState(() {
         _errorMessage = safeErr;
         _isLoading = false;
         _isBuffering = false;
       });
     } else {
+      if (val.isPlaying || val.position > Duration.zero) {
+        _metrics.markFirstFrame();
+      }
       if (val.isBuffering != _isBuffering) {
+        if (val.isBuffering) {
+          _metrics.markBufferingStart();
+        } else {
+          _metrics.markBufferingEnd();
+        }
         setState(() => _isBuffering = val.isBuffering);
       }
     }

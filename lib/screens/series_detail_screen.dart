@@ -9,8 +9,9 @@ import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
 import 'series_player_screen.dart';
 
-/// Tela de detalhes para séries com navegação por temporadas,
-/// listagem de episódios reais, indicadores de progresso individual e ação de continuar assistindo.
+/// Tela de detalhes para séries inspirada no layout Silo (IPTV moderno para Fire TV / Android TV),
+/// com imagem de fundo panorâmica, gradientes cinematográficos, botão de continuação/próximo episódio
+/// direto no destaque da tela, seletor de temporadas em pills horizontais e lista de episódios reais.
 class SeriesDetailScreen extends StatefulWidget {
   final XtreamSeriesItem series;
   final XtreamCatalogService catalogService;
@@ -38,8 +39,11 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   // Mapa de progresso salvo por episodeId
   final Map<int, PlaybackProgress> _episodesProgress = {};
-  XtreamSeriesEpisode? _resumeEpisode;
-  PlaybackProgress? _resumeProgress;
+
+  // Episódio e ação principal calculados para o Hero Button
+  XtreamSeriesEpisode? _primaryEpisode;
+  Duration? _primaryPosition;
+  String _primaryButtonLabel = '';
 
   @override
   void initState() {
@@ -87,7 +91,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
           duration: const Duration(seconds: 2),
-          backgroundColor: isFav ? const Color(0xFF1E88E5) : const Color(0xFF424242),
+          backgroundColor: isFav ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -138,8 +142,9 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   Future<void> _loadEpisodesProgress(XtreamSeriesInfo info) async {
     _episodesProgress.clear();
-    _resumeEpisode = null;
-    _resumeProgress = null;
+    _primaryEpisode = null;
+    _primaryPosition = null;
+    _primaryButtonLabel = '';
 
     // 1. Verificar último episódio assistido salvo
     final lastWatched = await _progressService.getLastWatchedEpisode(
@@ -147,121 +152,98 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       seriesId: widget.series.seriesId,
     );
 
-    // 2. Consultar progresso de todos os episódios disponíveis
-    for (final seasonEps in info.episodesBySeason.values) {
-      for (final ep in seasonEps) {
-        final prog = await _progressService.getEpisodeProgress(
-          accountKey: widget.accountKey,
-          seriesId: widget.series.seriesId,
-          episodeId: ep.id,
-        );
-        if (prog != null) {
-          _episodesProgress[ep.id] = prog;
-        }
+    // 2. Consultar progresso de todos os episódios disponíveis em paralelo
+    final allEpisodes = info.episodesBySeason.values.expand((list) => list).toList();
+    final progressFutures = allEpisodes.map((ep) async {
+      final prog = await _progressService.getEpisodeProgress(
+        accountKey: widget.accountKey,
+        seriesId: widget.series.seriesId,
+        episodeId: ep.id,
+      );
+      return MapEntry(ep.id, prog);
+    });
+
+    final progressEntries = await Future.wait(progressFutures);
+    for (final entry in progressEntries) {
+      if (entry.value != null) {
+        _episodesProgress[entry.key] = entry.value!;
       }
     }
 
-    // Determinar episódio para "Continuar assistindo"
+    // 3. Determinar episódio para o botão principal (Continuar / Próximo / Assistir)
     if (lastWatched != null) {
       final lastEpId = lastWatched['episodeId'];
-      for (final seasonEps in info.episodesBySeason.values) {
-        final found = seasonEps.where((e) => e.id == lastEpId).firstOrNull;
-        if (found != null) {
-          _resumeEpisode = found;
-          _resumeProgress = _episodesProgress[found.id];
-          break;
+      final lastEp = info.findEpisodeById(lastEpId ?? 0);
+
+      if (lastEp != null) {
+        final prog = _episodesProgress[lastEp.id];
+        if (prog != null && prog.canResume) {
+          // Episódio foi interrompido: continuar exatamente do ponto salvo
+          _primaryEpisode = lastEp;
+          _primaryPosition = prog.position;
+          _primaryButtonLabel = 'CONTINUAR S${lastEp.seasonNumber}E${lastEp.episodeNum}';
+        } else {
+          // Episódio foi concluído: disponibilizar o próximo episódio válido
+          final nextEp = info.getNextEpisode(lastEp);
+          if (nextEp != null) {
+            final nextProg = _episodesProgress[nextEp.id];
+            if (nextProg != null && nextProg.canResume) {
+              _primaryEpisode = nextEp;
+              _primaryPosition = nextProg.position;
+              _primaryButtonLabel = 'CONTINUAR S${nextEp.seasonNumber}E${nextEp.episodeNum}';
+            } else {
+              _primaryEpisode = nextEp;
+              _primaryPosition = Duration.zero;
+              _primaryButtonLabel = 'PRÓXIMO S${nextEp.seasonNumber}E${nextEp.episodeNum}';
+            }
+          } else {
+            // Todos os episódios foram concluídos: opção de rever a série
+            final firstSeason = info.seasons.firstOrNull;
+            final firstEp = firstSeason != null ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull : null;
+            if (firstEp != null) {
+              _primaryEpisode = firstEp;
+              _primaryPosition = Duration.zero;
+              _primaryButtonLabel = 'REVER S${firstEp.seasonNumber}E${firstEp.episodeNum}';
+            }
+          }
         }
       }
     }
 
     // Se não encontrou pelo último assistido, busca qualquer episódio com progresso pendente
-    if (_resumeEpisode == null && _episodesProgress.isNotEmpty) {
+    if (_primaryEpisode == null && _episodesProgress.isNotEmpty) {
       for (final season in info.seasons) {
         final eps = info.episodesBySeason[season.seasonNumber] ?? [];
         for (final ep in eps) {
-          if (_episodesProgress.containsKey(ep.id)) {
-            _resumeEpisode = ep;
-            _resumeProgress = _episodesProgress[ep.id];
+          final prog = _episodesProgress[ep.id];
+          if (prog != null && prog.canResume) {
+            _primaryEpisode = ep;
+            _primaryPosition = prog.position;
+            _primaryButtonLabel = 'CONTINUAR S${ep.seasonNumber}E${ep.episodeNum}';
             break;
           }
         }
-        if (_resumeEpisode != null) break;
+        if (_primaryEpisode != null) break;
+      }
+    }
+
+    // Se ainda não há nenhum episódio iniciado, o botão principal oferece começar o Ep 1
+    if (_primaryEpisode == null) {
+      final firstSeason = info.seasons.firstOrNull;
+      final firstEp = firstSeason != null ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull : null;
+      if (firstEp != null) {
+        _primaryEpisode = firstEp;
+        _primaryPosition = Duration.zero;
+        _primaryButtonLabel = 'ASSISTIR S${firstEp.seasonNumber}E${firstEp.episodeNum}';
       }
     }
   }
 
   void _onEpisodeTap(XtreamSeriesEpisode episode) {
     final prog = _episodesProgress[episode.id];
+    // Inicia diretamente a reprodução do episódio no ponto salvo ou do início
     if (prog != null && prog.canResume) {
-      // Diálogo de escolha: Continuar ou do início
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: const Color(0xFF141C2A),
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        builder: (ctx) {
-          final timeStr = PlaybackProgressService.formatDuration(prog.position);
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'T${episode.seasonNumber}:E${episode.episodeNum} • ${episode.title}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Você parou em $timeStr.',
-                    style: const TextStyle(color: Color(0xFFB0BEC5), fontSize: 13),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    autofocus: true,
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      _startPlayback(episode, initialPosition: prog.position);
-                    },
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: Text('Continuar de $timeStr'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFE50914),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      Navigator.of(ctx).pop();
-                      await _progressService.clearEpisodeProgress(
-                        accountKey: widget.accountKey,
-                        seriesId: widget.series.seriesId,
-                        episodeId: episode.id,
-                      );
-                      _startPlayback(episode, initialPosition: Duration.zero);
-                    },
-                    icon: const Icon(Icons.replay_rounded),
-                    label: const Text('Assistir do início'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Color(0xFF37474F)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      );
+      _startPlayback(episode, initialPosition: prog.position);
     } else {
       _startPlayback(episode, initialPosition: Duration.zero);
     }
@@ -283,7 +265,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       ),
     );
 
-    // Ao voltar do player, restaura imediatamente a orientação vertical e atualiza progresso
+    // Ao voltar do player, restaura imediatamente a orientação e atualiza progresso
     if (mounted) {
       DeviceUtils.restoreOrientation();
       if (_seriesInfo != null) {
@@ -307,33 +289,8 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
           ),
         },
         child: Scaffold(
-          backgroundColor: const Color(0xFF090D14),
-          appBar: AppBar(
-            backgroundColor: const Color(0xFF0F1523),
-            title: Text(
-              widget.series.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFFF0F4F8),
-              ),
-            ),
-            actions: [
-              IconButton(
-                tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
-                icon: Icon(
-                  _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                  color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
-                ),
-                onPressed: _toggleFavorite,
-              ),
-            ],
-          ),
-          body: SafeArea(
-            child: _buildBody(),
-          ),
+          backgroundColor: const Color(0xFF070D16),
+          body: _buildBody(),
         ),
       ),
     );
@@ -341,45 +298,66 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Carregando temporadas e episódios...',
-              style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 14),
-            ),
-          ],
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 16.0),
+          child: Column(
+            children: [
+              _buildTopBar(),
+              const Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Carregando temporadas e episódios...',
+                        style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
     if (_errorMessage != null) {
-      return Center(
+      return SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 16.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline_rounded, color: Color(0xFFEF5350), size: 48),
-              const SizedBox(height: 12),
-              Text(
-                _errorMessage!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: _loadSeriesData,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Tentar novamente'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1E88E5),
-                  foregroundColor: Colors.white,
+              _buildTopBar(),
+              Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.error_outline_rounded, color: Color(0xFFEF5350), size: 48),
+                      const SizedBox(height: 12),
+                      Text(
+                        _errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        onPressed: _loadSeriesData,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Tentar novamente'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00E5FF),
+                          foregroundColor: Colors.black,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -389,276 +367,282 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     }
 
     final info = _seriesInfo!;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isLandscape = constraints.maxWidth > constraints.maxHeight;
+    final backdropUrl = info.backdrop ?? info.cover ?? widget.series.cover;
 
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(
-            horizontal: isLandscape ? 32.0 : 16.0,
-            vertical: 16.0,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 1. Cabeçalho com Capa, Detalhes e Sinopse
-              isLandscape ? _buildLandscapeHeader(info) : _buildPortraitHeader(info),
-              const SizedBox(height: 24),
-
-              // 2. Ação Rápida de Continuar Assistindo (se houver)
-              if (_resumeEpisode != null) ...[
-                _buildResumeCard(),
-                const SizedBox(height: 24),
-              ],
-
-              // 3. Seletor de Temporadas
-              _buildSeasonSelector(info),
-              const SizedBox(height: 16),
-
-              // 4. Lista de Episódios da Temporada Selecionada
-              _buildEpisodesList(info),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildPortraitHeader(XtreamSeriesInfo info) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Stack(
+      fit: StackFit.expand,
       children: [
-        Center(child: _buildPoster(width: 160, height: 235, coverUrl: info.cover ?? widget.series.cover)),
-        const SizedBox(height: 16),
-        _buildMetadata(info, isCenter: true),
-        const SizedBox(height: 12),
-        _buildSynopsis(info),
-      ],
-    );
-  }
-
-  Widget _buildLandscapeHeader(XtreamSeriesInfo info) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildPoster(width: 170, height: 250, coverUrl: info.cover ?? widget.series.cover),
-        const SizedBox(width: 24),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildMetadata(info, isCenter: false),
-              const SizedBox(height: 12),
-              _buildSynopsis(info),
-            ],
+        // 1. Imagem de fundo panorâmica (Backdrop)
+        if (backdropUrl != null && backdropUrl.trim().isNotEmpty)
+          Positioned.fill(
+            child: Image.network(
+              backdropUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+            ),
           ),
-        ),
-      ],
-    );
-  }
 
-  Widget _buildPoster({required double width, required double height, String? coverUrl}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: width,
-        height: height,
-        color: const Color(0xFF141C2A),
-        child: (coverUrl != null && coverUrl.trim().isNotEmpty)
-            ? Image.network(
-                coverUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => _buildFallbackPosterIcon(),
-              )
-            : _buildFallbackPosterIcon(),
-      ),
-    );
-  }
-
-  Widget _buildFallbackPosterIcon() {
-    return const Center(
-      child: Icon(Icons.tv_rounded, color: Color(0xFF00E5FF), size: 48),
-    );
-  }
-
-  Widget _buildMetadata(XtreamSeriesInfo info, {required bool isCenter}) {
-    final rating = info.rating ?? widget.series.rating;
-    final genre = info.genre ?? widget.series.genre;
-    final year = info.releaseDate?.split('-').firstOrNull;
-
-    return Column(
-      crossAxisAlignment: isCenter ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-      children: [
-        Text(
-          info.name,
-          textAlign: isCenter ? TextAlign.center : TextAlign.start,
-          style: const TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFF0F4F8),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          alignment: isCenter ? WrapAlignment.center : WrapAlignment.start,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 8,
-          runSpacing: 6,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: const Color(0xFF00E5FF), width: 1),
-              ),
-              child: const Text(
-                'SÉRIE',
-                style: TextStyle(
-                  color: Color(0xFF00E5FF),
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
+        // 2. Gradiente Horizontal (escurecimento suave à esquerda para garantir legibilidade dos textos)
+        Positioned.fill(
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  const Color(0xFF070D16),
+                  const Color(0xFF070D16).withValues(alpha: 0.95),
+                  const Color(0xFF070D16).withValues(alpha: 0.72),
+                  const Color(0xFF070D16).withValues(alpha: 0.35),
+                ],
+                stops: const [0.0, 0.45, 0.75, 1.0],
               ),
             ),
-            if (rating != null && rating.isNotEmpty)
+          ),
+        ),
+
+        // 3. Gradiente Vertical (escurecimento sutil no topo e forte na base para os episódios)
+        Positioned.fill(
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  const Color(0xCC070D16),
+                  Colors.transparent,
+                  const Color(0xF2070D16),
+                ],
+                stops: const [0.0, 0.28, 1.0],
+              ),
+            ),
+          ),
+        ),
+
+        // 4. Conteúdo Rolável em Primeiro Plano
+        SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final isLandscape = constraints.maxWidth > constraints.maxHeight;
+
+              return SingleChildScrollView(
+                padding: EdgeInsets.symmetric(
+                  horizontal: isLandscape ? 36.0 : 18.0,
+                  vertical: 16.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Barra Superior com botão Voltar em pill e título
+                    _buildTopBar(),
+                    const SizedBox(height: 16),
+
+                    // Seção de Destaque da Série (Título, Badges, Sinopse e Botões Silo)
+                    _buildHeroSection(info, constraints),
+                    const SizedBox(height: 32),
+
+                    // Seção "Temporadas"
+                    _buildSeasonSectionHeader(),
+                    const SizedBox(height: 14),
+
+                    // Seletor de Temporadas em pills horizontais
+                    _buildSeasonSelector(info),
+                    const SizedBox(height: 20),
+
+                    // Lista de Episódios da Temporada Selecionada
+                    _buildEpisodesList(info),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopBar() {
+    return Row(
+      children: [
+        _BackButtonPill(
+          onBack: () => Navigator.of(context).pop(),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            widget.series.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF8A99AD),
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
+          icon: Icon(
+            _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+            color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+          ),
+          onPressed: _toggleFavorite,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeroSection(XtreamSeriesInfo info, BoxConstraints constraints) {
+    final isLandscape = constraints.maxWidth > constraints.maxHeight;
+    final year = info.releaseDate?.split('-').firstOrNull;
+    final rating = info.rating ?? widget.series.rating;
+    final genre = info.genre ?? widget.series.genre;
+    final plot = info.plot ?? widget.series.plot;
+
+    final heroWidth = isLandscape ? (constraints.maxWidth * 0.62).clamp(380.0, 760.0) : double.infinity;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: heroWidth),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Título da Série
+          Text(
+            info.name,
+            style: const TextStyle(
+              fontSize: 30,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFFF0F4F8),
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Badges: SÉRIE, Ano, Avaliação com Estrela e Gêneros
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFFFB300).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: const Color(0xFFFFB300), width: 1),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF00E5FF), width: 1.2),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.star_rounded, color: Color(0xFFFFB300), size: 14),
-                    const SizedBox(width: 4),
-                    Text(
-                      rating,
-                      style: const TextStyle(
-                        color: Color(0xFFFFB300),
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            if (year != null && year.isNotEmpty)
-              Text(
-                year,
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
-              ),
-            if (genre != null && genre.isNotEmpty)
-              Text(
-                '•  $genre',
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
-              ),
-            _DetailFavoriteButton(
-              isFavorite: _isFavorite,
-              onToggle: _toggleFavorite,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSynopsis(XtreamSeriesInfo info) {
-    final plot = info.plot ?? widget.series.plot;
-    if (plot == null || plot.trim().isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Sinopse',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF00E5FF),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          plot,
-          style: const TextStyle(
-            fontSize: 13,
-            height: 1.4,
-            color: Color(0xFFB0BEC5),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildResumeCard() {
-    final ep = _resumeEpisode!;
-    final prog = _resumeProgress;
-    final timeStr = prog != null ? PlaybackProgressService.formatDuration(prog.position) : null;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF141C2A),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF1E88E5), width: 1.2),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: const BoxDecoration(
-              color: Color(0xFF1E88E5),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 24),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Continuar assistindo',
+                child: const Text(
+                  'SÉRIE',
                   style: TextStyle(
                     color: Color(0xFF00E5FF),
-                    fontSize: 12,
+                    fontSize: 11,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 2),
+              ),
+              if (year != null && year.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.6), width: 1.2),
+                  ),
+                  child: Text(
+                    year,
+                    style: const TextStyle(
+                      color: Color(0xFFF0F4F8),
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              if (rating != null && rating.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFB300).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFFFB300), width: 1.2),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.star_rounded, color: Color(0xFFFFB300), size: 14),
+                      const SizedBox(width: 4),
+                      Text(
+                        rating,
+                        style: const TextStyle(
+                          color: Color(0xFFFFB300),
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (genre != null && genre.isNotEmpty)
                 Text(
-                  'T${ep.seasonNumber}:E${ep.episodeNum} • ${ep.title}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  genre,
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF90A4AE),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                if (timeStr != null)
-                  Text(
-                    'Parou em $timeStr',
-                    style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
-                  ),
-              ],
-            ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () => _onEpisodeTap(ep),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE50914),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          const SizedBox(height: 14),
+
+          // Sinopse
+          if (plot != null && plot.trim().isNotEmpty) ...[
+            Text(
+              plot,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13.5,
+                height: 1.45,
+                color: Color(0xFFCFD8DC),
+              ),
             ),
-            child: const Text('Assistir', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 20),
+          ],
+
+          // Botões de Ação Hero Silo:
+          // Botão 1: Destaque Primário Silo (CONTINUAR S... / PRÓXIMO S... / ASSISTIR S...)
+          // Botão 2: Favoritos em Pill (REMOVER DOS FAVORITOS / ADICIONAR AOS FAVORITOS)
+          Wrap(
+            spacing: 14,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (_primaryEpisode != null && _primaryButtonLabel.isNotEmpty)
+                _SiloPrimaryButton(
+                  label: _primaryButtonLabel,
+                  autofocus: true,
+                  onTap: () => _startPlayback(_primaryEpisode!, initialPosition: _primaryPosition),
+                ),
+              _SiloFavoriteButton(
+                isFavorite: _isFavorite,
+                onToggle: _toggleFavorite,
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSeasonSectionHeader() {
+    return const Text(
+      'Temporadas',
+      style: TextStyle(
+        fontSize: 22,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFFF0F4F8),
+        letterSpacing: 0.3,
       ),
     );
   }
@@ -674,7 +658,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         children: info.seasons.map((season) {
           final isSelected = season.seasonNumber == _selectedSeasonNumber;
           return Padding(
-            padding: const EdgeInsets.only(right: 8.0),
+            padding: const EdgeInsets.only(right: 10.0),
             child: _SeasonChip(
               season: season,
               isSelected: isSelected,
@@ -721,20 +705,177 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   }
 }
 
-class _DetailFavoriteButton extends StatefulWidget {
+/// Botão de Voltar em Pill estilizado
+class _BackButtonPill extends StatefulWidget {
+  final VoidCallback onBack;
+
+  const _BackButtonPill({required this.onBack});
+
+  @override
+  State<_BackButtonPill> createState() => _BackButtonPillState();
+}
+
+class _BackButtonPillState extends State<_BackButtonPill> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onBack();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onBack,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFF182A3D) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
+              width: _isFocused ? 2.0 : 1.2,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.arrow_back_rounded,
+                size: 16,
+                color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Voltar',
+                style: TextStyle(
+                  color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão Principal Silo com destaque intenso no foco do controle remoto (fundo branco/menta, contorno ciano luminoso e texto ciano escuro)
+class _SiloPrimaryButton extends StatefulWidget {
+  final String label;
+  final VoidCallback onTap;
+  final bool autofocus;
+
+  const _SiloPrimaryButton({
+    required this.label,
+    required this.onTap,
+    this.autofocus = true,
+  });
+
+  @override
+  State<_SiloPrimaryButton> createState() => _SiloPrimaryButtonState();
+}
+
+class _SiloPrimaryButtonState extends State<_SiloPrimaryButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onTap();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFFE8FDF8) : const Color(0xFF0C2434),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
+              width: _isFocused ? 2.5 : 1.5,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                      blurRadius: 18,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.play_arrow_rounded,
+                size: 26,
+                color: _isFocused ? const Color(0xFF00838F) : const Color(0xFF00E5FF),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _isFocused ? const Color(0xFF004D40) : const Color(0xFFF0F4F8),
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão de Favoritos Silo em Pill com destaque visual no controle remoto
+class _SiloFavoriteButton extends StatefulWidget {
   final bool isFavorite;
   final VoidCallback onToggle;
 
-  const _DetailFavoriteButton({
+  const _SiloFavoriteButton({
     required this.isFavorite,
     required this.onToggle,
   });
 
   @override
-  State<_DetailFavoriteButton> createState() => _DetailFavoriteButtonState();
+  State<_SiloFavoriteButton> createState() => _SiloFavoriteButtonState();
 }
 
-class _DetailFavoriteButtonState extends State<_DetailFavoriteButton> {
+class _SiloFavoriteButtonState extends State<_SiloFavoriteButton> {
   bool _isFocused = false;
 
   @override
@@ -753,23 +894,23 @@ class _DetailFavoriteButtonState extends State<_DetailFavoriteButton> {
         onTap: widget.onToggle,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
           decoration: BoxDecoration(
-            color: widget.isFavorite
-                ? const Color(0xFFEF5350).withValues(alpha: 0.25)
-                : (_isFocused ? const Color(0xFF1E283D) : const Color(0xFF141C2A)),
-            borderRadius: BorderRadius.circular(6),
+            color: _isFocused
+                ? const Color(0xFF16283C)
+                : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _isFocused
                   ? const Color(0xFF00E5FF)
-                  : (widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFF37474F)),
-              width: 2.0,
+                  : (widget.isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.6) : const Color(0xFF22354A)),
+              width: _isFocused ? 2.2 : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
-                      blurRadius: 8,
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      blurRadius: 14,
                       spreadRadius: 1,
                     ),
                   ]
@@ -779,21 +920,18 @@ class _DetailFavoriteButtonState extends State<_DetailFavoriteButton> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                size: 14,
-                color: widget.isFavorite
-                    ? const Color(0xFFEF5350)
-                    : (_isFocused ? const Color(0xFF00E5FF) : const Color(0xFF8A99AD)),
+                widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                size: 20,
+                color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
               ),
-              const SizedBox(width: 5),
+              const SizedBox(width: 8),
               Text(
-                widget.isFavorite ? 'Favorito' : 'Favoritar',
-                style: TextStyle(
-                  color: widget.isFavorite
-                      ? const Color(0xFFEF5350)
-                      : (_isFocused ? const Color(0xFF00E5FF) : const Color(0xFF8A99AD)),
-                  fontSize: 12,
+                widget.isFavorite ? 'REMOVER DOS FAVORITOS' : 'ADICIONAR AOS FAVORITOS',
+                style: const TextStyle(
+                  color: Color(0xFFF0F4F8),
+                  fontSize: 13.5,
                   fontWeight: FontWeight.bold,
+                  letterSpacing: 0.4,
                 ),
               ),
             ],
@@ -804,6 +942,7 @@ class _DetailFavoriteButtonState extends State<_DetailFavoriteButton> {
   }
 }
 
+/// Seletor de Temporada em Pill com destaque ciano
 class _SeasonChip extends StatefulWidget {
   final XtreamSeriesSeason season;
   final bool isSelected;
@@ -838,23 +977,23 @@ class _SeasonChipState extends State<_SeasonChip> {
         onTap: widget.onSelected,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
           decoration: BoxDecoration(
             color: widget.isSelected
-                ? const Color(0xFF1E88E5)
-                : (_isFocused ? const Color(0xFF1C2638) : const Color(0xFF141C2A)),
-            borderRadius: BorderRadius.circular(8),
+                ? const Color(0xFF00E5FF).withValues(alpha: 0.22)
+                : (_isFocused ? const Color(0xFF162538) : const Color(0xFF0F1A28)),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _isFocused
                   ? const Color(0xFF00E5FF)
-                  : (widget.isSelected ? const Color(0xFF00E5FF) : const Color(0xFF263238)),
-              width: 2.0,
+                  : (widget.isSelected ? const Color(0xFF00E5FF) : const Color(0xFF233549)),
+              width: _isFocused || widget.isSelected ? 2.0 : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
                       color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
-                      blurRadius: 8,
+                      blurRadius: 10,
                       spreadRadius: 1,
                     )
                   ]
@@ -864,8 +1003,8 @@ class _SeasonChipState extends State<_SeasonChip> {
             widget.season.name,
             style: TextStyle(
               color: widget.isSelected || _isFocused ? Colors.white : const Color(0xFFB0BEC5),
-              fontWeight: widget.isSelected || _isFocused ? FontWeight.bold : FontWeight.normal,
-              fontSize: 13,
+              fontWeight: widget.isSelected || _isFocused ? FontWeight.bold : FontWeight.w500,
+              fontSize: 13.5,
             ),
           ),
         ),
@@ -874,6 +1013,7 @@ class _SeasonChipState extends State<_SeasonChip> {
   }
 }
 
+/// Linha de episódio com destaque de foco e indicador de progresso
 class _EpisodeTile extends StatefulWidget {
   final XtreamSeriesEpisode episode;
   final PlaybackProgress? progress;
@@ -913,16 +1053,17 @@ class _EpisodeTileState extends State<_EpisodeTile> {
       },
       child: GestureDetector(
         onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF1E283D) : const Color(0xFF121824),
-            borderRadius: BorderRadius.circular(10),
+            color: _isFocused ? const Color(0xFF142436) : const Color(0xFF0C1622).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: _isFocused
                   ? const Color(0xFF00E5FF)
-                  : (hasProgress ? const Color(0xFF1E88E5) : const Color(0xFF1C2434)),
-              width: 2.0,
+                  : (hasProgress ? const Color(0xFF00A0B0) : const Color(0xFF1B2C3F)),
+              width: _isFocused ? 2.0 : 1.0,
             ),
             boxShadow: _isFocused
                 ? [
@@ -941,26 +1082,29 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                 children: [
                   // Badge do número do episódio
                   Container(
-                    width: 38,
-                    height: 38,
+                    width: 42,
+                    height: 42,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: _isFocused
                           ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                          : const Color(0xFF1C2638),
+                          : const Color(0xFF162538),
                       borderRadius: BorderRadius.circular(8),
-                      border: _isFocused ? Border.all(color: const Color(0xFF00E5FF), width: 1.5) : null,
+                      border: Border.all(
+                        color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
+                        width: 1.2,
+                      ),
                     ),
                     child: Text(
                       'E${ep.episodeNum}',
                       style: TextStyle(
                         color: _isFocused ? Colors.white : const Color(0xFF00E5FF),
-                        fontSize: 13,
+                        fontSize: 14,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 14),
 
                   // Título e Duração
                   Expanded(
@@ -977,20 +1121,24 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const SizedBox(height: 2),
+                        const SizedBox(height: 3),
                         Row(
                           children: [
                             if (ep.duration != null && ep.duration!.isNotEmpty) ...[
                               Text(
                                 ep.duration!,
-                                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
+                                style: const TextStyle(color: Color(0xFF8A99AD), fontSize: 12),
                               ),
                               const SizedBox(width: 8),
                             ],
                             if (hasProgress) ...[
                               Text(
                                 '•  ${PlaybackProgressService.formatDuration(prog.position)} assistido',
-                                style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                style: const TextStyle(
+                                  color: Color(0xFF00E5FF),
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ],
                           ],
@@ -1002,7 +1150,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                   // Ícone de Play
                   Icon(
                     Icons.play_circle_fill_rounded,
-                    color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFE50914),
+                    color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
                     size: 32,
                   ),
                 ],
@@ -1017,7 +1165,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                     value: progressFraction,
                     minHeight: 3,
                     backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE50914)),
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
                   ),
                 ),
               ],
@@ -1030,7 +1178,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Color(0xFF78909C),
+                    color: Color(0xFF8A99AD),
                     fontSize: 12,
                     height: 1.3,
                   ),

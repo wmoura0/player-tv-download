@@ -44,10 +44,10 @@ class CatalogSidebar extends StatelessWidget {
     return Container(
       width: width,
       decoration: const BoxDecoration(
-        color: Color(0xFF0C1220),
+        color: Color(0xFF0A141D),
         border: Border(
           right: BorderSide(
-            color: Color(0xFF192238),
+            color: Color(0xFF162A38),
             width: 1.5,
           ),
         ),
@@ -390,6 +390,32 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (widget.category.itemCount != null) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                      decoration: BoxDecoration(
+                        color: widget.isSelected
+                            ? activeColor.withValues(alpha: 0.22)
+                            : const Color(0xFF132230),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: widget.isSelected
+                              ? activeColor.withValues(alpha: 0.45)
+                              : const Color(0xFF1E3547),
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Text(
+                        '${widget.category.itemCount}',
+                        style: TextStyle(
+                          fontSize: widget.isCompact ? 9.5 : 10.5,
+                          fontWeight: FontWeight.bold,
+                          color: widget.isSelected ? activeColor : const Color(0xFF8DAEC4),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/xtream_account.dart';
@@ -43,11 +44,11 @@ class PlayerTvApp extends StatelessWidget {
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             brightness: Brightness.dark,
-            scaffoldBackgroundColor: const Color(0xFF070A12),
+            scaffoldBackgroundColor: const Color(0xFF070F18),
             colorScheme: ColorScheme.dark(
               primary: accent.color,
               secondary: accent.secondaryColor,
-              surface: const Color(0xFF0E1424),
+              surface: const Color(0xFF0E1E2A),
               onSurface: const Color(0xFFF5F8FC),
             ),
             useMaterial3: true,
@@ -233,6 +234,12 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } else if (categoryTitle == 'Favoritos') {
       _onOpenFavorites();
+    } else if (categoryTitle == 'Playlist') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => const PlaylistsScreen(),
+        ),
+      ).then((_) => _loadHomeData());
     } else {
       _showNotice(categoryTitle);
     }
@@ -588,11 +595,20 @@ class _HomeScreenState extends State<HomeScreen> {
                         onSearchTap: _onSearchPressed,
                         onSettingsTap: _onSettingsPressed,
                         onLogoutTap: _onLogout,
+                        onRecentsTap: () {
+                          if (_scrollController.hasClients) {
+                            _scrollController.animateTo(
+                              320,
+                              duration: const Duration(milliseconds: 300),
+                              curve: Curves.easeOut,
+                            );
+                          }
+                        },
                       ),
                     ),
                   ),
 
-                  // Cards principais de categorias (TV ao vivo, Filmes, Séries, Favoritos)
+                  // Cards principais de categorias (TV ao vivo em destaque + Filmes, Séries, Favoritos, Playlist)
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: EdgeInsets.symmetric(
@@ -602,6 +618,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: _MainCategoriesSection(
                         isLandscape: isLandscape,
                         onCategoryTap: _onCategorySelected,
+                        liveCount: _sharedCatalogService?.totalLiveCount,
                       ),
                     ),
                   ),
@@ -652,9 +669,22 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
 
+                  // Rodapé discreto de status
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: horizontalPadding,
+                        vertical: 12.0,
+                      ),
+                      child: _AppFooterStatus(
+                        xtreamAccount: widget.xtreamAccount,
+                      ),
+                    ),
+                  ),
+
                   // Espaço inferior de respiro
                   const SliverToBoxAdapter(
-                    child: SizedBox(height: 28),
+                    child: SizedBox(height: 24),
                   ),
                 ],
               );
@@ -666,142 +696,128 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Cabeçalho minimalista com o nome do aplicativo, status da conta Xtream, busca e ações.
+/// Cabeçalho moderno Smart TV com logotipo, relógio digital dinâmico e pílulas de ação rápida.
 class _AppHeader extends StatelessWidget {
   final XtreamAccount? xtreamAccount;
   final VoidCallback onSearchTap;
   final VoidCallback onSettingsTap;
   final VoidCallback onLogoutTap;
+  final VoidCallback? onRecentsTap;
 
   const _AppHeader({
     this.xtreamAccount,
     required this.onSearchTap,
     required this.onSettingsTap,
     required this.onLogoutTap,
+    this.onRecentsTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isCompact = constraints.maxWidth < 450;
+        final isCompact = constraints.maxWidth < 620;
+        final showClock = constraints.maxWidth >= 960;
 
         return Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             // Identidade visual / Logotipo
-            Expanded(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF00E5FF), Color(0xFF1E88E5)],
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF00E5FF), Color(0xFF00E676)],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
                       ),
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.play_arrow_rounded,
-                      color: Color(0xFF070A12),
-                      size: 15,
-                    ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  const Flexible(
-                    child: Text(
-                      'Player TV',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.3,
-                        color: Color(0xFFF5F8FC),
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  child: const Icon(
+                    Icons.tv_rounded,
+                    color: Color(0xFF070F18),
+                    size: 18,
                   ),
-                  if (xtreamAccount != null) ...[
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0E1424),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: const Color(0xFF1E2942),
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 5,
-                              height: 5,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF00E676),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                xtreamAccount!.username,
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  color: Color(0xFF94A3B8),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'Player TV',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                    color: Color(0xFFF5F8FC),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 4),
 
-            // Botões de ação do cabeçalho
-            _HeaderActionButton(
-              key: const Key('header_search_btn'),
-              icon: Icons.search_rounded,
-              tooltip: 'Buscar no catálogo',
-              iconColor: const Color(0xFF94A3B8),
-              isCompact: isCompact,
-              onTap: onSearchTap,
-            ),
-            if (xtreamAccount != null)
-              _HeaderActionButton(
-                key: const Key('header_logout_btn'),
-                icon: Icons.logout_rounded,
-                tooltip: 'Desconectar conta',
-                iconColor: const Color(0xFF94A3B8),
-                isCompact: isCompact,
-                onTap: onLogoutTap,
-              ),
-            _HeaderActionButton(
-              key: const Key('header_settings_btn'),
-              icon: Icons.settings_outlined,
-              tooltip: 'Configurações',
-              iconColor: const Color(0xFF94A3B8),
-              isCompact: isCompact,
-              onTap: onSettingsTap,
+            const Spacer(),
+
+            // Relógio Digital Central (Visível em TV e telas amplas)
+            if (showClock) ...[
+              const _LiveHeaderClock(),
+              const Spacer(),
+            ],
+
+            // Pílulas de Ação Rápida no Topo à Direita
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _HeaderActionButton(
+                  key: const Key('header_search_btn'),
+                  icon: Icons.search_rounded,
+                  tooltip: 'Buscar no catálogo',
+                  label: isCompact ? null : 'Buscar',
+                  iconColor: const Color(0xFF8DAEC4),
+                  isCompact: isCompact,
+                  onTap: onSearchTap,
+                ),
+                if (onRecentsTap != null && showClock) ...[
+                  const SizedBox(width: 8),
+                  _HeaderActionButton(
+                    key: const Key('header_recents_btn'),
+                    icon: Icons.history_rounded,
+                    tooltip: 'Recentes',
+                    label: 'Recentes',
+                    iconColor: const Color(0xFF8DAEC4),
+                    isCompact: false,
+                    onTap: onRecentsTap!,
+                  ),
+                ],
+                const SizedBox(width: 8),
+                _HeaderActionButton(
+                  key: const Key('header_settings_btn'),
+                  icon: Icons.settings_outlined,
+                  tooltip: 'Configurações',
+                  label: isCompact ? null : 'Configurações',
+                  iconColor: const Color(0xFF8DAEC4),
+                  isCompact: isCompact,
+                  onTap: onSettingsTap,
+                ),
+                if (xtreamAccount != null) ...[
+                  const SizedBox(width: 8),
+                  _HeaderActionButton(
+                    key: const Key('header_logout_btn'),
+                    icon: Icons.account_circle_outlined,
+                    tooltip: 'Sair da conta',
+                    label: xtreamAccount!.username,
+                    iconColor: const Color(0xFF8DAEC4),
+                    isCompact: isCompact,
+                    onTap: onLogoutTap,
+                  ),
+                ],
+              ],
             ),
           ],
         );
@@ -810,10 +826,99 @@ class _AppHeader extends StatelessWidget {
   }
 }
 
-/// Botão de ação do cabeçalho com foco visual e hover para Android TV.
+/// Relógio digital com atualização periódica em tempo real para o cabeçalho IPTV.
+class _LiveHeaderClock extends StatefulWidget {
+  const _LiveHeaderClock();
+
+  @override
+  State<_LiveHeaderClock> createState() => _LiveHeaderClockState();
+}
+
+class _LiveHeaderClockState extends State<_LiveHeaderClock> {
+  late DateTime _now;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _now = DateTime.now();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() => _now = DateTime.now());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String _formatDate(DateTime dt) {
+    const weekdays = [
+      'Segunda-feira',
+      'Terça-feira',
+      'Quarta-feira',
+      'Quinta-feira',
+      'Sexta-feira',
+      'Sábado',
+      'Domingo',
+    ];
+    const months = [
+      'Janeiro',
+      'Fevereiro',
+      'Março',
+      'Abril',
+      'Maio',
+      'Junho',
+      'Julho',
+      'Agosto',
+      'Setembro',
+      'Outubro',
+      'Novembro',
+      'Dezembro',
+    ];
+    final w = weekdays[dt.weekday - 1];
+    final m = months[dt.month - 1];
+    return '$w, ${dt.day} De $m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hh = _now.hour.toString().padLeft(2, '0');
+    final mm = _now.minute.toString().padLeft(2, '0');
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$hh:$mm',
+          style: const TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFFF5F8FC),
+            letterSpacing: 1.0,
+          ),
+        ),
+        Text(
+          _formatDate(_now),
+          style: const TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w500,
+            color: Color(0xFF8DAEC4),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Botão de ação do cabeçalho com foco visual e hover para Android TV, suportando formato de pílula.
 class _HeaderActionButton extends StatefulWidget {
   final IconData icon;
   final String tooltip;
+  final String? label;
   final Color iconColor;
   final bool isCompact;
   final VoidCallback onTap;
@@ -822,6 +927,7 @@ class _HeaderActionButton extends StatefulWidget {
     super.key,
     required this.icon,
     required this.tooltip,
+    this.label,
     required this.iconColor,
     this.isCompact = false,
     required this.onTap,
@@ -838,10 +944,11 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    final btnSize = widget.isCompact ? 28.0 : 34.0;
-    final iconSize = widget.isCompact ? 17.0 : 19.0;
+    final isPill = widget.label != null && !widget.isCompact;
 
     return FocusableActionDetector(
+      actions: DeviceUtils.activateAction(widget.onTap),
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: Tooltip(
@@ -849,22 +956,61 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           decoration: BoxDecoration(
-            color: isHighlighted ? const Color(0xFF00E5FF).withValues(alpha: 0.15) : Colors.transparent,
-            shape: BoxShape.circle,
-            border: isHighlighted
-                ? Border.all(color: const Color(0xFF00E5FF), width: 1.5)
+            color: isHighlighted
+                ? const Color(0xFF00E5FF).withValues(alpha: 0.18)
+                : const Color(0xFF0E1E2A),
+            borderRadius: BorderRadius.circular(isPill ? 18 : 20),
+            border: Border.all(
+              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A384C),
+              width: isHighlighted ? 2.0 : 1.0,
+            ),
+            boxShadow: isHighlighted
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                      blurRadius: 8,
+                    ),
+                  ]
                 : null,
           ),
-          child: IconButton(
-            constraints: BoxConstraints(minWidth: btnSize, minHeight: btnSize),
-            padding: const EdgeInsets.all(4),
-            icon: Icon(
-              widget.icon,
-              color: isHighlighted ? const Color(0xFF00E5FF) : widget.iconColor,
-              size: iconSize,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              canRequestFocus: false,
+              borderRadius: BorderRadius.circular(isPill ? 18 : 20),
+              onTap: widget.onTap,
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: isPill ? 10 : 7,
+                  vertical: 6,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.icon,
+                      color: isHighlighted ? const Color(0xFF00E5FF) : widget.iconColor,
+                      size: 17,
+                    ),
+                    if (isPill) ...[
+                      const SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          widget.label!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: isHighlighted ? Colors.white : const Color(0xFFBAC7D5),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
-            splashRadius: 16,
-            onPressed: widget.onTap,
           ),
         ),
       ),
@@ -1586,27 +1732,30 @@ class _CategoryItem {
   });
 }
 
-/// Seção que organiza os 4 cards principais de categorias (TV ao vivo, Filmes, Séries e Favoritos).
+/// Seção que organiza o card de destaque de TV ao Vivo e o bloco 2x2 de Filmes, Séries, Favoritos e Playlist.
 class _MainCategoriesSection extends StatelessWidget {
   final bool isLandscape;
   final ValueChanged<String> onCategoryTap;
+  final int? liveCount;
 
   const _MainCategoriesSection({
     required this.isLandscape,
     required this.onCategoryTap,
+    this.liveCount,
   });
 
   @override
   Widget build(BuildContext context) {
-    final categories = [
-      const _CategoryItem(
-        key: Key('cat_live_tv'),
-        title: 'TV ao vivo',
-        subtitle: 'Canais em tempo real',
-        icon: Icons.live_tv_rounded,
-        accentColor: Color(0xFF00E5FF),
-        autofocus: true,
-      ),
+    final heroItem = _CategoryItem(
+      key: const Key('cat_live_tv'),
+      title: 'TV ao vivo',
+      subtitle: liveCount != null ? '$liveCount canais' : 'Canais em tempo real',
+      icon: Icons.live_tv_rounded,
+      accentColor: const Color(0xFF00E5FF),
+      autofocus: true,
+    );
+
+    final subCards = [
       const _CategoryItem(
         key: Key('cat_movies'),
         title: 'Filmes',
@@ -1628,43 +1777,121 @@ class _MainCategoriesSection extends StatelessWidget {
         icon: Icons.favorite_rounded,
         accentColor: Color(0xFFEF5350),
       ),
+      const _CategoryItem(
+        key: Key('cat_playlists'),
+        title: 'Playlist',
+        subtitle: 'Adicionar / gerenciar',
+        icon: Icons.playlist_play_rounded,
+        accentColor: Color(0xFF00E676),
+      ),
     ];
 
     if (isLandscape) {
-      return Row(
-        children: categories
-            .map(
-              (category) => Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6.0),
-                  child: _CategoryCard(
-                    item: category,
-                    isLandscape: true,
-                    onTap: () => onCategoryTap(category.title),
-                  ),
-                ),
+      return SizedBox(
+        height: 200,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Cartão de TV ao vivo em destaque (Hero)
+            Expanded(
+              flex: 40,
+              child: _CategoryCard(
+                item: heroItem,
+                isLandscape: true,
+                isHero: true,
+                onTap: () => onCategoryTap(heroItem.title),
               ),
-            )
-            .toList(),
+            ),
+            const SizedBox(width: 12),
+            // Bloco 2x2 de Filmes, Séries, Favoritos e Playlist
+            Expanded(
+              flex: 60,
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: _CategoryCard(
+                            item: subCards[0],
+                            isLandscape: true,
+                            onTap: () => onCategoryTap(subCards[0].title),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _CategoryCard(
+                            item: subCards[1],
+                            isLandscape: true,
+                            onTap: () => onCategoryTap(subCards[1].title),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: _CategoryCard(
+                            item: subCards[2],
+                            isLandscape: true,
+                            onTap: () => onCategoryTap(subCards[2].title),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _CategoryCard(
+                            item: subCards[3],
+                            isLandscape: true,
+                            onTap: () => onCategoryTap(subCards[3].title),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       );
     }
 
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 10,
-      crossAxisSpacing: 10,
-      childAspectRatio: 2.2,
-      children: categories
-          .map(
-            (category) => _CategoryCard(
-              item: category,
-              isLandscape: false,
-              onTap: () => onCategoryTap(category.title),
-            ),
-          )
-          .toList(),
+    return Column(
+      children: [
+        SizedBox(
+          height: 135,
+          width: double.infinity,
+          child: _CategoryCard(
+            item: heroItem,
+            isLandscape: false,
+            isHero: true,
+            onTap: () => onCategoryTap(heroItem.title),
+          ),
+        ),
+        const SizedBox(height: 10),
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 2.2,
+          children: subCards
+              .map(
+                (category) => _CategoryCard(
+                  item: category,
+                  isLandscape: false,
+                  onTap: () => onCategoryTap(category.title),
+                ),
+              )
+              .toList(),
+        ),
+      ],
     );
   }
 }
@@ -1673,11 +1900,13 @@ class _MainCategoriesSection extends StatelessWidget {
 class _CategoryCard extends StatefulWidget {
   final _CategoryItem item;
   final bool isLandscape;
+  final bool isHero;
   final VoidCallback onTap;
 
   const _CategoryCard({
     required this.item,
     required this.isLandscape,
+    this.isHero = false,
     required this.onTap,
   });
 
@@ -1705,26 +1934,28 @@ class _CategoryCardState extends State<_CategoryCard> {
         setState(() => _isHovered = value);
       },
       child: AnimatedScale(
-        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? (widget.isLandscape ? 1.04 : 1.02) : 1.0),
+        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? (widget.isLandscape ? 1.03 : 1.02) : 1.0),
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeOutCubic,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOutCubic,
           decoration: BoxDecoration(
-            color: isHighlighted ? const Color(0xFF131B2E) : const Color(0xFF0E1424),
+            color: isHighlighted
+                ? (widget.isHero ? const Color(0xFF132A3B) : const Color(0xFF132230))
+                : (widget.isHero ? const Color(0xFF0C1A26) : const Color(0xFF0E1E2A)),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isHighlighted
                   ? widget.item.accentColor
-                  : const Color(0xFF1D263B),
-              width: 2.0,
+                  : const Color(0xFF1A384C),
+              width: isHighlighted ? (widget.isHero ? 2.5 : 2.0) : 1.2,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: widget.item.accentColor.withValues(alpha: 0.25),
-                      blurRadius: 14,
+                      color: widget.item.accentColor.withValues(alpha: widget.isHero ? 0.35 : 0.25),
+                      blurRadius: widget.isHero ? 16 : 12,
                       offset: const Offset(0, 3),
                     ),
                   ]
@@ -1745,10 +1976,12 @@ class _CategoryCardState extends State<_CategoryCard> {
               splashColor: widget.item.accentColor.withValues(alpha: 0.15),
               highlightColor: widget.item.accentColor.withValues(alpha: 0.08),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: widget.isLandscape
-                    ? _buildLandscapeContent(isHighlighted)
-                    : _buildPortraitContent(isHighlighted),
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: widget.isHero ? 10 : 12),
+                child: widget.isHero
+                    ? _buildHeroContent(isHighlighted)
+                    : (widget.isLandscape
+                        ? _buildLandscapeContent(isHighlighted)
+                        : _buildPortraitContent(isHighlighted)),
               ),
             ),
           ),
@@ -1757,16 +1990,106 @@ class _CategoryCardState extends State<_CategoryCard> {
     );
   }
 
-  Widget _buildLandscapeContent(bool isHighlighted) {
-    final isTv = DeviceUtils.isTv;
-    return Row(
+  Widget _buildHeroContent(bool isHighlighted) {
+    return Column(
       mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: widget.item.accentColor.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: widget.item.accentColor.withValues(alpha: 0.4),
+                  width: 1.2,
+                ),
+              ),
+              child: Icon(
+                widget.item.icon,
+                color: widget.item.accentColor,
+                size: 26,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: widget.item.accentColor.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: widget.item.accentColor.withValues(alpha: 0.35),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF00E676),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        widget.item.subtitle,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: widget.item.accentColor,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const Spacer(),
+        Text(
+          widget.item.title,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.4,
+            color: Color(0xFFF5F8FC),
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 2),
+        const Text(
+          'Transmissão ao vivo com guia EPG',
+          style: TextStyle(
+            fontSize: 11,
+            color: Color(0xFF8DAEC4),
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeContent(bool isHighlighted) {
+    return Row(
       children: [
         Container(
-          padding: EdgeInsets.all(isTv ? 9 : 8),
+          padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
-            color: widget.item.accentColor.withValues(alpha: 0.12),
-            shape: BoxShape.circle,
+            color: widget.item.accentColor.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: widget.item.accentColor.withValues(alpha: 0.35),
               width: 1.2,
@@ -1775,31 +2098,31 @@ class _CategoryCardState extends State<_CategoryCard> {
           child: Icon(
             widget.item.icon,
             color: widget.item.accentColor,
-            size: isTv ? 24 : 22,
+            size: 22,
           ),
         ),
-        SizedBox(width: isTv ? 12 : 10),
-        Flexible(
+        const SizedBox(width: 12),
+        Expanded(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 widget.item.title,
-                style: TextStyle(
-                  fontSize: isTv ? 15 : 14,
+                style: const TextStyle(
+                  fontSize: 15,
                   fontWeight: FontWeight.bold,
-                  color: const Color(0xFFF5F8FC),
+                  color: Color(0xFFF5F8FC),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 1),
+              const SizedBox(height: 2),
               Text(
                 widget.item.subtitle,
-                style: TextStyle(
-                  fontSize: isTv ? 11 : 10,
-                  color: const Color(0xFF94A3B8),
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF8DAEC4),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1817,7 +2140,7 @@ class _CategoryCardState extends State<_CategoryCard> {
         Container(
           padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
-            color: widget.item.accentColor.withValues(alpha: 0.12),
+            color: widget.item.accentColor.withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: widget.item.accentColor.withValues(alpha: 0.3),
@@ -1851,7 +2174,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                 widget.item.subtitle,
                 style: const TextStyle(
                   fontSize: 11,
-                  color: Color(0xFF94A3B8),
+                  color: Color(0xFF8DAEC4),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1860,6 +2183,42 @@ class _CategoryCardState extends State<_CategoryCard> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Rodapé com linha de status discreta informando perfil, usuário e vencimento da lista.
+class _AppFooterStatus extends StatelessWidget {
+  final XtreamAccount? xtreamAccount;
+
+  const _AppFooterStatus({this.xtreamAccount});
+
+  @override
+  Widget build(BuildContext context) {
+    String exp = 'Ativo / Indeterminado';
+    if (xtreamAccount?.expirationDate != null) {
+      final dt = xtreamAccount!.expirationDate!;
+      exp = '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+    }
+
+    final info = xtreamAccount != null
+        ? 'Perfil: Padrão   •   Usuário: ${xtreamAccount!.username}   •   Vencimento da lista: $exp'
+        : 'Perfil: Padrão   •   Modo: Listas Locais M3U';
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          info,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Color(0xFF64748B),
+            letterSpacing: 0.4,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ),
     );
   }
 }

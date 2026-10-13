@@ -6,12 +6,28 @@ class XtreamCategory {
   final String id;
   final String name;
   final int? parentId;
+  final int? itemCount;
 
   const XtreamCategory({
     required this.id,
     required this.name,
     this.parentId,
+    this.itemCount,
   });
+
+  XtreamCategory copyWith({
+    String? id,
+    String? name,
+    int? parentId,
+    int? itemCount,
+  }) {
+    return XtreamCategory(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      parentId: parentId ?? this.parentId,
+      itemCount: itemCount ?? this.itemCount,
+    );
+  }
 
   factory XtreamCategory.fromJson(Map<String, dynamic> json) {
     return XtreamCategory(

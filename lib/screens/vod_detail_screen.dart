@@ -8,9 +8,9 @@ import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
 import 'vod_player_screen.dart';
 
-/// Tela de detalhes simples e elegante para filmes (VOD).
-/// Apresenta capa, título, metadados opcionais (sinopse, avaliação, duração),
-/// e ações de reprodução ("Assistir", "Continuar de onde parou" e "Assistir do início").
+/// Tela de detalhes para filmes (VOD) inspirada no design Silo (IPTV moderno para Fire TV / Android TV),
+/// com imagem de fundo panorâmica, gradientes cinematográficos escuros, metadados em pills ciano,
+/// e botões com foco destacado no controle remoto ("Assistir filme", "Continuar de onde parou" e "Favoritos").
 class VodDetailScreen extends StatefulWidget {
   final XtreamVodStream movie;
   final XtreamCatalogService catalogService;
@@ -71,23 +71,35 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
     final isFav = await FavoritesService.instance.toggleFavorite(item);
     if (mounted) {
       setState(() => _isFavorite = isFav);
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isFav ? 'Filme adicionado aos favoritos' : 'Filme removido dos favoritos',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          duration: const Duration(seconds: 2),
+          backgroundColor: isFav ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
   Future<void> _loadDetailsAndProgress() async {
-    // 1. Carrega progresso salvo
-    final progress = await _progressService.getProgress(
+    final progressFuture = _progressService.getProgress(
       accountKey: widget.accountKey,
       streamId: widget.movie.streamId,
     );
 
-    // 2. Tenta carregar informações extras do servidor (opcional)
-    XtreamVodInfo? info;
-    try {
-      info = await widget.catalogService.fetchVodInfo(widget.movie.streamId);
-    } catch (_) {
-      info = null;
-    }
+    final infoFuture = widget.catalogService
+        .fetchVodInfo(widget.movie.streamId)
+        .then<XtreamVodInfo?>((info) => info)
+        .catchError((_) => null);
+
+    final results = await Future.wait([progressFuture, infoFuture]);
+    final progress = results[0] as PlaybackProgress?;
+    final info = results[1] as XtreamVodInfo?;
 
     if (mounted) {
       setState(() {
@@ -98,7 +110,11 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
   }
 
   void _startPlayback({required bool fromBeginning}) async {
-    final streamUrls = widget.catalogService.buildVodStreamUrls(widget.movie);
+    final resolvedExt = _detailedInfo?.containerExtension ?? widget.movie.containerExtension;
+    final streamUrls = widget.catalogService.buildVodStreamUrlsById(
+      widget.movie.streamId,
+      extension: resolvedExt,
+    );
 
     if (fromBeginning && _savedProgress != null) {
       await _progressService.clearProgress(
@@ -122,7 +138,6 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
       ),
     );
 
-    // Ao voltar da reprodução, assegura restauração da orientação e atualiza progresso
     if (mounted) {
       DeviceUtils.restoreOrientation();
       _loadDetailsAndProgress();
@@ -131,139 +146,150 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final backdropUrl = _detailedInfo?.backdrop ?? _detailedInfo?.cover ?? widget.movie.streamIcon;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0F1523),
-        title: Text(
-          widget.movie.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFF0F4F8),
-          ),
-        ),
-        actions: [
-          IconButton(
-            tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
-            icon: Icon(
-              _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-              color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+      backgroundColor: const Color(0xFF070D16),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // 1. Imagem de fundo panorâmica (Backdrop)
+          if (backdropUrl != null && backdropUrl.trim().isNotEmpty)
+            Positioned.fill(
+              child: Image.network(
+                backdropUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+              ),
             ),
-            onPressed: _toggleFavorite,
+
+          // 2. Gradiente Horizontal (escurecimento à esquerda para os textos)
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [
+                    const Color(0xFF070D16),
+                    const Color(0xFF070D16).withValues(alpha: 0.95),
+                    const Color(0xFF070D16).withValues(alpha: 0.72),
+                    const Color(0xFF070D16).withValues(alpha: 0.35),
+                  ],
+                  stops: const [0.0, 0.45, 0.75, 1.0],
+                ),
+              ),
+            ),
+          ),
+
+          // 3. Gradiente Vertical (topo e base suaves)
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    const Color(0xCC070D16),
+                    Colors.transparent,
+                    const Color(0xF2070D16),
+                  ],
+                  stops: const [0.0, 0.28, 1.0],
+                ),
+              ),
+            ),
+          ),
+
+          // 4. Conteúdo Rolável em Primeiro Plano
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isLandscape = constraints.maxWidth > constraints.maxHeight;
+
+                return SingleChildScrollView(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isLandscape ? 36.0 : 18.0,
+                    vertical: 16.0,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Barra Superior com botão Voltar em pill
+                      _buildTopBar(),
+                      const SizedBox(height: 20),
+
+                      // Layout de Destaque
+                      isLandscape ? _buildLandscapeLayout(constraints) : _buildPortraitLayout(constraints),
+                    ],
+                  ),
+                );
+              },
+            ),
           ),
         ],
       ),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isLandscape = constraints.maxWidth > constraints.maxHeight;
-
-            return SingleChildScrollView(
-              padding: EdgeInsets.symmetric(
-                horizontal: isLandscape ? 36.0 : 20.0,
-                vertical: 20.0,
-              ),
-              child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),
-            );
-          },
-        ),
-      ),
     );
   }
 
-  Widget _buildPortraitLayout() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
+  Widget _buildTopBar() {
+    return Row(
       children: [
-        // Capa Centralizada
-        Center(child: _buildPoster(width: 170, height: 250)),
-        const SizedBox(height: 20),
-
-        // Título e Metadados
-        _buildTitleAndBadges(),
-        const SizedBox(height: 24),
-
-        // Botões de Ação
-        _buildActionButtons(),
-        const SizedBox(height: 24),
-
-        // Sinopse (se disponível)
-        _buildSynopsis(),
+        _VodBackButtonPill(
+          onBack: () => Navigator.of(context).pop(),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            widget.movie.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF8A99AD),
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
+          icon: Icon(
+            _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+            color: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+          ),
+          onPressed: _toggleFavorite,
+        ),
       ],
     );
   }
 
-  Widget _buildLandscapeLayout() {
-    return Row(
+  Widget _buildLandscapeLayout(BoxConstraints constraints) {
+    final heroWidth = (constraints.maxWidth * 0.65).clamp(380.0, 780.0);
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: heroWidth),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildTitleAndBadges(),
+          const SizedBox(height: 18),
+          _buildSynopsis(),
+          const SizedBox(height: 24),
+          _buildActionButtons(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPortraitLayout(BoxConstraints constraints) {
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Capa à Esquerda
-        _buildPoster(width: 200, height: 295),
-        const SizedBox(width: 28),
-
-        // Detalhes e Ações à Direita
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildTitleAndBadges(),
-              const SizedBox(height: 20),
-              _buildActionButtons(),
-              const SizedBox(height: 20),
-              _buildSynopsis(),
-            ],
-          ),
-        ),
+        _buildTitleAndBadges(),
+        const SizedBox(height: 16),
+        _buildSynopsis(),
+        const SizedBox(height: 20),
+        _buildActionButtons(),
       ],
-    );
-  }
-
-  Widget _buildPoster({required double width, required double height}) {
-    final posterUrl = _detailedInfo?.cover ?? widget.movie.streamIcon;
-
-    if (posterUrl != null && posterUrl.trim().isNotEmpty) {
-      return Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.6),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Image.network(
-            posterUrl,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => _buildFallbackPoster(width, height),
-          ),
-        ),
-      );
-    }
-
-    return _buildFallbackPoster(width, height);
-  }
-
-  Widget _buildFallbackPoster(double width, double height) {
-    return Container(
-      width: width,
-      height: height,
-      decoration: BoxDecoration(
-        color: const Color(0xFF141D2D),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF1E283D)),
-      ),
-      child: const Center(
-        child: Icon(Icons.movie_rounded, color: Color(0xFFE50914), size: 56),
-      ),
     );
   }
 
@@ -272,50 +298,71 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
     final duration = _detailedInfo?.duration;
     final genre = _detailedInfo?.genre;
     final releaseDate = _detailedInfo?.releaseDate;
+    final year = (releaseDate != null && releaseDate.isNotEmpty)
+        ? (releaseDate.length >= 4 ? releaseDate.substring(0, 4) : releaseDate)
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Título do Filme
         Text(
-          widget.movie.name,
+          '${widget.movie.name}${year != null ? ' ($year)' : ''}',
           style: const TextStyle(
             color: Color(0xFFF0F4F8),
-            fontSize: 22,
+            fontSize: 30,
             fontWeight: FontWeight.bold,
-            letterSpacing: 0.3,
+            letterSpacing: 0.2,
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
 
+        // Badges Silo: FILME, Ano, Avaliação, Duração e Gênero
         Wrap(
           spacing: 8,
           runSpacing: 6,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // Badge Tipo
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                color: const Color(0xFFE50914),
-                borderRadius: BorderRadius.circular(4),
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFF00E5FF), width: 1.2),
               ),
               child: const Text(
                 'FILME',
                 style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
+                  color: Color(0xFF00E5FF),
+                  fontSize: 11,
                   fontWeight: FontWeight.bold,
                 ),
               ),
             ),
-
-            // Avaliação (se disponível)
-            if (rating != null && rating.trim().isNotEmpty) ...[
+            if (year != null)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E283D),
-                  borderRadius: BorderRadius.circular(4),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.6), width: 1.2),
+                ),
+                child: Text(
+                  year,
+                  style: const TextStyle(
+                    color: Color(0xFFF0F4F8),
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            if (rating != null && rating.trim().isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFB300).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFFFFB300), width: 1.2),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -325,156 +372,25 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
                     Text(
                       rating,
                       style: const TextStyle(
-                        color: Color(0xFFF0F4F8),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFFFB300),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-
-            // Duração (se disponível)
-            if (duration != null && duration.trim().isNotEmpty) ...[
+            if (duration != null && duration.trim().isNotEmpty)
               Text(
                 duration,
-                style: const TextStyle(color: Color(0xFF8A99AD), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
               ),
-            ],
-
-            // Ano de Lançamento (se disponível)
-            if (releaseDate != null && releaseDate.trim().isNotEmpty) ...[
+            if (genre != null && genre.trim().isNotEmpty)
               Text(
-                releaseDate.length >= 4 ? releaseDate.substring(0, 4) : releaseDate,
-                style: const TextStyle(color: Color(0xFF8A99AD), fontSize: 12),
+                genre,
+                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 13, fontWeight: FontWeight.w500),
               ),
-            ],
-
-            // Gênero (se disponível)
-            if (genre != null && genre.trim().isNotEmpty) ...[
-              Text(
-                '• $genre',
-                style: const TextStyle(color: Color(0xFF8A99AD), fontSize: 12),
-              ),
-            ],
           ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildActionButtons() {
-    final progress = _savedProgress;
-    final hasProgress = progress != null && progress.canResume;
-
-    if (hasProgress) {
-      final posStr = PlaybackProgressService.formatDuration(progress.position);
-
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Botão Continuar de onde parou
-          ElevatedButton.icon(
-            autofocus: true,
-            icon: const Icon(Icons.play_arrow_rounded, size: 24),
-            label: Text(
-              'Continuar de onde parou ($posStr)',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE50914),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () => _startPlayback(fromBeginning: false),
-          ),
-          const SizedBox(height: 10),
-
-          // Botão Assistir do início
-          OutlinedButton.icon(
-            icon: const Icon(Icons.replay_rounded, size: 18),
-            label: const Text(
-              'Assistir do início',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFFF0F4F8),
-              side: const BorderSide(color: Color(0xFF2A3B53)),
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () => _startPlayback(fromBeginning: true),
-          ),
-          const SizedBox(height: 10),
-
-          // Botão Favoritar / Remover dos favoritos
-          OutlinedButton.icon(
-            icon: Icon(
-              _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-              size: 18,
-              color: _isFavorite ? const Color(0xFFEF5350) : null,
-            ),
-            label: Text(
-              _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
-              side: BorderSide(
-                color: _isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.5) : const Color(0xFF2A3B53),
-              ),
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: _toggleFavorite,
-          ),
-        ],
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            autofocus: true,
-            icon: const Icon(Icons.play_arrow_rounded, size: 24),
-            label: const Text(
-              'Assistir filme',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE50914),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () => _startPlayback(fromBeginning: true),
-          ),
-        ),
-        const SizedBox(height: 10),
-        OutlinedButton.icon(
-          icon: Icon(
-            _isFavorite ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-            size: 18,
-            color: _isFavorite ? const Color(0xFFEF5350) : null,
-          ),
-          label: Text(
-            _isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-          ),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: _isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
-            side: BorderSide(
-              color: _isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.5) : const Color(0xFF2A3B53),
-            ),
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-          onPressed: _toggleFavorite,
         ),
       ],
     );
@@ -486,34 +402,387 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF121824),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF1E283D)),
+    return Text(
+      plot,
+      maxLines: 4,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        color: Color(0xFFCFD8DC),
+        fontSize: 13.5,
+        height: 1.45,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+
+  Widget _buildActionButtons() {
+    final progress = _savedProgress;
+    final hasProgress = progress != null && progress.canResume;
+
+    if (hasProgress) {
+      final posStr = PlaybackProgressService.formatDuration(progress.position);
+
+      return Wrap(
+        spacing: 12,
+        runSpacing: 10,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          const Text(
-            'Sinopse',
-            style: TextStyle(
-              color: Color(0xFFF0F4F8),
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-            ),
+          // Botão Primário Silo: Continuar de onde parou
+          _VodSiloPrimaryButton(
+            label: 'Continuar de onde parou ($posStr)',
+            autofocus: true,
+            onTap: () => _startPlayback(fromBeginning: false),
           ),
-          const SizedBox(height: 8),
-          Text(
-            plot,
-            style: const TextStyle(
-              color: Color(0xFFB0BEC5),
-              fontSize: 13,
-              height: 1.45,
-            ),
+
+          // Botão Secundário Silo: Assistir do início
+          _VodSiloSecondaryButton(
+            label: 'Assistir do início',
+            icon: Icons.replay_rounded,
+            onTap: () => _startPlayback(fromBeginning: true),
+          ),
+
+          // Botão Favoritos Silo em Pill
+          _VodSiloFavoriteButton(
+            isFavorite: _isFavorite,
+            onToggle: _toggleFavorite,
           ),
         ],
+      );
+    }
+
+    return Wrap(
+      spacing: 12,
+      runSpacing: 10,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        // Botão Primário Silo: Assistir filme
+        _VodSiloPrimaryButton(
+          label: 'Assistir filme',
+          autofocus: true,
+          onTap: () => _startPlayback(fromBeginning: true),
+        ),
+
+        // Botão Favoritos Silo em Pill
+        _VodSiloFavoriteButton(
+          isFavorite: _isFavorite,
+          onToggle: _toggleFavorite,
+        ),
+      ],
+    );
+  }
+}
+
+/// Botão de Voltar em Pill Silo para VOD
+class _VodBackButtonPill extends StatefulWidget {
+  final VoidCallback onBack;
+
+  const _VodBackButtonPill({required this.onBack});
+
+  @override
+  State<_VodBackButtonPill> createState() => _VodBackButtonPillState();
+}
+
+class _VodBackButtonPillState extends State<_VodBackButtonPill> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onBack();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onBack,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFF182A3D) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
+              width: _isFocused ? 2.0 : 1.2,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.arrow_back_rounded,
+                size: 16,
+                color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Voltar',
+                style: TextStyle(
+                  color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão Principal Silo para VOD com destaque intenso de foco (fundo claro/menta, contorno ciano luminoso e texto ciano escuro)
+class _VodSiloPrimaryButton extends StatefulWidget {
+  final String label;
+  final VoidCallback onTap;
+  final bool autofocus;
+
+  const _VodSiloPrimaryButton({
+    required this.label,
+    required this.onTap,
+    this.autofocus = true,
+  });
+
+  @override
+  State<_VodSiloPrimaryButton> createState() => _VodSiloPrimaryButtonState();
+}
+
+class _VodSiloPrimaryButtonState extends State<_VodSiloPrimaryButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onTap();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFFE8FDF8) : const Color(0xFF0C2434),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
+              width: _isFocused ? 2.5 : 1.5,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                      blurRadius: 18,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.play_arrow_rounded,
+                size: 26,
+                color: _isFocused ? const Color(0xFF00838F) : const Color(0xFF00E5FF),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _isFocused ? const Color(0xFF004D40) : const Color(0xFFF0F4F8),
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão Secundário Silo (Assistir do início)
+class _VodSiloSecondaryButton extends StatefulWidget {
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _VodSiloSecondaryButton({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  State<_VodSiloSecondaryButton> createState() => _VodSiloSecondaryButtonState();
+}
+
+class _VodSiloSecondaryButtonState extends State<_VodSiloSecondaryButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onTap();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFF16283C) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF22354A),
+              width: _isFocused ? 2.0 : 1.2,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                widget.icon,
+                size: 18,
+                color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFFF0F4F8),
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão de Favoritos Silo em Pill para VOD
+class _VodSiloFavoriteButton extends StatefulWidget {
+  final bool isFavorite;
+  final VoidCallback onToggle;
+
+  const _VodSiloFavoriteButton({
+    required this.isFavorite,
+    required this.onToggle,
+  });
+
+  @override
+  State<_VodSiloFavoriteButton> createState() => _VodSiloFavoriteButtonState();
+}
+
+class _VodSiloFavoriteButtonState extends State<_VodSiloFavoriteButton> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onToggle();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTap: widget.onToggle,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
+          decoration: BoxDecoration(
+            color: _isFocused ? const Color(0xFF16283C) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _isFocused
+                  ? const Color(0xFF00E5FF)
+                  : (widget.isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.6) : const Color(0xFF22354A)),
+              width: _isFocused ? 2.2 : 1.2,
+            ),
+            boxShadow: _isFocused
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                size: 20,
+                color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                widget.isFavorite ? 'REMOVER DOS FAVORITOS' : 'ADICIONAR AOS FAVORITOS',
+                style: const TextStyle(
+                  color: Color(0xFFF0F4F8),
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

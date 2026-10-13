@@ -1,8 +1,6 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:projeto_tv/models/channel.dart';
 import 'package:projeto_tv/screens/hidden_categories_screen.dart';
 import 'package:projeto_tv/services/hidden_categories_service.dart';
 import 'package:projeto_tv/widgets/vod_player_view.dart';

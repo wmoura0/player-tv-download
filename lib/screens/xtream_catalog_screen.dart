@@ -2,11 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import '../models/epg_program.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
 import '../services/hidden_categories_service.dart';
+import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
@@ -67,11 +69,11 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   String? _currentProgram;
   String? _nextProgram;
+  EpgChannelSchedule? _activeSchedule;
   late final PlayerStabilityManager _stabilityManager;
   late XtreamCatalogType _currentType;
   bool _isSidebarVisible = true;
   bool _isConnecting = false;
-  bool _userPaused = false;
 
   @override
   void initState() {
@@ -442,12 +444,35 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   List<XtreamCategory> get _visibleCategories {
-    if (_currentType != XtreamCatalogType.live) return _categories;
-    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
-    if (hidden.isEmpty) return _categories;
-    return _categories.where((cat) {
-      if (cat.id == 'all' || cat.id == 'favorites') return true;
-      return !hidden.contains(cat.id) && !hidden.contains(cat.name.trim());
+    List<XtreamCategory> list = _categories;
+    if (_currentType == XtreamCatalogType.live) {
+      final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+      if (hidden.isNotEmpty) {
+        list = _categories.where((cat) {
+          if (cat.id == 'all' || cat.id == 'favorites') return true;
+          return !hidden.contains(cat.id) && !hidden.contains(cat.name.trim());
+        }).toList();
+      }
+    }
+
+    return list.map((cat) {
+      int? count;
+      if (cat.id == 'all') {
+        count = _currentType == XtreamCatalogType.live
+            ? _service?.totalLiveCount
+            : (_currentType == XtreamCatalogType.movies
+                ? _service?.totalVodCount
+                : _service?.totalSeriesCount);
+      } else if (cat.id == 'favorites') {
+        count = FavoritesService.instance.getFavoriteIdsSync(scopeKey: _accountKey, type: _favoriteType).length;
+      } else {
+        count = _currentType == XtreamCatalogType.live
+            ? _service?.getCategoryLiveCount(cat.id)
+            : (_currentType == XtreamCatalogType.movies
+                ? _service?.getCategoryVodCount(cat.id)
+                : _service?.getCategorySeriesCount(cat.id));
+      }
+      return cat.copyWith(itemCount: count);
     }).toList();
   }
 
@@ -530,6 +555,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     if (val.isPlaying) {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      _stabilityManager.metrics?.markFirstFrame();
     }
 
     if (val.hasError && _playerError == null) {
@@ -537,6 +563,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         val.errorDescription ?? 'Falha na transmissão do canal.',
       );
       _stabilityManager.clearOpenWatchdog();
+      _stabilityManager.metrics?.markError(safeErr);
       setState(() {
         _playerError = safeErr;
         _isPlayerLoading = false;
@@ -544,13 +571,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       });
       _stabilityManager.scheduleRetry(safeErr);
     } else if (val.isBuffering != _isPlayerBuffering) {
+      if (val.isBuffering) {
+        _stabilityManager.metrics?.markBufferingStart();
+      } else {
+        _stabilityManager.metrics?.markBufferingEnd();
+      }
       setState(() {
         _isPlayerBuffering = val.isBuffering;
       });
-    } else if (!val.isPlaying && !val.isBuffering && !_userPaused && !_isPlayerLoading && _playerError == null) {
-      // Queda silenciosa ou término de socket após 15 minutos sem erro formal
-      debugPrint('[PLAYER] Transmissão ao vivo interrompida inesperadamente pelo servidor (queda de socket).');
-      _stabilityManager.scheduleRetry('Transmissão encerrada pelo servidor');
     }
   }
 
@@ -565,8 +593,12 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       return;
     }
 
-    _userPaused = false;
     _stabilityManager.setUserPaused(false);
+    _stabilityManager.metrics = PlaybackMetrics(
+      mediaType: PlaybackMediaType.live,
+      title: stream.name,
+    );
+    _stabilityManager.metrics?.markRequestStart();
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
 
     _stabilityManager.resetRetries();
@@ -631,14 +663,11 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         catalogService: _service!,
       );
       if (!mounted || _activeLiveStream?.streamId != streamId) return;
-      if (schedule != null) {
-        final now = schedule.currentProgram;
-        final next = schedule.nextProgram;
-        setState(() {
-          _currentProgram = now?.title;
-          _nextProgram = next?.title;
-        });
-      }
+      setState(() {
+        _activeSchedule = schedule;
+        _currentProgram = schedule?.currentProgram?.title;
+        _nextProgram = schedule?.nextProgram?.title;
+      });
     } catch (_) {}
   }
 
@@ -687,14 +716,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
         _stabilityManager.clearOpenWatchdog();
+        _stabilityManager.metrics?.markConnectionEstablished();
+        _stabilityManager.metrics?.markPlayerInitialized();
         _stabilityManager.startStallMonitoring(controller);
-
-        // Se for HLS ao vivo com duração reportada pelo player, pula para live edge
-        if (controller.value.duration > Duration.zero) {
-          try {
-            await controller.seekTo(controller.value.duration);
-          } catch (_) {}
-        }
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
@@ -734,13 +758,11 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final c = _playerController;
     if (c == null || !c.value.isInitialized) return;
     if (c.value.isPlaying) {
-      _userPaused = true;
       _stabilityManager.setUserPaused(true);
       c.pause();
       DeviceUtils.setPipState(enabled: false);
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else {
-      _userPaused = false;
       _stabilityManager.setUserPaused(false);
       c.play();
       DeviceUtils.setPipState(enabled: true);
@@ -761,7 +783,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   Future<void> _closeMiniPlayer() async {
-    _userPaused = false;
     _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
@@ -776,6 +797,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     if (mounted) {
       setState(() {
         _activeLiveStream = null;
+        _activeSchedule = null;
         _isFullscreen = false;
         _playerError = null;
         _isPlayerLoading = false;
@@ -1012,9 +1034,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         Navigator.of(context).pop();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF090D14),
+        backgroundColor: const Color(0xFF070F18),
         appBar: AppBar(
-          backgroundColor: const Color(0xFF0F1523),
+          backgroundColor: const Color(0xFF0A141D),
           title: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1026,7 +1048,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFFF0F4F8),
+                    color: Color(0xFFF5F8FC),
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1061,34 +1083,25 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 );
               } else if (_initError != null) {
                 catalogContent = _buildInitError();
-              } else if (showMini && isLandscape) {
-                final maxAllowedWidthByHeight = (constraints.maxHeight - 24) * (16 / 9);
-                final desiredWidth = (constraints.maxWidth * 0.42).clamp(260.0, 480.0);
-                final miniWidth = desiredWidth.clamp(200.0, maxAllowedWidthByHeight.clamp(200.0, 520.0));
-
+              } else if (isLandscape && _currentType == XtreamCatalogType.live) {
+                final channelListWidth = (constraints.maxWidth * 0.35).clamp(320.0, 420.0);
                 catalogContent = Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Coluna 2: Abas + Cabeçalho da Categoria + Lista de Canais
                     SizedBox(
-                      width: miniWidth,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: AspectRatio(
-                            aspectRatio: 16 / 9,
-                            child: _buildMiniPlayerWidget(),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
+                      width: channelListWidth,
                       child: Column(
                         children: [
                           _buildTopFilterBar(),
-                          Expanded(child: _buildMainContent()),
+                          _buildLiveCategoryHeader(),
+                          Expanded(child: _buildLiveChannelList()),
                         ],
                       ),
+                    ),
+                    // Coluna 3: Painel Direito com Mini Player 16:9 + Banner Canal + Linha do tempo EPG
+                    Expanded(
+                      child: _buildLiveEpgAndPlayerPanel(),
                     ),
                   ],
                 );
@@ -1220,6 +1233,431 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     );
   }
 
+  Widget _buildLiveCategoryHeader() {
+    final catName = _selectedCategoryId == 'all'
+        ? 'Todos os canais'
+        : (_selectedCategoryId == 'favorites'
+            ? 'Favoritos'
+            : _getCategoryName(_selectedCategoryId));
+    final count = _filteredItems.length;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0A141D),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFF162A38), width: 1.0),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 3.5,
+            height: 16,
+            decoration: BoxDecoration(
+              color: const Color(0xFF00E5FF),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              catName.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: Color(0xFFF5F8FC),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFF132534),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF1A384C)),
+            ),
+            child: Text(
+              '$count ${count == 1 ? 'canal' : 'canais'}',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF8FA7BD),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLiveChannelList() {
+    if (_isItemsLoading) {
+      return Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(_accentColor),
+        ),
+      );
+    }
+    if (_itemsError != null) {
+      return _buildItemsError();
+    }
+    if (_filteredItems.isEmpty) {
+      return _buildEmptyState();
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      itemCount: _filteredItems.length,
+      itemBuilder: (context, index) {
+        final item = _filteredItems[index] as XtreamLiveStream;
+        final isFav = FavoritesService.instance.isFavorite(
+          scopeKey: _accountKey,
+          type: FavoriteType.live,
+          id: item.streamId.toString(),
+        );
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 6.0),
+          child: _LiveChannelCard(
+            channelNumber: index + 1,
+            stream: item,
+            accentColor: _accentColor,
+            isPlaying: _activeLiveStream?.streamId == item.streamId,
+            isFavorite: isFav,
+            onToggleFavorite: () => _toggleLiveFavorite(item),
+            onTap: () => _onItemTap(item),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLiveEpgAndPlayerPanel() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF070F18),
+        border: Border(
+          left: BorderSide(color: Color(0xFF162A38), width: 1.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 1. Mini-player 16:9
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _activeLiveStream != null
+                    ? _buildMiniPlayerWidget()
+                    : _buildLivePlaceholderPlayer(),
+              ),
+            ),
+          ),
+          // 2. Banner info do canal ativo
+          if (_activeLiveStream != null)
+            _buildActiveChannelInfoCard(),
+          // 3. Grade EPG
+          Expanded(
+            child: _buildEpgScheduleList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLivePlaceholderPlayer() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A141D),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF162A38)),
+      ),
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.tv_rounded, size: 36, color: const Color(0xFF00E5FF).withValues(alpha: 0.6)),
+              const SizedBox(height: 6),
+              const Text(
+                'Selecione um canal na lista',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFF5F8FC),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              const Text(
+                'Use o controle remoto e pressione OK para assistir',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF8FA7BD),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActiveChannelInfoCard() {
+    final stream = _activeLiveStream!;
+    final catName = _getCategoryName(stream.categoryId);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0C1622),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF162A38)),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              width: 36,
+              height: 36,
+              color: const Color(0xFF132534),
+              child: stream.streamIcon != null && stream.streamIcon!.isNotEmpty
+                  ? Image.network(
+                      stream.streamIcon!,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 18),
+                    )
+                  : const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 18),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  stream.name,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFF5F8FC),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  catName.isNotEmpty ? catName : 'Canal ao vivo',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF8FA7BD),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          InkWell(
+            onTap: _toggleFullscreen,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.fullscreen_rounded, size: 16, color: Color(0xFF00E5FF)),
+                  SizedBox(width: 4),
+                  Text(
+                    'Tela Cheia',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEpgScheduleList() {
+    final schedule = _activeSchedule;
+    final programs = schedule?.programs ?? [];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A141D),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF162A38)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.event_note_rounded, size: 16, color: Color(0xFF00E5FF)),
+              const SizedBox(width: 6),
+              const Text(
+                'PROGRAMAÇÃO',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.8,
+                  color: Color(0xFF8FA7BD),
+                ),
+              ),
+              const Spacer(),
+              if (programs.isNotEmpty)
+                Text(
+                  '${programs.length} programas',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF6A829A),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Divider(color: Color(0xFF162A38), height: 1),
+          const SizedBox(height: 8),
+          Expanded(
+            child: programs.isEmpty
+                ? Center(
+                    child: Text(
+                      _activeLiveStream == null
+                          ? 'Selecione um canal para ver a programação.'
+                          : 'Nenhuma programação disponível para este canal.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6A829A),
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: programs.length,
+                    itemBuilder: (context, index) {
+                      final p = programs[index];
+                      final isNow = p.isAiringAt();
+                      final progress = p.getProgress();
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.08) : const Color(0xFF0C1622),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : const Color(0xFF142436),
+                            width: isNow ? 1.5 : 1.0,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  p.formattedTimeRange.isNotEmpty
+                                      ? p.formattedTimeRange
+                                      : '--:--',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: isNow ? const Color(0xFF00E5FF) : const Color(0xFF8FA7BD),
+                                  ),
+                                ),
+                                if (isNow) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF00E5FF),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      'AGORA',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF070F18),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              p.title,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: isNow ? FontWeight.bold : FontWeight.w500,
+                                color: isNow ? const Color(0xFFF5F8FC) : const Color(0xFFD6E2EE),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (p.description != null && p.description!.trim().isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                p.description!,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF6A829A),
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                            if (isNow && progress != null) ...[
+                              const SizedBox(height: 6),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(2),
+                                child: LinearProgressIndicator(
+                                  value: progress,
+                                  minHeight: 3,
+                                  backgroundColor: const Color(0xFF132534),
+                                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMainContent() {
     if (_isItemsLoading) {
       return Center(
@@ -1239,7 +1677,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   Widget _buildTopFilterBar() {
     return Container(
-      color: const Color(0xFF0F1523),
+      color: const Color(0xFF0A141D),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: _buildCatalogTypeTabs(),
     );
@@ -1359,15 +1797,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         }
 
         // Se for Filmes ou Séries: formato de pôster vertical (aspect ratio ~2:3)
-        final itemWidth = isLandscape ? 160.0 : 120.0;
-        final crossAxisCount = (constraints.maxWidth ~/ itemWidth).clamp(2, 8);
+        final crossAxisCount = isLandscape ? 4 : 2;
 
         return GridView.builder(
           padding: const EdgeInsets.all(16),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: crossAxisCount,
-            childAspectRatio: 0.62,
-            crossAxisSpacing: 12,
+            childAspectRatio: 0.67,
+            crossAxisSpacing: 14,
             mainAxisSpacing: 16,
           ),
           itemCount: _filteredItems.length,
@@ -1613,6 +2050,7 @@ class _CatalogTabItemState extends State<_CatalogTabItem> {
 }
 
 class _LiveChannelCard extends StatefulWidget {
+  final int? channelNumber;
   final XtreamLiveStream stream;
   final Color accentColor;
   final bool isPlaying;
@@ -1621,6 +2059,7 @@ class _LiveChannelCard extends StatefulWidget {
   final VoidCallback onTap;
 
   const _LiveChannelCard({
+    this.channelNumber,
     required this.stream,
     required this.accentColor,
     this.isPlaying = false,
@@ -1716,15 +2155,15 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
         onEnter: (_) => setState(() => _isHovered = true),
         onExit: (_) => setState(() => _isHovered = false),
         child: AnimatedScale(
-          scale: isHighlighted ? 1.02 : 1.0,
+          scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.02 : 1.0),
           duration: const Duration(milliseconds: 150),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             decoration: BoxDecoration(
-              color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
+              color: widget.isPlaying ? const Color(0xFF0F2636) : const Color(0xFF0C1622),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: isHighlighted ? widget.accentColor : const Color(0xFF1A2436),
+                color: isHighlighted ? widget.accentColor : (widget.isPlaying ? widget.accentColor.withValues(alpha: 0.6) : const Color(0xFF162536)),
                 width: widget.isPlaying ? 2.0 : (isHighlighted ? 1.5 : 1.0),
               ),
               boxShadow: isHighlighted
@@ -1749,6 +2188,23 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
+                      // Número do Canal (#01)
+                      if (widget.channelNumber != null) ...[
+                        Container(
+                          width: 32,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '#${widget.channelNumber!.toString().padLeft(2, '0')}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: widget.isPlaying ? widget.accentColor : const Color(0xFF6A829A),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+
                       // Logo do Canal
                       _buildLogo(widget.stream.streamIcon),
                       const SizedBox(width: 12),
@@ -1883,15 +2339,15 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: AnimatedScale(
-        scale: isHighlighted ? 1.04 : 1.0,
+        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
         duration: const Duration(milliseconds: 150),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
-            color: const Color(0xFF121824),
+            color: const Color(0xFF0E1E2A),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isHighlighted ? widget.accentColor : const Color(0xFF1A2436),
+              color: isHighlighted ? widget.accentColor : const Color(0xFF162A38),
               width: isHighlighted ? 2.0 : 1.0,
             ),
             boxShadow: isHighlighted

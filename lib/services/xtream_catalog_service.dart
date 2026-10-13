@@ -56,7 +56,27 @@ class XtreamCatalogService extends ChangeNotifier {
   int get vodInfoCacheCount => _vodInfoCache.length;
   int get seriesInfoCacheCount => _seriesInfoCache.length;
 
+  int? get totalLiveCount => _liveStreamsCache['all']?.length;
+  int? get totalVodCount => _vodStreamsCache['all']?.length;
+  int? get totalSeriesCount => _seriesCache['all']?.length;
+
+  int? getCategoryLiveCount(String catId) {
+    if (catId == 'all') return totalLiveCount;
+    return _liveStreamsCache['all']?.where((s) => s.categoryId == catId).length;
+  }
+
+  int? getCategoryVodCount(String catId) {
+    if (catId == 'all') return totalVodCount;
+    return _vodStreamsCache['all']?.where((s) => s.categoryId == catId).length;
+  }
+
+  int? getCategorySeriesCount(String catId) {
+    if (catId == 'all') return totalSeriesCount;
+    return _seriesCache['all']?.where((s) => s.categoryId == catId).length;
+  }
+
   final Directory? cacheDirectoryOverride;
+
 
   XtreamCatalogService({
     required this.serverUrl,
@@ -984,11 +1004,6 @@ class XtreamCatalogService extends ChangeNotifier {
 
     final urls = <String>[];
 
-    final direct = directSource?.trim();
-    if (direct != null && (direct.startsWith('http://') || direct.startsWith('https://'))) {
-      urls.add(direct);
-    }
-
     // 1. Rota padrão Xtream Codes para Séries: /series/$user/$pass/$id.$ext
     urls.add('$cleanServer/series/$user/$pass/$episodeId.$cleanExt');
 
@@ -1001,6 +1016,12 @@ class XtreamCatalogService extends ChangeNotifier {
 
     // 3. Rota legada direta sem /series/
     urls.add('$cleanServer/$user/$pass/$episodeId.$cleanExt');
+
+    // 4. Contingência de directSource apenas como última opção
+    final direct = directSource?.trim();
+    if (direct != null && (direct.startsWith('http://') || direct.startsWith('https://'))) {
+      urls.add(direct);
+    }
 
     return urls;
   }

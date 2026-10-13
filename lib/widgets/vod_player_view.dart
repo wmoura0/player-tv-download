@@ -76,6 +76,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   Timer? _continuousSeekTicker;
   Timer? _inactivityWatchdogTimer;
   DateTime? _seekStartTime;
+  bool _isBackDebounced = false;
+  Timer? _backDebounceTimer;
 
   @override
   void initState() {
@@ -89,6 +91,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _initialHoldTimer?.cancel();
     _continuousSeekTicker?.cancel();
     _inactivityWatchdogTimer?.cancel();
+    _backDebounceTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -147,11 +150,10 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.ignored;
     }
 
-    // 2. Play/Pause
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.space ||
-        key == LogicalKeyboardKey.mediaPlayPause) {
+    // 2. Play/Pause dedicado
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.mediaPlay ||
+        key == LogicalKeyboardKey.mediaPause) {
       if (event is KeyDownEvent) {
         widget.onTogglePlayPause();
         setState(() => _showControls = true);
@@ -160,10 +162,53 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.handled;
     }
 
-    // 3. Voltar
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+    // 2b. Botão central OK / D-Pad Center / Select / Enter / Space
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space) {
       if (event is KeyDownEvent) {
-        widget.onBack?.call();
+        if (!_showControls) {
+          // Requisito 2: Pressionar OK quando os controles estiverem ocultos
+          // deve apenas reexibir os controles, sem pausar ou despausar involuntariamente.
+          setState(() => _showControls = true);
+          _startControlsTimer();
+        } else {
+          // Controles já estão visíveis: alterna play/pause normalmente
+          widget.onTogglePlayPause();
+          _startControlsTimer();
+        }
+      }
+      return KeyEventResult.handled;
+    }
+
+    // 3. Voltar (Escape / GoBack / Backspace)
+    if (key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.goBack ||
+        key == LogicalKeyboardKey.backspace) {
+      // Ignora repetição de evento de teclado para não contar dois toques em um aperto físico mantido
+      if (event is KeyRepeatEvent) {
+        return KeyEventResult.handled;
+      }
+
+      if (event is KeyDownEvent) {
+        if (_isBackDebounced) {
+          return KeyEventResult.handled;
+        }
+        _isBackDebounced = true;
+        _backDebounceTimer?.cancel();
+        _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+          if (mounted) _isBackDebounced = false;
+        });
+
+        if (_showControls) {
+          // Primeiro toque em Voltar: ocultar os controles de reprodução,
+          // mantendo o vídeo reproduzindo normalmente em tela cheia.
+          _controlsTimer?.cancel();
+          setState(() => _showControls = false);
+        } else {
+          // Segundo toque em Voltar (ou quando já ocultos): sair do player e retornar
+          widget.onBack?.call();
+        }
       }
       return KeyEventResult.handled;
     }
@@ -317,40 +362,55 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     final isInitialized = controller != null && controller.value.isInitialized;
     final isPlaying = controller?.value.isPlaying ?? false;
 
-    return Focus(
-      focusNode: _focusNode,
-      autofocus: true,
-      onKeyEvent: _handleKeyEvent,
-      child: GestureDetector(
-        onTap: _toggleControls,
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          color: Colors.black,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 1. Superfície Física do Vídeo
-              if (isInitialized && widget.errorMessage == null)
-                _buildVideoSurface(controller)
-              else
-                _buildPlaceholderBackground(),
+    return PopScope(
+      canPop: !_showControls,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _showControls) {
+          if (_isBackDebounced) return;
+          _isBackDebounced = true;
+          _backDebounceTimer?.cancel();
+          _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+            if (mounted) _isBackDebounced = false;
+          });
+          _controlsTimer?.cancel();
+          setState(() => _showControls = false);
+        }
+      },
+      child: Focus(
+        focusNode: _focusNode,
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: GestureDetector(
+          onTap: _toggleControls,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            color: Colors.black,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // 1. Superfície Física do Vídeo
+                if (isInitialized && widget.errorMessage == null)
+                  _buildVideoSurface(controller)
+                else
+                  _buildPlaceholderBackground(),
 
-              // 2. Indicador de Carregamento ou Buffering
-              if (widget.isLoading || widget.isBuffering)
-                _buildLoadingOverlay(),
+                // 2. Indicador de Carregamento ou Buffering
+                if (widget.isLoading || widget.isBuffering)
+                  _buildLoadingOverlay(),
 
-              // 3. Indicador de Erro
-              if (widget.errorMessage != null && !widget.isLoading)
-                _buildErrorOverlay(),
+                // 3. Indicador de Erro
+                if (widget.errorMessage != null && !widget.isLoading)
+                  _buildErrorOverlay(),
 
-              // 4. Controles Sobrepostos (OSD)
-              if (_showControls && widget.errorMessage == null)
-                _buildControlsOverlay(controller, isPlaying),
+                // 4. Controles Sobrepostos (OSD)
+                if (_showControls && widget.errorMessage == null)
+                  _buildControlsOverlay(controller, isPlaying),
 
-              // 5. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
-              if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0 && widget.errorMessage == null)
-                _buildNextEpisodeCountdownOverlay(),
-            ],
+                // 5. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
+                if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0 && widget.errorMessage == null)
+                  _buildNextEpisodeCountdownOverlay(),
+              ],
+            ),
           ),
         ),
       ),

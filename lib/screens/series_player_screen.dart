@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
+import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/settings_service.dart';
 import '../services/url_sanitizer.dart';
@@ -43,6 +44,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   late XtreamSeriesEpisode _currentEpisode;
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
+  late PlaybackMetrics _metrics;
 
   bool _isLoading = true;
   bool _isBuffering = false;
@@ -68,9 +70,17 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     DeviceUtils.setVideoOrientation();
     DeviceUtils.setKeepScreenOn(true);
 
+    _metrics = PlaybackMetrics(
+      mediaType: PlaybackMediaType.series,
+      title: '${widget.series.name} - T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum}',
+    );
+    _metrics.markRequestStart();
+
     if (widget.testController != null) {
       _controller = widget.testController;
       _isLoading = false;
+      _metrics.markPlayerInitialized();
+      _metrics.markFirstFrame();
     } else {
       _initCurrentEpisode(initialPosition: widget.initialPosition);
     }
@@ -201,10 +211,16 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     _controller = controller;
     controller.addListener(_onControllerUpdate);
 
+    final hasAlternatives = (_currentUrlIndex + 1 < _streamUrls.length);
+    final timeoutDuration = hasAlternatives ? const Duration(seconds: 7) : const Duration(seconds: 15);
+
     try {
-      await controller.initialize().timeout(const Duration(seconds: 20));
+      await controller.initialize().timeout(timeoutDuration);
 
       if (!mounted || _controller != controller) return;
+
+      _metrics.markConnectionEstablished();
+      _metrics.markPlayerInitialized();
 
       if (initialPosition != null && initialPosition > Duration.zero) {
         if (initialPosition < controller.value.duration) {
@@ -226,6 +242,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
 
       final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
       debugPrint('[SERIES PLAYER] Falha na URL ($_currentUrlIndex): $safeErr');
+      _metrics.markError(safeErr);
 
       // Tentativa de contingência para próxima URL da lista
       if (_currentUrlIndex + 1 < _streamUrls.length) {
@@ -249,6 +266,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     if (c.value.hasError) {
       _cancelCountdown();
       final err = UrlSanitizer.sanitizeErrorMessage(c.value.errorDescription ?? 'Erro de mídia');
+      _metrics.markError(err);
       if (_errorMessage == null) {
         setState(() {
           _errorMessage = err;
@@ -259,8 +277,17 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       return;
     }
 
+    if (c.value.isPlaying || c.value.position > Duration.zero) {
+      _metrics.markFirstFrame();
+    }
+
     final isBuff = c.value.isBuffering;
     if (isBuff != _isBuffering) {
+      if (isBuff) {
+        _metrics.markBufferingStart();
+      } else {
+        _metrics.markBufferingEnd();
+      }
       setState(() => _isBuffering = isBuff);
     }
 

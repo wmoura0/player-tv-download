@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
+import 'playback_metrics.dart';
 import 'url_sanitizer.dart';
 
 /// Notificação de estado do motor de estabilidade e recuperação de reprodução
@@ -13,7 +14,8 @@ enum PlayerRecoveryState {
   cancelled,
 }
 
-/// Gerenciador de estabilidade, detecção de travamento (stall), timeout e reconexão progressiva do player.
+/// Gerenciador de estabilidade, detecção de travamento (stall), timeout e recuperação em etapas
+/// para canais de TV ao vivo e streams VOD em Android TV e Amazon Fire TV.
 class PlayerStabilityManager {
   final int maxRetries;
   final Duration openTimeout;
@@ -24,17 +26,19 @@ class PlayerStabilityManager {
   final Future<void> Function(int retryCount)? onReconnectRequest;
   final void Function(String userMessage)? onError;
   final void Function(PlayerRecoveryState state)? onStateChanged;
+  PlaybackMetrics? metrics;
 
   PlayerStabilityManager({
     this.maxRetries = 3,
     this.openTimeout = const Duration(seconds: 15),
     this.stallDetectionInterval = const Duration(seconds: 2),
     this.maxStallDuration = const Duration(seconds: 15),
-    this.maxBufferingDuration = const Duration(seconds: 25),
+    this.maxBufferingDuration = const Duration(seconds: 15),
     this.isLiveStream = true,
     this.onReconnectRequest,
     this.onError,
     this.onStateChanged,
+    this.metrics,
   });
 
   Timer? _openTimeoutTimer;
@@ -78,8 +82,8 @@ class PlayerStabilityManager {
   }
 
   /// Inicia monitoramento ativo de travamento/congelamento durante reprodução.
-  /// Detecta interrupções de servidor (STATE_ENDED / socket drop), buffering estagnado
-  /// e congelamento de posição tanto em canais ao vivo quanto em VOD.
+  /// Implementa recuperação em etapas com diferenciação precisa entre buffering legítimo
+  /// e estagnação real, sem invocar seekTo indiscriminado em streams ao vivo.
   void startStallMonitoring(VideoPlayerController controller, {bool? isLive}) {
     _stallCheckTimer?.cancel();
     _lastPosition = controller.value.position;
@@ -102,39 +106,44 @@ class PlayerStabilityManager {
           val.errorDescription ?? 'Erro interno de reprodução',
         );
         debugPrint('[PLAYER STABILITY] Erro reportado pelo reprodutor: $safeErr');
-        _handleStall('Erro na transmissão: $safeErr');
+        metrics?.markError(safeErr);
+        _handleStall('Erro na transmissão: $safeErr', controller);
         return;
       }
 
-      // 2. Monitoramento de buffering prolongado com tolerância configurada
+      // 2. Monitoramento de buffering legítimo com janela de tolerância
       if (val.isBuffering) {
         if (!_isBuffering) {
           _isBuffering = true;
           _bufferingStartTime = now;
+          metrics?.markBufferingStart(now);
           debugPrint('[PLAYER STABILITY] Início de buffering detectado.');
         } else if (now.difference(_bufferingStartTime) > maxBufferingDuration) {
           debugPrint('[PLAYER STABILITY] Buffering estagnado por mais de ${maxBufferingDuration.inSeconds} segundos.');
-          _handleStall('Buffering contínuo estagnado');
+          metrics?.markBufferingEnd(now);
+          metrics?.markInterruption('Buffering estagnado (${maxBufferingDuration.inSeconds}s)');
+          _handleStall('Buffering contínuo estagnado', controller);
           return;
         }
       } else {
         if (_isBuffering) {
           final dur = now.difference(_bufferingStartTime).inMilliseconds;
+          metrics?.markBufferingEnd(now);
           debugPrint('[PLAYER STABILITY] Buffering finalizado com sucesso (${dur}ms).');
           _isBuffering = false;
         }
       }
 
-      // 3. Detecção de encerramento inesperado do stream ao vivo
-      // Se o canal estava tocando e repentinamente parou sem o usuário pausar,
-      // indica que o servidor encerrou a conexão TCP (ex: timeout de 15 minutos do proxy IPTV)
+      // 3. Detecção de encerramento inesperado do stream ao vivo (STATE_ENDED / socket drop)
       if (live && !val.isPlaying && !val.isBuffering && !_isUserPaused) {
-        debugPrint('[PLAYER STABILITY] Transmissão ao vivo interrompida inesperadamente pelo servidor (STATE_ENDED/disconnect).');
-        _handleStall('Conexão com a transmissão ao vivo encerrada');
+        debugPrint('[PLAYER STABILITY] Transmissão ao vivo interrompida inesperadamente pelo servidor (queda de conexão).');
+        metrics?.markInterruption('Conexão encerrada pelo servidor (STATE_ENDED)');
+        _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
         return;
       }
 
       // 4. Detecção de congelamento de frames / estagnação de posição
+      // Para canais ao vivo (MPEG-TS): se position for zero mas isPlaying for true, não assume congelamento falso!
       if (val.isPlaying && !val.isBuffering && !_isUserPaused) {
         if (val.position != _lastPosition) {
           _lastPosition = val.position;
@@ -142,18 +151,21 @@ class PlayerStabilityManager {
           // Reseta retries se a reprodução avançar estavelmente por mais de 10s
           if (_retryCount > 0 && now.difference(_lastRetryTime) > const Duration(seconds: 10)) {
             debugPrint('[PLAYER STABILITY] Transmissão estabilizada. Resetando contagem de tentativas.');
+            metrics?.markRecoverySuccess();
             _retryCount = 0;
             _lastRetryReason = null;
           }
         } else {
-          final stallDuration = now.difference(_lastPositionAdvanceTime);
-          final timeout = (live && val.position == Duration.zero)
-              ? const Duration(seconds: 25)
-              : maxStallDuration;
-          if (stallDuration > timeout) {
-            debugPrint('[PLAYER STABILITY] Reprodução congelada por mais de ${stallDuration.inSeconds} segundos.');
-            _handleStall('Reprodução congelada');
-            return;
+          // Apenas considera congelamento de posição se a posição for mensurável (> 0)
+          // ou se ultrapassar um timeout longo com evidência de congelamento
+          if (!live || val.position > Duration.zero) {
+            final stallDuration = now.difference(_lastPositionAdvanceTime);
+            if (stallDuration > maxStallDuration) {
+              debugPrint('[PLAYER STABILITY] Reprodução congelada por mais de ${stallDuration.inSeconds} segundos.');
+              metrics?.markInterruption('Reprodução congelada (${stallDuration.inSeconds}s)');
+              _handleStall('Reprodução congelada', controller);
+              return;
+            }
           }
         }
       }
@@ -171,36 +183,55 @@ class PlayerStabilityManager {
     _stallCheckTimer = null;
   }
 
-  /// Tenta recuperação suave sem desmontar o controlador.
-  /// Para streams ao vivo com conexão encerrada pelo servidor, play() simples
-  /// não recria o socket TCP; nestes casos, retorna false para forçar reinicialização limpa.
+  /// Etapa 3: Tenta recuperação leve (soft recovery) sem destruir o controlador.
+  /// Requisito estrito: NÃO fazer seekTo(duration) em transmissões ao vivo.
+  /// Tenta restaurar play() diretamente e aguarda confirmação de retomada.
   Future<bool> attemptSoftRecovery(VideoPlayerController? controller) async {
     if (controller == null || _isDisposed || !controller.value.isInitialized || controller.value.hasError) {
       return false;
     }
-    if (isLiveStream && !controller.value.isPlaying) {
-      return false;
-    }
+
     try {
-      if (isLiveStream && controller.value.duration > const Duration(seconds: 2)) {
-        await controller.seekTo(controller.value.duration);
-      }
+      debugPrint('[PLAYER STABILITY] Tentando recuperação leve (soft play)...');
       await controller.play();
-      return controller.value.isPlaying;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      if (controller.value.isPlaying) {
+        debugPrint('[PLAYER STABILITY] Recuperação leve bem-sucedida!');
+        metrics?.markRecoverySuccess();
+        resetRetries();
+        return true;
+      }
+      return false;
     } catch (e) {
-      debugPrint('[PLAYER STABILITY] Falha na recuperação suave: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
+      debugPrint('[PLAYER STABILITY] Falha na recuperação leve: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
       return false;
     }
   }
 
-  void _handleStall([String? reason]) {
+  /// Trata stall aplicando recuperação em etapas:
+  /// Primeiro tenta recuperação leve se o controller for fornecido; se falhar ou não aplicável,
+  /// agenda reinicialização controlada via backoff.
+  Future<void> _handleStall(String reason, [VideoPlayerController? controller]) async {
     _stallCheckTimer?.cancel();
+
+    // Etapa 3: Tenta recuperação leve se o controlador ainda estiver ativo
+    if (controller != null && controller.value.isInitialized && !controller.value.hasError) {
+      final softOk = await attemptSoftRecovery(controller);
+      if (softOk) {
+        // Reinicia monitoramento contínuo
+        startStallMonitoring(controller);
+        return;
+      }
+    }
+
+    // Etapa 4: Reconexão completa controlada
     onStateChanged?.call(PlayerRecoveryState.stalled);
-    scheduleRetry(reason ?? 'A transmissão parou de responder. Tentando reconectar...');
+    scheduleRetry(reason);
   }
 
   /// Agenda uma tentativa de reconexão com intervalos progressivos (backoff)
-  /// e proteção contra múltiplas chamadas concorrentes.
+  /// e proteção unificada contra múltiplas chamadas concorrentes.
   void scheduleRetry(String reason) {
     if (_isDisposed) return;
 
@@ -212,7 +243,7 @@ class PlayerStabilityManager {
     final safeReason = UrlSanitizer.sanitizeErrorMessage(reason);
     final now = DateTime.now();
 
-    // Bloqueia eventos duplicados imediatos gerados pela mesma falha
+    // Bloqueia eventos duplicados imediatos gerados pela mesma falha (< 600ms)
     if (safeReason == _lastRetryReason &&
         now.difference(_lastRetryTime) < const Duration(milliseconds: 600)) {
       debugPrint('[PLAYER STABILITY] Evento duplicado de falha ignorado ($safeReason).');
@@ -230,7 +261,9 @@ class PlayerStabilityManager {
     }
 
     _retryCount++;
-    // Intervalo progressivo: 2s, 4s, 8s (backoff exponencial controlado)
+    metrics?.markRecoveryStart(_retryCount, now);
+
+    // Intervalo progressivo controlado: 2s, 4s, 8s (backoff exponencial seguro)
     final delaySeconds = 1 << _retryCount;
     final delay = Duration(seconds: delaySeconds);
 

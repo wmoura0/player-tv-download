@@ -8,6 +8,7 @@ import '../models/playlist.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
 import '../services/hidden_categories_service.dart';
+import '../services/playback_metrics.dart';
 import '../services/player_stability_manager.dart';
 import '../services/playlist_storage.dart';
 import '../services/url_sanitizer.dart';
@@ -52,7 +53,6 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   late final PlayerStabilityManager _stabilityManager;
   bool _isConnecting = false;
-  bool _userPaused = false;
 
   @override
   void initState() {
@@ -118,11 +118,6 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           _playerController!.value.isInitialized) {
         DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         _stabilityManager.startStallMonitoring(_playerController!);
-        if (_playerController!.value.duration > Duration.zero) {
-          _playerController!
-              .seekTo(_playerController!.value.duration)
-              .catchError((_) {});
-        }
         _playerController!.play().catchError((_) {});
       }
     }
@@ -329,6 +324,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
     if (val.isPlaying) {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      _stabilityManager.metrics?.markFirstFrame();
     }
 
     if (val.hasError && _playerError == null) {
@@ -336,6 +332,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
         val.errorDescription ?? 'Falha na transmissão do canal.',
       );
       _stabilityManager.clearOpenWatchdog();
+      _stabilityManager.metrics?.markError(safeErr);
       setState(() {
         _playerError = safeErr;
         _isPlayerLoading = false;
@@ -343,13 +340,14 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       });
       _stabilityManager.scheduleRetry(safeErr);
     } else if (val.isBuffering != _isPlayerBuffering) {
+      if (val.isBuffering) {
+        _stabilityManager.metrics?.markBufferingStart();
+      } else {
+        _stabilityManager.metrics?.markBufferingEnd();
+      }
       setState(() {
         _isPlayerBuffering = val.isBuffering;
       });
-    } else if (!val.isPlaying && !val.isBuffering && !_userPaused && !_isPlayerLoading && _playerError == null) {
-      // Queda silenciosa ou término de socket após 15 minutos sem erro formal
-      debugPrint('[PLAYER] Transmissão interrompida inesperadamente pelo servidor (queda de socket).');
-      _stabilityManager.scheduleRetry('Transmissão encerrada pelo servidor');
     }
   }
 
@@ -365,8 +363,12 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       return;
     }
 
-    _userPaused = false;
     _stabilityManager.setUserPaused(false);
+    _stabilityManager.metrics = PlaybackMetrics(
+      mediaType: PlaybackMediaType.live,
+      title: channel.name,
+    );
+    _stabilityManager.metrics?.markRequestStart();
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
 
     if (!isRetry) {
@@ -436,16 +438,12 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       await controller.initialize().timeout(const Duration(seconds: 15));
       if (mounted && _playerController == controller) {
         _stabilityManager.clearOpenWatchdog();
+        _stabilityManager.metrics?.markConnectionEstablished();
+        _stabilityManager.metrics?.markPlayerInitialized();
         if (!isRetry) {
           _stabilityManager.resetRetries();
         }
         _stabilityManager.startStallMonitoring(controller);
-
-        if (controller.value.duration > Duration.zero) {
-          try {
-            await controller.seekTo(controller.value.duration);
-          } catch (_) {}
-        }
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
@@ -499,13 +497,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     final c = _playerController;
     if (c == null || !c.value.isInitialized) return;
     if (c.value.isPlaying) {
-      _userPaused = true;
       _stabilityManager.setUserPaused(true);
       c.pause();
       DeviceUtils.setPipState(enabled: false);
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
     } else {
-      _userPaused = false;
       _stabilityManager.setUserPaused(false);
       c.play();
       DeviceUtils.setPipState(enabled: true);
@@ -526,7 +522,6 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   }
 
   Future<void> _closeMiniPlayer() async {
-    _userPaused = false;
     _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
@@ -702,9 +697,9 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
         Navigator.of(context).pop();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF090D14),
+        backgroundColor: const Color(0xFF070F18),
         appBar: AppBar(
-          backgroundColor: const Color(0xFF0F1523),
+          backgroundColor: const Color(0xFF0A141D),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1199,15 +1194,15 @@ class _ChannelTileState extends State<_ChannelTile> {
         onEnter: (_) => setState(() => _isHovered = true),
         onExit: (_) => setState(() => _isHovered = false),
         child: AnimatedScale(
-          scale: isHighlighted ? 1.02 : 1.0,
+          scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.02 : 1.0),
           duration: const Duration(milliseconds: 150),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             decoration: BoxDecoration(
-              color: widget.isPlaying ? const Color(0xFF14243B) : const Color(0xFF121824),
+              color: widget.isPlaying ? const Color(0xFF0F2636) : const Color(0xFF0C1622),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A2436),
+                color: isHighlighted ? const Color(0xFF00E5FF) : (widget.isPlaying ? const Color(0xFF00E5FF).withValues(alpha: 0.6) : const Color(0xFF162536)),
                 width: widget.isPlaying ? 2.0 : 1.5,
               ),
               boxShadow: isHighlighted
