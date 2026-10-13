@@ -53,6 +53,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   late final PlayerStabilityManager _stabilityManager;
   bool _isConnecting = false;
+  bool _isBackDebounced = false;
+  Timer? _backDebounceTimer;
 
   @override
   void initState() {
@@ -137,6 +139,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
+    _backDebounceTimer?.cancel();
     DeviceUtils.restoreOrientation();
     super.dispose();
   }
@@ -521,6 +524,16 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     }
   }
 
+  void _handleBackFromFullscreen() {
+    if (_isBackDebounced) return;
+    _isBackDebounced = true;
+    _backDebounceTimer?.cancel();
+    _backDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      _isBackDebounced = false;
+    });
+    _toggleFullscreen();
+  }
+
   Future<void> _closeMiniPlayer() async {
     _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
@@ -614,7 +627,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       return PopScope(
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _toggleFullscreen();
+          if (!didPop) _handleBackFromFullscreen();
         },
         child: Scaffold(
           backgroundColor: Colors.black,
@@ -676,17 +689,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
+        if (didPop || _isBackDebounced) return;
         if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
           setState(() {
             _searchQuery = '';
             _searchController.clear();
-          });
-          return;
-        }
-        if (_selectedCategory != 'Todos' && _selectedCategory != 'Todas') {
-          setState(() {
-            _selectedCategory = _categories.contains('Todas') ? 'Todas' : (_categories.contains('Todos') ? 'Todos' : (_categories.isNotEmpty ? _categories.first : 'Todas'));
           });
           return;
         }

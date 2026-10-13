@@ -114,7 +114,10 @@ class XtreamCatalogService extends ChangeNotifier {
     try {
       final file = await _getCacheFile(suffix);
       if (file == null) return;
-      await file.writeAsString(jsonEncode(jsonList));
+      final jsonStr = jsonList.length > 50
+          ? await Isolate.run(() => jsonEncode(jsonList))
+          : jsonEncode(jsonList);
+      await file.writeAsString(jsonStr);
       await _updateMetadataLastUpdated();
     } catch (e) {
       debugPrint('[CACHE] Falha ao gravar cache em disco ($suffix): $e');
@@ -127,7 +130,9 @@ class XtreamCatalogService extends ChangeNotifier {
       if (file == null || !await file.exists()) return null;
       final content = await file.readAsString();
       if (content.isEmpty) return null;
-      final decoded = jsonDecode(content);
+      final decoded = content.length > 20 * 1024
+          ? await Isolate.run(() => jsonDecode(content))
+          : jsonDecode(content);
       if (decoded is List) return decoded;
       return null;
     } catch (e) {
@@ -197,6 +202,8 @@ class XtreamCatalogService extends ChangeNotifier {
       'vod_streams_all',
       'series_cats',
       'series_all',
+      'recent_movies',
+      'recent_series',
       'meta',
     ];
     for (final s in suffixes) {
@@ -233,27 +240,20 @@ class XtreamCatalogService extends ChangeNotifier {
   }
 
   /// Pré-carrega catálogos em segundo plano de forma inteligente:
-  /// 1. Se já houver dados em disco, carrega-os transparentemente para a memória sem rede.
-  /// 2. Se não houver dados locais, busca de forma controlada sequencial no servidor.
-  /// 3. Em caso de falha de conexão, preserva os dados existentes sem apagar nada.
+  /// 1. Se já houver categorias em disco, carrega-as de forma instantânea para a memória sem rede.
+  /// 2. Se não houver categorias locais, busca de forma leve e rápida as categorias no servidor.
+  /// 3. NÃO baixa streams completos de Filmes e Séries na inicialização para evitar OOM crash
+  ///    e travamento da CPU na Fire TV.
   Future<void> preloadCatalogsInBackground() async {
     if (_isPreloading) return;
     _isPreloading = true;
     try {
-      // 1. Tenta alimentar memória a partir do disco primeiro (sem rede)
+      // 1. Tenta carregar categorias do disco primeiro (sem rede)
       if (_liveCategoriesCache == null) {
         final diskCats = await _readDiskCache('live_cats');
         if (diskCats != null && diskCats.isNotEmpty) {
           _liveCategoriesCache = diskCats
               .map((i) => XtreamCategory.fromJson(i as Map<String, dynamic>))
-              .toList();
-        }
-      }
-      if (!_liveStreamsCache.containsKey('all')) {
-        final diskLive = await _readDiskCache('live_streams_all');
-        if (diskLive != null && diskLive.isNotEmpty) {
-          _liveStreamsCache['all'] = diskLive
-              .map((i) => XtreamLiveStream.fromJson(i as Map<String, dynamic>))
               .toList();
         }
       }
@@ -265,14 +265,6 @@ class XtreamCatalogService extends ChangeNotifier {
               .toList();
         }
       }
-      if (!_vodStreamsCache.containsKey('all')) {
-        final diskVod = await _readDiskCache('vod_streams_all');
-        if (diskVod != null && diskVod.isNotEmpty) {
-          _vodStreamsCache['all'] = diskVod
-              .map((i) => XtreamVodStream.fromJson(i as Map<String, dynamic>))
-              .toList();
-        }
-      }
       if (_seriesCategoriesCache == null) {
         final diskSeriesCats = await _readDiskCache('series_cats');
         if (diskSeriesCats != null && diskSeriesCats.isNotEmpty) {
@@ -281,35 +273,18 @@ class XtreamCatalogService extends ChangeNotifier {
               .toList();
         }
       }
-      if (!_seriesCache.containsKey('all')) {
-        final diskSeries = await _readDiskCache('series_all');
-        if (diskSeries != null && diskSeries.isNotEmpty) {
-          _seriesCache['all'] = diskSeries
-              .map((i) => XtreamSeriesItem.fromJson(i as Map<String, dynamic>))
-              .toList();
-        }
-      }
 
       notifyListeners();
 
-      // 2. Se ainda faltam dados básicos, busca na API de forma sequencial controlada
+      // 2. Busca na API apenas as categorias caso ainda não estejam em memória
       if (_liveCategoriesCache == null) {
         await fetchLiveCategories();
-      }
-      if (!_liveStreamsCache.containsKey('all')) {
-        await fetchLiveStreams(categoryId: 'all');
       }
       if (_vodCategoriesCache == null) {
         await fetchVodCategories();
       }
-      if (!_vodStreamsCache.containsKey('all')) {
-        await fetchVodStreams(categoryId: 'all');
-      }
       if (_seriesCategoriesCache == null) {
         await fetchSeriesCategories();
-      }
-      if (!_seriesCache.containsKey('all')) {
-        await fetchSeries(categoryId: 'all');
       }
 
       await _updateMetadataLastUpdated();
@@ -341,13 +316,31 @@ class XtreamCatalogService extends ChangeNotifier {
     final cached = getRecentCachedMovies(limit: limit);
     if (cached.isNotEmpty) return cached;
 
+    // 1. Tenta ler o cache dedicado de recentes (arquivo pequeno e instantâneo)
+    final diskRecent = await _readDiskCache('recent_movies');
+    if (diskRecent != null && diskRecent.isNotEmpty) {
+      return diskRecent
+          .map((item) => XtreamVodStream.fromJson(item as Map<String, dynamic>))
+          .take(limit)
+          .toList();
+    }
+
+    // 2. Fallback: lê catálogo completo apenas se já existente em disco
     final diskAll = await _readDiskCache('vod_streams_all');
     if (diskAll != null && diskAll.isNotEmpty) {
-      final allMovies = diskAll
-          .map((item) => XtreamVodStream.fromJson(item as Map<String, dynamic>))
-          .toList();
+      final allMovies = diskAll.length > 500
+          ? await Isolate.run(() => diskAll
+              .map((item) => XtreamVodStream.fromJson(item as Map<String, dynamic>))
+              .toList())
+          : diskAll
+              .map((item) => XtreamVodStream.fromJson(item as Map<String, dynamic>))
+              .toList();
       _vodStreamsCache['all'] = allMovies;
-      return getRecentCachedMovies(limit: limit);
+      final recent = getRecentCachedMovies(limit: 20);
+      if (recent.isNotEmpty) {
+        _writeDiskCache('recent_movies', recent.map((m) => m.toJson()).toList());
+      }
+      return recent.take(limit).toList();
     }
     return [];
   }
@@ -372,13 +365,31 @@ class XtreamCatalogService extends ChangeNotifier {
     final cached = getRecentCachedSeries(limit: limit);
     if (cached.isNotEmpty) return cached;
 
+    // 1. Tenta ler o cache dedicado de séries recentes (arquivo pequeno e instantâneo)
+    final diskRecent = await _readDiskCache('recent_series');
+    if (diskRecent != null && diskRecent.isNotEmpty) {
+      return diskRecent
+          .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
+          .take(limit)
+          .toList();
+    }
+
+    // 2. Fallback: lê catálogo completo apenas se já existente em disco
     final diskAll = await _readDiskCache('series_all');
     if (diskAll != null && diskAll.isNotEmpty) {
-      final allSeries = diskAll
-          .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
-          .toList();
+      final allSeries = diskAll.length > 500
+          ? await Isolate.run(() => diskAll
+              .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
+              .toList())
+          : diskAll
+              .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
+              .toList();
       _seriesCache['all'] = allSeries;
-      return getRecentCachedSeries(limit: limit);
+      final recent = getRecentCachedSeries(limit: 20);
+      if (recent.isNotEmpty) {
+        _writeDiskCache('recent_series', recent.map((s) => s.toJson()).toList());
+      }
+      return recent.take(limit).toList();
     }
     return [];
   }
@@ -586,6 +597,10 @@ class XtreamCatalogService extends ChangeNotifier {
 
     if (cacheKey == 'all') {
       await _writeDiskCache('vod_streams_all', streams.map((s) => s.toJson()).toList());
+      final recent = getRecentCachedMovies(limit: 20);
+      if (recent.isNotEmpty) {
+        await _writeDiskCache('recent_movies', recent.map((m) => m.toJson()).toList());
+      }
     }
 
     if (categoryId != null && categoryId != 'all') {
@@ -717,6 +732,10 @@ class XtreamCatalogService extends ChangeNotifier {
 
     if (cacheKey == 'all') {
       await _writeDiskCache('series_all', series.map((s) => s.toJson()).toList());
+      final recent = getRecentCachedSeries(limit: 20);
+      if (recent.isNotEmpty) {
+        await _writeDiskCache('recent_series', recent.map((s) => s.toJson()).toList());
+      }
     }
 
     if (categoryId != null && categoryId != 'all') {

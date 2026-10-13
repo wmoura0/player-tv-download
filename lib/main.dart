@@ -22,10 +22,25 @@ import 'utils/device_utils.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SettingsService.instance.loadSettings();
-  await HiddenCategoriesService.instance.init();
-  await DeviceUtils.init();
-  await DeviceUtils.setNormalOrientation();
+
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    debugPrint('[CRASH_GUARD] Flutter error capturado: ${details.exceptionAsString()}');
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    debugPrint('[CRASH_GUARD] Platform error capturado: $error');
+    return true;
+  };
+
+  try {
+    await SettingsService.instance.loadSettings();
+    await HiddenCategoriesService.instance.init();
+    await DeviceUtils.init();
+    await DeviceUtils.setNormalOrientation();
+  } catch (e, st) {
+    debugPrint('[INIT_ERROR] Falha na inicialização dos serviços: $e\n$st');
+  }
+
   runApp(const PlayerTvApp());
 }
 
@@ -83,10 +98,11 @@ class _HomeScreenState extends State<HomeScreen> {
   XtreamCatalogService? _sharedCatalogService;
   String _accountKey = '';
 
+  bool _isInitializingCatalog = false;
+
   @override
   void initState() {
     super.initState();
-    _initSharedCatalogService();
     _loadHomeData();
   }
 
@@ -104,26 +120,37 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _initSharedCatalogService() async {
-    if (_sharedCatalogService != null) return;
-    if (widget.xtreamAccount != null) {
-      _accountKey = PlaybackProgressService.buildAccountKey(
-        widget.xtreamAccount!.serverUrl,
-        widget.xtreamAccount!.username,
-      );
-      final storage = SecureStorageService();
-      final pass = await storage.getPassword();
-      if (pass != null) {
-        _sharedCatalogService = XtreamCatalogService(
-          serverUrl: widget.xtreamAccount!.serverUrl,
-          username: widget.xtreamAccount!.username,
-          password: pass,
+    if (_sharedCatalogService != null || _isInitializingCatalog) return;
+    _isInitializingCatalog = true;
+    try {
+      if (widget.xtreamAccount != null) {
+        _accountKey = PlaybackProgressService.buildAccountKey(
+          widget.xtreamAccount!.serverUrl,
+          widget.xtreamAccount!.username,
         );
-        _sharedCatalogService!.addListener(_onCatalogServiceUpdated);
-        _sharedCatalogService!.preloadCatalogsInBackground();
+        final storage = SecureStorageService();
+        final pass = await storage.getPassword().timeout(
+          const Duration(seconds: 4),
+          onTimeout: () => null,
+        );
+        if (!mounted) return;
+        if (pass != null) {
+          _sharedCatalogService = XtreamCatalogService(
+            serverUrl: widget.xtreamAccount!.serverUrl,
+            username: widget.xtreamAccount!.username,
+            password: pass,
+          );
+          _sharedCatalogService!.addListener(_onCatalogServiceUpdated);
+          _sharedCatalogService!.preloadCatalogsInBackground();
+        }
+      } else {
+        _accountKey = '';
+        _sharedCatalogService = null;
       }
-    } else {
-      _accountKey = '';
-      _sharedCatalogService = null;
+    } catch (e) {
+      debugPrint('[HOME] Falha ao inicializar serviço de catálogo: $e');
+    } finally {
+      _isInitializingCatalog = false;
     }
   }
 
@@ -716,8 +743,8 @@ class _AppHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isCompact = constraints.maxWidth < 620;
-        final showClock = constraints.maxWidth >= 960;
+        final isCompact = constraints.maxWidth < 720;
+        final showClock = constraints.maxWidth >= 1080;
 
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -762,62 +789,71 @@ class _AppHeader extends StatelessWidget {
               ],
             ),
 
-            const Spacer(),
-
-            // Relógio Digital Central (Visível em TV e telas amplas)
             if (showClock) ...[
+              const Spacer(),
               const _LiveHeaderClock(),
+              const Spacer(),
+            ] else ...[
               const Spacer(),
             ],
 
             // Pílulas de Ação Rápida no Topo à Direita
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _HeaderActionButton(
-                  key: const Key('header_search_btn'),
-                  icon: Icons.search_rounded,
-                  tooltip: 'Buscar no catálogo',
-                  label: isCompact ? null : 'Buscar',
-                  iconColor: const Color(0xFF8DAEC4),
-                  isCompact: isCompact,
-                  onTap: onSearchTap,
+            Flexible(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _HeaderActionButton(
+                      key: const Key('header_search_btn'),
+                      icon: Icons.search_rounded,
+                      tooltip: 'Buscar no catálogo',
+                      label: isCompact ? null : 'Buscar',
+                      iconColor: const Color(0xFF8DAEC4),
+                      isCompact: isCompact,
+                      onTap: onSearchTap,
+                    ),
+                    if (onRecentsTap != null && showClock) ...[
+                      const SizedBox(width: 8),
+                      _HeaderActionButton(
+                        key: const Key('header_recents_btn'),
+                        icon: Icons.history_rounded,
+                        tooltip: 'Recentes',
+                        label: 'Recentes',
+                        iconColor: const Color(0xFF8DAEC4),
+                        isCompact: false,
+                        onTap: onRecentsTap!,
+                      ),
+                    ],
+                    const SizedBox(width: 8),
+                    _HeaderActionButton(
+                      key: const Key('header_settings_btn'),
+                      icon: Icons.settings_outlined,
+                      tooltip: 'Configurações',
+                      label: isCompact ? null : 'Configurações',
+                      iconColor: const Color(0xFF8DAEC4),
+                      isCompact: isCompact,
+                      onTap: onSettingsTap,
+                    ),
+                    if (xtreamAccount != null) ...[
+                      const SizedBox(width: 8),
+                      _HeaderActionButton(
+                        key: const Key('header_logout_btn'),
+                        icon: Icons.account_circle_outlined,
+                        tooltip: 'Sair da conta',
+                        label: isCompact
+                            ? null
+                            : (xtreamAccount!.username.length > 12
+                                ? '${xtreamAccount!.username.substring(0, 10)}...'
+                                : xtreamAccount!.username),
+                        iconColor: const Color(0xFF8DAEC4),
+                        isCompact: isCompact,
+                        onTap: onLogoutTap,
+                      ),
+                    ],
+                  ],
                 ),
-                if (onRecentsTap != null && showClock) ...[
-                  const SizedBox(width: 8),
-                  _HeaderActionButton(
-                    key: const Key('header_recents_btn'),
-                    icon: Icons.history_rounded,
-                    tooltip: 'Recentes',
-                    label: 'Recentes',
-                    iconColor: const Color(0xFF8DAEC4),
-                    isCompact: false,
-                    onTap: onRecentsTap!,
-                  ),
-                ],
-                const SizedBox(width: 8),
-                _HeaderActionButton(
-                  key: const Key('header_settings_btn'),
-                  icon: Icons.settings_outlined,
-                  tooltip: 'Configurações',
-                  label: isCompact ? null : 'Configurações',
-                  iconColor: const Color(0xFF8DAEC4),
-                  isCompact: isCompact,
-                  onTap: onSettingsTap,
-                ),
-                if (xtreamAccount != null) ...[
-                  const SizedBox(width: 8),
-                  _HeaderActionButton(
-                    key: const Key('header_logout_btn'),
-                    icon: Icons.account_circle_outlined,
-                    tooltip: 'Sair da conta',
-                    label: xtreamAccount!.username,
-                    iconColor: const Color(0xFF8DAEC4),
-                    isCompact: isCompact,
-                    onTap: onLogoutTap,
-                  ),
-                ],
-              ],
+              ),
             ),
           ],
         );
@@ -1600,6 +1636,8 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
                               widget.imageUrl!,
                               fit: BoxFit.cover,
                               width: double.infinity,
+                              cacheWidth: 248,
+                              cacheHeight: 380,
                               errorBuilder: (_, _, _) => const Center(
                                 child: Icon(Icons.movie_outlined, color: Colors.white24, size: 32),
                               ),

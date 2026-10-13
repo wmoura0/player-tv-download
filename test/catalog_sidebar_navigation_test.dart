@@ -252,7 +252,7 @@ void main() {
       expect(find.text('Canal Esporte Total'), findsOneWidget);
     });
 
-    testWidgets('Alternância discreta no topo troca para Filmes e Séries e atualiza as categorias da barra lateral', (tester) async {
+    testWidgets('Barra superior de navegação removida para liberar espaço vertical na TV', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: XtreamCatalogScreen(
@@ -263,30 +263,14 @@ void main() {
       );
       await waitForLoad(tester);
 
-      // Botões discretos de alternância fora da barra lateral
-      expect(find.byKey(const Key('catalog_tab_live')), findsOneWidget);
-      expect(find.byKey(const Key('catalog_tab_movies')), findsOneWidget);
-      expect(find.byKey(const Key('catalog_tab_series')), findsOneWidget);
+      // Botões redundantes de navegação superior foram removidos conforme solicitado
+      expect(find.byKey(const Key('catalog_tab_live')), findsNothing);
+      expect(find.byKey(const Key('catalog_tab_movies')), findsNothing);
+      expect(find.byKey(const Key('catalog_tab_series')), findsNothing);
 
-      // Alterna para Filmes via seletor superior
-      await tester.tap(find.byKey(const Key('catalog_tab_movies')));
-      await waitForLoad(tester);
-
-      // Agora a barra lateral deve conter as categorias de FILMES (Ação)
-      expect(find.text('Filmes'), findsWidgets);
-      expect(find.byKey(const Key('sidebar_cat_10')), findsOneWidget);
-      expect(find.text('Ação'), findsOneWidget);
-      expect(find.text('Filme Ação Explosiva'), findsOneWidget);
-
-      // Alterna para Séries via seletor superior
-      await tester.tap(find.byKey(const Key('catalog_tab_series')));
-      await waitForLoad(tester);
-
-      // Agora a barra lateral deve conter as categorias de SÉRIES (Drama)
-      expect(find.text('Séries'), findsWidgets);
-      expect(find.byKey(const Key('sidebar_cat_20')), findsOneWidget);
-      expect(find.text('Drama'), findsOneWidget);
-      expect(find.text('Série Drama Intenso'), findsOneWidget);
+      // Canais e categorias da barra lateral carregam diretamente e ocupam o espaço
+      expect(find.text('Canal Notícias 24h'), findsOneWidget);
+      expect(find.text('Canal Esporte Total'), findsOneWidget);
     });
 
     testWidgets('Remoção do toggle redundante no AppBar e expansão discreta no mobile sem deixar espaços vazios', (tester) async {

@@ -75,6 +75,15 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   bool _isSidebarVisible = true;
   bool _isConnecting = false;
 
+  // Estado do canal e EPG em FOCO (navegação D-pad independente da reprodução)
+  XtreamLiveStream? _focusedLiveStream;
+  EpgChannelSchedule? _focusedSchedule;
+  bool _isEpgLoading = false;
+  Timer? _epgDebounceTimer;
+  int _epgRequestToken = 0;
+  bool _isBackDebounced = false;
+  Timer? _backDebounceTimer;
+
   @override
   void initState() {
     super.initState();
@@ -144,21 +153,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
   }
 
-  void _switchCatalogType(XtreamCatalogType newType) {
-    if (_currentType == newType) return;
-    if (_currentType == XtreamCatalogType.live) {
-      _closeMiniPlayer();
-    }
-    setState(() {
-      _currentType = newType;
-      _selectedCategoryId = 'all';
-      _searchQuery = '';
-      _searchController.clear();
-      _isInitLoading = true;
-      _initError = null;
-    });
-    _loadCategories();
-  }
+
 
   @override
   void dispose() {
@@ -173,6 +168,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
+    _epgDebounceTimer?.cancel();
+    _backDebounceTimer?.cancel();
     DeviceUtils.restoreOrientation();
     super.dispose();
   }
@@ -782,6 +779,68 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
   }
 
+  void _handleBackFromFullscreen() {
+    if (_isBackDebounced) return;
+    _isBackDebounced = true;
+    _backDebounceTimer?.cancel();
+    _backDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      _isBackDebounced = false;
+    });
+    _toggleFullscreen();
+  }
+
+  void _onChannelFocusChanged(XtreamLiveStream stream) {
+    if (_focusedLiveStream?.streamId == stream.streamId) return;
+
+    _epgDebounceTimer?.cancel();
+    final token = ++_epgRequestToken;
+
+    setState(() {
+      _focusedLiveStream = stream;
+    });
+
+    // 1. Verifica cache síncrono no EpgService
+    final cached = EpgService.instance.getXtreamCachedSchedule(stream.streamId);
+    if (cached != null) {
+      if (mounted && _epgRequestToken == token) {
+        setState(() {
+          _focusedSchedule = cached;
+          _isEpgLoading = false;
+        });
+      }
+      return;
+    }
+
+    // 2. Limpa dados antigos do canal anterior
+    setState(() {
+      _focusedSchedule = null;
+      _isEpgLoading = true;
+    });
+
+    // 3. Debounce de 250ms para navegação rápida
+    _epgDebounceTimer = Timer(const Duration(milliseconds: 250), () async {
+      if (!mounted || _service == null || _epgRequestToken != token) return;
+      try {
+        final schedule = await EpgService.instance.fetchXtreamChannelEpg(
+          streamId: stream.streamId,
+          catalogService: _service!,
+        );
+        if (mounted && _epgRequestToken == token && _focusedLiveStream?.streamId == stream.streamId) {
+          setState(() {
+            _focusedSchedule = schedule;
+            _isEpgLoading = false;
+          });
+        }
+      } catch (_) {
+        if (mounted && _epgRequestToken == token) {
+          setState(() {
+            _isEpgLoading = false;
+          });
+        }
+      }
+    });
+  }
+
   Future<void> _closeMiniPlayer() async {
     _stabilityManager.setUserPaused(false);
     DeviceUtils.setPipState(enabled: false);
@@ -964,7 +1023,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       return PopScope(
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _toggleFullscreen();
+          if (!didPop) _handleBackFromFullscreen();
         },
         child: Scaffold(
           backgroundColor: Colors.black,
@@ -1012,19 +1071,12 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
+        if (didPop || _isBackDebounced) return;
         if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
           setState(() {
             _searchQuery = '';
             _searchController.clear();
           });
-          return;
-        }
-        if (_selectedCategoryId != 'all') {
-          setState(() {
-            _selectedCategoryId = 'all';
-          });
-          _loadItemsForCategory('all');
           return;
         }
         if (_currentType == XtreamCatalogType.live && _activeLiveStream != null) {
@@ -1088,18 +1140,17 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 catalogContent = Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Coluna 2: Abas + Cabeçalho da Categoria + Lista de Canais
+                    // Coluna 2: Cabeçalho da Categoria + Lista de Canais (sem barra horizontal de navegação superior)
                     SizedBox(
                       width: channelListWidth,
                       child: Column(
                         children: [
-                          _buildTopFilterBar(),
                           _buildLiveCategoryHeader(),
                           Expanded(child: _buildLiveChannelList()),
                         ],
                       ),
                     ),
-                    // Coluna 3: Painel Direito com Mini Player 16:9 + Banner Canal + Linha do tempo EPG
+                    // Coluna 3: Painel Direito com Mini Player 16:9 + Linha do tempo EPG
                     Expanded(
                       child: _buildLiveEpgAndPlayerPanel(),
                     ),
@@ -1119,7 +1170,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                           ),
                         ),
                       ),
-                    _buildTopFilterBar(),
                     Expanded(child: _buildMainContent()),
                   ],
                 );
@@ -1310,6 +1360,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
 
     return ListView.builder(
+      key: const PageStorageKey('xtream_live_channels_list'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       itemCount: _filteredItems.length,
       itemBuilder: (context, index) {
@@ -1327,6 +1378,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             accentColor: _accentColor,
             isPlaying: _activeLiveStream?.streamId == item.streamId,
             isFavorite: isFav,
+            onFocus: () => _onChannelFocusChanged(item),
             onToggleFavorite: () => _toggleLiveFavorite(item),
             onTap: () => _onItemTap(item),
           ),
@@ -1359,10 +1411,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
               ),
             ),
           ),
-          // 2. Banner info do canal ativo
-          if (_activeLiveStream != null)
-            _buildActiveChannelInfoCard(),
-          // 3. Grade EPG
+          // 2. Grade EPG diretamente abaixo do mini player (sem card intermediário)
           Expanded(
             child: _buildEpgScheduleList(),
           ),
@@ -1413,102 +1462,17 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     );
   }
 
-  Widget _buildActiveChannelInfoCard() {
-    final stream = _activeLiveStream!;
-    final catName = _getCategoryName(stream.categoryId);
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0C1622),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF162A38)),
-      ),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              width: 36,
-              height: 36,
-              color: const Color(0xFF132534),
-              child: stream.streamIcon != null && stream.streamIcon!.isNotEmpty
-                  ? Image.network(
-                      stream.streamIcon!,
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) => const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 18),
-                    )
-                  : const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 18),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  stream.name,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFFF5F8FC),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  catName.isNotEmpty ? catName : 'Canal ao vivo',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF8FA7BD),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          InkWell(
-            onTap: _toggleFullscreen,
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.4)),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.fullscreen_rounded, size: 16, color: Color(0xFF00E5FF)),
-                  SizedBox(width: 4),
-                  Text(
-                    'Tela Cheia',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF00E5FF),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildEpgScheduleList() {
-    final schedule = _activeSchedule;
+    final targetStream = _focusedLiveStream ?? _activeLiveStream;
+    final schedule = _focusedLiveStream != null
+        ? _focusedSchedule
+        : _activeSchedule;
     final programs = schedule?.programs ?? [];
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0xFF0A141D),
@@ -1521,17 +1485,33 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           Row(
             children: [
               const Icon(Icons.event_note_rounded, size: 16, color: Color(0xFF00E5FF)),
-              const SizedBox(width: 6),
-              const Text(
-                'PROGRAMAÇÃO',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.8,
-                  color: Color(0xFF8FA7BD),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  targetStream != null
+                      ? 'PROGRAMAÇÃO: ${targetStream.name}'
+                      : 'PROGRAMAÇÃO',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.6,
+                    color: Color(0xFF8FA7BD),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const Spacer(),
+              if (_isEpgLoading) ...[
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
               if (programs.isNotEmpty)
                 Text(
                   '${programs.length} programas',
@@ -1546,112 +1526,123 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           const Divider(color: Color(0xFF162A38), height: 1),
           const SizedBox(height: 8),
           Expanded(
-            child: programs.isEmpty
-                ? Center(
-                    child: Text(
-                      _activeLiveStream == null
-                          ? 'Selecione um canal para ver a programação.'
-                          : 'Nenhuma programação disponível para este canal.',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF6A829A),
+            child: _isEpgLoading && programs.isEmpty
+                ? const Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
                       ),
                     ),
                   )
-                : ListView.builder(
-                    itemCount: programs.length,
-                    itemBuilder: (context, index) {
-                      final p = programs[index];
-                      final isNow = p.isAiringAt();
-                      final progress = p.getProgress();
-
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.08) : const Color(0xFF0C1622),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : const Color(0xFF142436),
-                            width: isNow ? 1.5 : 1.0,
+                : programs.isEmpty
+                    ? Center(
+                        child: Text(
+                          targetStream == null
+                              ? 'Selecione ou foque em um canal para ver a programação.'
+                              : 'Nenhuma programação disponível para ${targetStream.name}.',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF6A829A),
                           ),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                      )
+                    : ListView.builder(
+                        itemCount: programs.length,
+                        itemBuilder: (context, index) {
+                          final p = programs[index];
+                          final isNow = p.isAiringAt();
+                          final progress = p.getProgress();
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.08) : const Color(0xFF0C1622),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : const Color(0xFF142436),
+                                width: isNow ? 1.5 : 1.0,
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  p.formattedTimeRange.isNotEmpty
-                                      ? p.formattedTimeRange
-                                      : '--:--',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: isNow ? const Color(0xFF00E5FF) : const Color(0xFF8FA7BD),
-                                  ),
-                                ),
-                                if (isNow) ...[
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF00E5FF),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: const Text(
-                                      'AGORA',
+                                Row(
+                                  children: [
+                                    Text(
+                                      p.formattedTimeRange.isNotEmpty
+                                          ? p.formattedTimeRange
+                                          : '--:--',
                                       style: TextStyle(
-                                        fontSize: 9,
+                                        fontSize: 11,
                                         fontWeight: FontWeight.bold,
-                                        color: Color(0xFF070F18),
+                                        color: isNow ? const Color(0xFF00E5FF) : const Color(0xFF8FA7BD),
                                       ),
+                                    ),
+                                    if (isNow) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF00E5FF),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Text(
+                                          'AGORA',
+                                          style: TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(0xFF070F18),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  p.title,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: isNow ? FontWeight.bold : FontWeight.w500,
+                                    color: isNow ? const Color(0xFFF5F8FC) : const Color(0xFFD6E2EE),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (p.description != null && p.description!.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    p.description!,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF6A829A),
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                if (isNow && progress != null) ...[
+                                  const SizedBox(height: 6),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(2),
+                                    child: LinearProgressIndicator(
+                                      value: progress,
+                                      minHeight: 3,
+                                      backgroundColor: const Color(0xFF132534),
+                                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
                                     ),
                                   ),
                                 ],
                               ],
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              p.title,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: isNow ? FontWeight.bold : FontWeight.w500,
-                                color: isNow ? const Color(0xFFF5F8FC) : const Color(0xFFD6E2EE),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            if (p.description != null && p.description!.trim().isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              Text(
-                                p.description!,
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF6A829A),
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                            if (isNow && progress != null) ...[
-                              const SizedBox(height: 6),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(2),
-                                child: LinearProgressIndicator(
-                                  value: progress,
-                                  minHeight: 3,
-                                  backgroundColor: const Color(0xFF132534),
-                                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                          );
+                        },
+                      ),
           ),
         ],
       ),
@@ -1675,63 +1666,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     return _buildCatalogGrid();
   }
 
-  Widget _buildTopFilterBar() {
-    return Container(
-      color: const Color(0xFF0A141D),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: _buildCatalogTypeTabs(),
-    );
-  }
 
-  Widget _buildCatalogTypeTabs() {
-    final tabs = [
-      (
-        key: const Key('catalog_tab_live'),
-        type: XtreamCatalogType.live,
-        label: 'TV ao vivo',
-        icon: Icons.live_tv_rounded,
-        accent: const Color(0xFF00E5FF),
-      ),
-      (
-        key: const Key('catalog_tab_movies'),
-        type: XtreamCatalogType.movies,
-        label: 'Filmes',
-        icon: Icons.movie_outlined,
-        accent: const Color(0xFF29B6F6),
-      ),
-      (
-        key: const Key('catalog_tab_series'),
-        type: XtreamCatalogType.series,
-        label: 'Séries',
-        icon: Icons.video_library_outlined,
-        accent: const Color(0xFF1E88E5),
-      ),
-    ];
-
-    return Container(
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: const Color(0xFF141D2D),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF1F2B40), width: 1.0),
-      ),
-      child: Row(
-        children: [
-          for (final tab in tabs)
-            Expanded(
-              child: _CatalogTabItem(
-                tabKey: tab.key,
-                label: tab.label,
-                icon: tab.icon,
-                accentColor: tab.accent,
-                isSelected: _currentType == tab.type,
-                onTap: () => _switchCatalogType(tab.type),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildCatalogGrid() {
     return LayoutBuilder(
@@ -1764,6 +1699,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                   accentColor: _accentColor,
                   isPlaying: _activeLiveStream?.streamId == item.streamId,
                   isFavorite: isFav,
+                  onFocus: () => _onChannelFocusChanged(item),
                   onToggleFavorite: () => _toggleLiveFavorite(item),
                   onTap: () => _onItemTap(item),
                 );
@@ -1787,6 +1723,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     accentColor: _accentColor,
                     isPlaying: _activeLiveStream?.streamId == item.streamId,
                     isFavorite: isFav,
+                    onFocus: () => _onChannelFocusChanged(item),
                     onToggleFavorite: () => _toggleLiveFavorite(item),
                     onTap: () => _onItemTap(item),
                   ),
@@ -1961,100 +1898,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 }
 
-class _CatalogTabItem extends StatefulWidget {
-  final Key tabKey;
-  final String label;
-  final IconData icon;
-  final Color accentColor;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  const _CatalogTabItem({
-    required this.tabKey,
-    required this.label,
-    required this.icon,
-    required this.accentColor,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  @override
-  State<_CatalogTabItem> createState() => _CatalogTabItemState();
-}
-
-class _CatalogTabItemState extends State<_CatalogTabItem> {
-  bool _isFocused = false;
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final isHighlighted = _isFocused || _isHovered;
-    final activeColor = widget.accentColor;
-    const inactiveColor = Color(0xFF7E8B9B);
-
-    return FocusableActionDetector(
-      key: widget.tabKey,
-      actions: DeviceUtils.activateAction(widget.onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          canRequestFocus: false,
-          onTap: widget.onTap,
-          borderRadius: BorderRadius.circular(8),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
-            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-            decoration: BoxDecoration(
-              color: widget.isSelected
-                  ? activeColor.withValues(alpha: 0.22)
-                  : (isHighlighted ? activeColor.withValues(alpha: 0.10) : Colors.transparent),
-              borderRadius: BorderRadius.circular(8),
-              border: isHighlighted
-                  ? Border.all(color: activeColor, width: 1.5)
-                  : (widget.isSelected
-                      ? Border.all(color: activeColor.withValues(alpha: 0.6), width: 1.0)
-                      : Border.all(color: Colors.transparent, width: 1.0)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.icon,
-                  size: 16,
-                  color: widget.isSelected ? activeColor : (isHighlighted ? Colors.white : inactiveColor),
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    widget.label,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.w500,
-                      color: widget.isSelected ? const Color(0xFFF0F4F8) : (isHighlighted ? Colors.white : inactiveColor),
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _LiveChannelCard extends StatefulWidget {
   final int? channelNumber;
   final XtreamLiveStream stream;
   final Color accentColor;
   final bool isPlaying;
   final bool isFavorite;
+  final VoidCallback? onFocus;
   final VoidCallback? onToggleFavorite;
   final VoidCallback onTap;
 
@@ -2064,6 +1914,7 @@ class _LiveChannelCard extends StatefulWidget {
     required this.accentColor,
     this.isPlaying = false,
     this.isFavorite = false,
+    this.onFocus,
     this.onToggleFavorite,
     required this.onTap,
   });
@@ -2147,12 +1998,17 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
           _longPressTimer?.cancel();
           _isKeyDown = false;
           _longPressTriggered = false;
+        } else {
+          widget.onFocus?.call();
         }
         setState(() => _isFocused = focused);
       },
       onKeyEvent: _handleKeyEvent,
       child: MouseRegion(
-        onEnter: (_) => setState(() => _isHovered = true),
+        onEnter: (_) {
+          widget.onFocus?.call();
+          setState(() => _isHovered = true);
+        },
         onExit: (_) => setState(() => _isHovered = false),
         child: AnimatedScale(
           scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.02 : 1.0),

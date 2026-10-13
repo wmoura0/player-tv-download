@@ -66,6 +66,19 @@ class EpgService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Retorna a programação em cache de um canal do Xtream Codes se disponível e válida.
+  EpgChannelSchedule? getXtreamCachedSchedule(int streamId) {
+    final cacheKey = 'xtream_$streamId';
+    final now = DateTime.now();
+    if (_memoryScheduleCache.containsKey(cacheKey)) {
+      final cachedTime = _cacheTimestamps[cacheKey];
+      if (cachedTime != null && now.difference(cachedTime) < _xtreamEpgTtl) {
+        return _memoryScheduleCache[cacheKey];
+      }
+    }
+    return null;
+  }
+
   /// Carrega a programação EPG de um canal do Xtream Codes usando `get_short_epg`.
   /// Aplica cache em memória com TTL de 15 minutos para evitar chamadas repetidas na API.
   Future<EpgChannelSchedule?> fetchXtreamChannelEpg({

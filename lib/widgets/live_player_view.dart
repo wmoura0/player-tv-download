@@ -262,6 +262,105 @@ class _LivePlayerViewState extends State<LivePlayerView> {
       return KeyEventResult.handled;
     }
 
+    // 6. Navegação direcional explícita D-Pad entre botões laterais e centro
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      if (_playPauseFocusNode.hasFocus && widget.isFullscreen && widget.onPreviousChannel != null) {
+        _prevChannelFocusNode.requestFocus();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      } else if (_nextChannelFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      if (_playPauseFocusNode.hasFocus && widget.isFullscreen && widget.onNextChannel != null) {
+        _nextChannelFocusNode.requestFocus();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      } else if (_prevChannelFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      if (_playPauseFocusNode.hasFocus || _prevChannelFocusNode.hasFocus || _nextChannelFocusNode.hasFocus) {
+        if (widget.isFullscreen) {
+          _backFocusNode.requestFocus();
+        } else if (widget.onToggleFavorite != null) {
+          _favFocusNode.requestFocus();
+        }
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      if (_playPauseFocusNode.hasFocus || _prevChannelFocusNode.hasFocus || _nextChannelFocusNode.hasFocus) {
+        if (_fsFocusNode.canRequestFocus) {
+          _fsFocusNode.requestFocus();
+        } else if (_fitFocusNode.canRequestFocus) {
+          _fitFocusNode.requestFocus();
+        }
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+    }
+
+    // 7. Execução direta de ação ao pressionar OK/Select/Enter nos botões com foco
+    final isSelectKey = event.logicalKey == LogicalKeyboardKey.select ||
+        event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.space ||
+        event.logicalKey == LogicalKeyboardKey.gameButtonA ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter;
+
+    if (isSelectKey) {
+      if (_prevChannelFocusNode.hasFocus && widget.onPreviousChannel != null) {
+        widget.onPreviousChannel!();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_nextChannelFocusNode.hasFocus && widget.onNextChannel != null) {
+        widget.onNextChannel!();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_playPauseFocusNode.hasFocus) {
+        widget.onTogglePlayPause();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_backFocusNode.hasFocus) {
+        widget.onToggleFullscreen();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_favFocusNode.hasFocus && widget.onToggleFavorite != null) {
+        widget.onToggleFavorite!();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_guideFocusNode.hasFocus && widget.onOpenGuide != null) {
+        widget.onOpenGuide!();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_fitFocusNode.hasFocus) {
+        _cycleFitMode();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      if (_fsFocusNode.hasFocus) {
+        widget.onToggleFullscreen();
+        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+    }
+
     // Reinicia o timer de auto-hide em qualquer tecla de navegação D-pad
     _startControlsTimer();
 
