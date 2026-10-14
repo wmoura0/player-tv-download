@@ -614,8 +614,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       _nextProgram = null;
     });
 
-    _fetchEpgForChannel(stream.streamId);
-
     if (_candidateUrls.isEmpty) {
       setState(() {
         _isPlayerLoading = false;
@@ -625,6 +623,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
 
     await _initControllerWithUrl(_candidateUrls[_currentCandidateIndex]);
+    if (mounted && _activeLiveStream?.streamId == stream.streamId) {
+      _fetchEpgForChannel(stream.streamId);
+    }
   }
 
   void _playPreviousChannel() {
@@ -897,7 +898,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     // Tenta soft recovery antes de descartar o controlador se ele ainda estiver vivo
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError && c.value.isPlaying) {
+    if (c != null && c.value.isInitialized && !c.value.hasError) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {

@@ -90,6 +90,28 @@ class LivePlayerViewState extends State<LivePlayerView> {
   final FocusNode _fitFocusNode = FocusNode();
   final FocusNode _fsFocusNode = FocusNode();
 
+  bool _showBufferingIndicator = false;
+  Timer? _bufferingDebounceTimer;
+
+  void _startBufferingDebounce() {
+    _bufferingDebounceTimer?.cancel();
+    // Grace period de 700ms para micro-hesitações transitórias de buffer na Fire TV.
+    // Se a bufferização for legítima e persistir além de 700ms, exibe o indicador.
+    _bufferingDebounceTimer = Timer(const Duration(milliseconds: 700), () {
+      if (mounted && widget.isBuffering) {
+        setState(() => _showBufferingIndicator = true);
+      }
+    });
+  }
+
+  void _cancelBufferingDebounce() {
+    _bufferingDebounceTimer?.cancel();
+    _bufferingDebounceTimer = null;
+    if (_showBufferingIndicator) {
+      setState(() => _showBufferingIndicator = false);
+    }
+  }
+
   late LiveVideoFitMode _currentFitMode;
 
   @override
@@ -97,6 +119,9 @@ class LivePlayerViewState extends State<LivePlayerView> {
     super.initState();
     _currentFitMode = widget.fitMode;
     _startControlsTimer();
+    if (widget.isBuffering) {
+      _startBufferingDebounce();
+    }
     _attachControllerListener(widget.controller);
     if (widget.controller?.value.isPlaying ?? false) {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
@@ -132,6 +157,14 @@ class LivePlayerViewState extends State<LivePlayerView> {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
     }
 
+    if (widget.isBuffering != oldWidget.isBuffering) {
+      if (widget.isBuffering) {
+        _startBufferingDebounce();
+      } else {
+        _cancelBufferingDebounce();
+      }
+    }
+
     if (widget.fitMode != oldWidget.fitMode) {
       _currentFitMode = widget.fitMode;
     }
@@ -145,6 +178,7 @@ class LivePlayerViewState extends State<LivePlayerView> {
   @override
   void dispose() {
     _detachControllerListener(widget.controller);
+    _bufferingDebounceTimer?.cancel();
     _controlsTimer?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();
@@ -544,8 +578,8 @@ class LivePlayerViewState extends State<LivePlayerView> {
                   else
                     _buildPlaceholderBackground(),
 
-                  // 2. Indicador de Carregamento ou Buffering
-                  if (widget.isLoading || widget.isBuffering)
+                  // 2. Indicador de Carregamento Inicial ou Buffering Persistente
+                  if (widget.isLoading || _showBufferingIndicator)
                     _buildLoadingOverlay(),
 
                   // 3. Indicador de Erro

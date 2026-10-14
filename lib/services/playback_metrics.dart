@@ -28,10 +28,13 @@ class PlaybackMetrics {
   int _recoveryAttempts = 0;
   bool _firstFrameLogged = false;
 
+  final String sessionId;
+
   PlaybackMetrics({
     required this.mediaType,
     required this.title,
-  });
+    String? sessionId,
+  }) : sessionId = sessionId ?? DateTime.now().millisecondsSinceEpoch.toRadixString(16).padLeft(8, '0');
 
   /// Registra o início da solicitação de reprodução (clique do usuário ou troca de canal)
   void markRequestStart([DateTime? time]) {
@@ -43,7 +46,7 @@ class PlaybackMetrics {
 
     final typeTag = _typeTag;
     final safeTitle = UrlSanitizer.sanitizeErrorMessage(title);
-    debugPrint('[METRICS] [$typeTag] Início de solicitação: "$safeTitle" às ${_formatTime(_requestStartTime!)}');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$typeTag] Início de solicitação: "$safeTitle" às ${_formatTime(_requestStartTime!)}');
   }
 
   /// Registra o estabelecimento da conexão HTTP/stream
@@ -51,7 +54,7 @@ class PlaybackMetrics {
     _connectionEstablishedTime = time ?? DateTime.now();
     if (_requestStartTime != null) {
       final elapsed = _connectionEstablishedTime!.difference(_requestStartTime!).inMilliseconds;
-      debugPrint('[METRICS] [$_typeTag] Conexão estabelecida em ${elapsed}ms');
+      debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Conexão estabelecida em ${elapsed}ms');
     }
   }
 
@@ -60,7 +63,7 @@ class PlaybackMetrics {
     _playerInitializedTime = time ?? DateTime.now();
     if (_requestStartTime != null) {
       final elapsed = _playerInitializedTime!.difference(_requestStartTime!).inMilliseconds;
-      debugPrint('[METRICS] [$_typeTag] Player preparado em ${elapsed}ms (desde a solicitação)');
+      debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Player preparado em ${elapsed}ms (desde a solicitação)');
     }
   }
 
@@ -81,7 +84,7 @@ class PlaybackMetrics {
         : 0;
 
     debugPrint(
-      '[METRICS] [$_typeTag] PRIMEIRO QUADRO EXIBIDO: total=${totalElapsed}ms '
+      '[LIVE_DIAG] [sess:$sessionId] [$_typeTag] PRIMEIRO QUADRO EXIBIDO: total=${totalElapsed}ms '
       '(preparo=${initElapsed}ms | render=${renderElapsed}ms)',
     );
   }
@@ -90,7 +93,7 @@ class PlaybackMetrics {
   void markBufferingStart([DateTime? time]) {
     _bufferingStartTime = time ?? DateTime.now();
     _bufferingEventCount++;
-    debugPrint('[METRICS] [$_typeTag] Buffering #$_bufferingEventCount iniciado às ${_formatTime(_bufferingStartTime!)}');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Buffering #$_bufferingEventCount iniciado às ${_formatTime(_bufferingStartTime!)}');
   }
 
   /// Registra o término de um evento de buffering e acumula a duração
@@ -101,7 +104,7 @@ class PlaybackMetrics {
     _totalBufferingMs += durMs;
     _bufferingStartTime = null;
 
-    debugPrint('[METRICS] [$_typeTag] Buffering finalizado em ${durMs}ms (total acumulado: ${_totalBufferingMs}ms)');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Buffering finalizado em ${durMs}ms (total acumulado: ${_totalBufferingMs}ms)');
     return durMs;
   }
 
@@ -109,14 +112,14 @@ class PlaybackMetrics {
   void markInterruption(String reason, [DateTime? time]) {
     _interruptionTime = time ?? DateTime.now();
     final safeReason = UrlSanitizer.sanitizeErrorMessage(reason);
-    debugPrint('[METRICS] [$_typeTag] INTERRUPÇÃO DETECTADA: "$safeReason" às ${_formatTime(_interruptionTime!)}');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] INTERRUPÇÃO DETECTADA: "$safeReason" às ${_formatTime(_interruptionTime!)}');
   }
 
   /// Registra o início de uma tentativa de recuperação
   void markRecoveryStart(int attempt, [DateTime? time]) {
     _recoveryAttempts = attempt;
     _recoveryStartTime = time ?? DateTime.now();
-    debugPrint('[METRICS] [$_typeTag] Recuperação tentativa #$attempt iniciada às ${_formatTime(_recoveryStartTime!)}');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Recuperação tentativa #$attempt iniciada às ${_formatTime(_recoveryStartTime!)}');
   }
 
   /// Registra a conclusão com sucesso da recuperação
@@ -127,7 +130,7 @@ class PlaybackMetrics {
         : (_recoveryStartTime != null ? now.difference(_recoveryStartTime!).inMilliseconds : 0);
 
     debugPrint(
-      '[METRICS] [$_typeTag] RECUPERAÇÃO CONCLUÍDA com sucesso em ${totalRecoveryMs}ms '
+      '[LIVE_DIAG] [sess:$sessionId] [$_typeTag] RECUPERAÇÃO CONCLUÍDA com sucesso em ${totalRecoveryMs}ms '
       'após $_recoveryAttempts tentativa(s)',
     );
     _interruptionTime = null;
@@ -138,7 +141,7 @@ class PlaybackMetrics {
   /// Registra erro de reprodução de forma segura
   void markError(dynamic error) {
     final safeErr = UrlSanitizer.sanitizeErrorMessage(error.toString());
-    debugPrint('[METRICS] [$_typeTag] ERRO: $safeErr');
+    debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] ERRO: $safeErr');
   }
 
   // Getters para consulta diagnóstica

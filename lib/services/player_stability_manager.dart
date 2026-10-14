@@ -214,8 +214,8 @@ class PlayerStabilityManager {
       await controller.play();
       await Future<void>.delayed(const Duration(milliseconds: 600));
 
-      if (controller.value.isPlaying) {
-        debugPrint('[PLAYER STABILITY] Recuperação leve bem-sucedida!');
+      if (controller.value.isPlaying || (controller.value.isBuffering && !controller.value.hasError)) {
+        debugPrint('[PLAYER STABILITY] Recuperação leve bem-sucedida (stream ativo no socket existente)!');
         metrics?.markRecoverySuccess();
         resetRetries();
         return true;

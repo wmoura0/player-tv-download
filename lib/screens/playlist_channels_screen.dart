@@ -593,7 +593,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     _stabilityManager.clearOpenWatchdog();
 
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError && c.value.isPlaying) {
+    if (c != null && c.value.isInitialized && !c.value.hasError) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {
