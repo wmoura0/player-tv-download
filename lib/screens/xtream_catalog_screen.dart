@@ -82,7 +82,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   Timer? _epgDebounceTimer;
   int _epgRequestToken = 0;
   bool _isBackDebounced = false;
+  bool _isExitingFullscreen = false;
   Timer? _backDebounceTimer;
+  final GlobalKey<LivePlayerViewState> _livePlayerKey = GlobalKey<LivePlayerViewState>();
+  final ScrollController _channelScrollController = ScrollController();
 
   @override
   void initState() {
@@ -142,12 +145,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           _playerController!.value.isInitialized) {
         DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         _stabilityManager.startStallMonitoring(_playerController!);
-        // Pula para a borda ao vivo (live edge) ao retornar do segundo plano
-        if (_playerController!.value.duration > Duration.zero) {
-          _playerController!
-              .seekTo(_playerController!.value.duration)
-              .catchError((_) {});
-        }
+        // Transmissões ao vivo não devem executar seekTo para evitar salto para trás (~5s) ou perda de sincronia
         _playerController!.play().catchError((_) {});
       }
     }
@@ -165,6 +163,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     HiddenCategoriesService.instance.removeListener(_onHiddenCategoriesChanged);
     _searchController.dispose();
+    _channelScrollController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
@@ -780,13 +779,35 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   void _handleBackFromFullscreen() {
-    if (_isBackDebounced) return;
+    if (_isBackDebounced || _isExitingFullscreen) return;
     _isBackDebounced = true;
+    _isExitingFullscreen = true;
     _backDebounceTimer?.cancel();
-    _backDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+    _backDebounceTimer = Timer(const Duration(milliseconds: 500), () {
       _isBackDebounced = false;
+      _isExitingFullscreen = false;
     });
     _toggleFullscreen();
+    _restoreActiveChannelVisibility();
+  }
+
+  void _restoreActiveChannelVisibility() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _activeLiveStream == null) return;
+      final items = _filteredItems;
+      final idx = items.indexWhere((it) => it is XtreamLiveStream && it.streamId == _activeLiveStream!.streamId);
+      if (idx >= 0 && _channelScrollController.hasClients) {
+        final targetOffset = (idx * 78.0 - 80.0).clamp(
+          0.0,
+          _channelScrollController.position.maxScrollExtent,
+        );
+        _channelScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
   }
 
   void _onChannelFocusChanged(XtreamLiveStream stream) {
@@ -995,83 +1016,28 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     if (DeviceUtils.isPipMode.value && _currentType == XtreamCatalogType.live && _activeLiveStream != null) {
       return Scaffold(
         backgroundColor: Colors.black,
-        body: LivePlayerView(
-          controller: _playerController,
-          channelName: _activeLiveStream!.name,
-          channelLogo: _activeLiveStream!.streamIcon,
-          groupTitle: _getCategoryName(_activeLiveStream!.categoryId),
-          isFullscreen: true,
-          isLoading: _isPlayerLoading,
-          isBuffering: _isPlayerBuffering,
-          errorMessage: _playerError,
-          fitMode: _fitMode,
-          onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-          onTogglePlayPause: _togglePlayPause,
-          onToggleFullscreen: _toggleFullscreen,
-          onRetry: _retryPlayback,
-          onPreviousChannel: _playPreviousChannel,
-          onNextChannel: _playNextChannel,
-          currentProgram: _currentProgram,
-          nextProgram: _nextProgram,
-          onOpenGuide: _openGuideForActiveStream,
-        ),
+        body: _buildLivePlayerWidget(isFullscreen: true),
       );
     }
 
-    // 1. Modo Tela Cheia: exibe o player ocupando 100% da tela, sem reiniciar a instância
-    if (_isFullscreen && _currentType == XtreamCatalogType.live && _activeLiveStream != null) {
-      return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _handleBackFromFullscreen();
-        },
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: LivePlayerView(
-            controller: _playerController,
-            channelName: _activeLiveStream!.name,
-            channelLogo: _activeLiveStream!.streamIcon,
-            groupTitle: _getCategoryName(_activeLiveStream!.categoryId),
-            isFullscreen: true,
-            isLoading: _isPlayerLoading,
-            isBuffering: _isPlayerBuffering,
-            errorMessage: _playerError,
-            fitMode: _fitMode,
-            onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-            onTogglePlayPause: _togglePlayPause,
-            onToggleFullscreen: _toggleFullscreen,
-            onRetry: _retryPlayback,
-            onPreviousChannel: _playPreviousChannel,
-            onNextChannel: _playNextChannel,
-            currentProgram: _currentProgram,
-            nextProgram: _nextProgram,
-            onOpenGuide: _openGuideForActiveStream,
-            isFavorite: _activeLiveStream != null &&
-                FavoritesService.instance.isFavorite(
-                  scopeKey: _accountKey,
-                  type: FavoriteType.live,
-                  id: _activeLiveStream!.streamId.toString(),
-                ),
-            onToggleFavorite: _activeLiveStream == null
-                ? null
-                : () async {
-                    await FavoritesService.instance.toggleFavorite(
-                      FavoriteItem.fromLiveStream(
-                        accountKey: _accountKey,
-                        stream: _activeLiveStream!,
-                      ),
-                    );
-                  },
-          ),
-        ),
-      );
-    }
-
-    // 2. Modo Normal com ou sem Mini Player
+    // 1. Modo Normal ou Tela Cheia Unificado com suporte a controle remoto e dois passos no Voltar
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop || _isBackDebounced) return;
+        if (didPop || _isBackDebounced || _isExitingFullscreen) return;
+
+        // Se estiver em tela cheia de TV ao vivo:
+        if (_isFullscreen && _currentType == XtreamCatalogType.live && _activeLiveStream != null) {
+          // Primeiro toque em Voltar com controles visíveis fecha apenas os controles
+          if (_livePlayerKey.currentState?.isControlsVisible ?? false) {
+            _livePlayerKey.currentState?.hideControls();
+            return;
+          }
+          // Segundo toque (ou controles já ocultos): sai da tela cheia, restaura foco e posição do canal
+          _handleBackFromFullscreen();
+          return;
+        }
+
         if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
           setState(() {
             _searchQuery = '';
@@ -1079,47 +1045,56 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           });
           return;
         }
+
         if (_currentType == XtreamCatalogType.live && _activeLiveStream != null) {
           _closeMiniPlayer();
           return;
         }
+
         Navigator.of(context).pop();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF070F18),
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF0A141D),
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(_icon, color: _accentColor, size: 22),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  _title,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFFF5F8FC),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+        appBar: _isFullscreen
+            ? null
+            : AppBar(
+                backgroundColor: const Color(0xFF0A141D),
+                title: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(_icon, color: _accentColor, size: 22),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        _title,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFFF5F8FC),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
+                actions: [
+                  IconButton(
+                    tooltip: 'Atualizar',
+                    icon: Icon(Icons.refresh_rounded, color: _accentColor),
+                    onPressed: () {
+                      _service?.clearCache();
+                      _loadCategories();
+                    },
+                  ),
+                ],
               ),
-            ],
-          ),
-          actions: [
-            IconButton(
-              tooltip: 'Atualizar',
-              icon: Icon(Icons.refresh_rounded, color: _accentColor),
-              onPressed: () {
-                _service?.clearCache();
-                _loadCategories();
-              },
-            ),
-          ],
-        ),
-        body: SafeArea(
+        body: _isFullscreen && _currentType == XtreamCatalogType.live && _activeLiveStream != null
+            ? Container(
+                color: Colors.black,
+                child: _buildLivePlayerWidget(isFullscreen: true),
+              )
+            : SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
               final isCompact = constraints.maxWidth < 600;
@@ -1243,13 +1218,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     );
   }
 
-  Widget _buildMiniPlayerWidget() {
+  Widget _buildLivePlayerWidget({required bool isFullscreen}) {
     return LivePlayerView(
+      key: _livePlayerKey,
       controller: _playerController,
       channelName: _activeLiveStream!.name,
       channelLogo: _activeLiveStream!.streamIcon,
       groupTitle: _getCategoryName(_activeLiveStream!.categoryId),
-      isFullscreen: false,
+      isFullscreen: isFullscreen,
       isLoading: _isPlayerLoading,
       isBuffering: _isPlayerBuffering,
       errorMessage: _playerError,
@@ -1257,7 +1233,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       onFitModeChanged: (mode) => setState(() => _fitMode = mode),
       onTogglePlayPause: _togglePlayPause,
       onToggleFullscreen: _toggleFullscreen,
-      onClose: _closeMiniPlayer,
+      onClose: isFullscreen ? null : _closeMiniPlayer,
       onRetry: _retryPlayback,
       onPreviousChannel: _playPreviousChannel,
       onNextChannel: _playNextChannel,
@@ -1282,6 +1258,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             },
     );
   }
+
+  Widget _buildMiniPlayerWidget() => _buildLivePlayerWidget(isFullscreen: false);
 
   Widget _buildLiveCategoryHeader() {
     final catName = _selectedCategoryId == 'all'
@@ -1360,6 +1338,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
 
     return ListView.builder(
+      controller: _channelScrollController,
       key: const PageStorageKey('xtream_live_channels_list'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       itemCount: _filteredItems.length,
@@ -1370,13 +1349,15 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           type: FavoriteType.live,
           id: item.streamId.toString(),
         );
+        final isCurrent = _activeLiveStream?.streamId == item.streamId;
         return Padding(
           padding: const EdgeInsets.only(bottom: 6.0),
           child: _LiveChannelCard(
             channelNumber: index + 1,
             stream: item,
             accentColor: _accentColor,
-            isPlaying: _activeLiveStream?.streamId == item.streamId,
+            isPlaying: isCurrent,
+            autofocus: isCurrent,
             isFavorite: isFav,
             onFocus: () => _onChannelFocusChanged(item),
             onToggleFavorite: () => _toggleLiveFavorite(item),
@@ -1907,6 +1888,7 @@ class _LiveChannelCard extends StatefulWidget {
   final VoidCallback? onFocus;
   final VoidCallback? onToggleFavorite;
   final VoidCallback onTap;
+  final bool autofocus;
 
   const _LiveChannelCard({
     this.channelNumber,
@@ -1917,6 +1899,7 @@ class _LiveChannelCard extends StatefulWidget {
     this.onFocus,
     this.onToggleFavorite,
     required this.onTap,
+    this.autofocus = false,
   });
 
   @override
@@ -1993,6 +1976,7 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
     return Focus(
+      autofocus: widget.autofocus,
       onFocusChange: (focused) {
         if (!focused) {
           _longPressTimer?.cancel();

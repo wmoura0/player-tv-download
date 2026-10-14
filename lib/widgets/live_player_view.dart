@@ -60,11 +60,25 @@ class LivePlayerView extends StatefulWidget {
   });
 
   @override
-  State<LivePlayerView> createState() => _LivePlayerViewState();
+  State<LivePlayerView> createState() => LivePlayerViewState();
 }
 
-class _LivePlayerViewState extends State<LivePlayerView> {
+class LivePlayerViewState extends State<LivePlayerView> {
   bool _showControls = true;
+  bool get isControlsVisible => _showControls;
+
+  void hideControls() {
+    if (_showControls) {
+      _controlsTimer?.cancel();
+      setState(() => _showControls = false);
+      if (mounted) {
+        _focusNode.requestFocus();
+      }
+    }
+  }
+
+  void revealControls() => _revealControls();
+
   Timer? _controlsTimer;
   final FocusNode _focusNode = FocusNode();
   final FocusNode _playPauseFocusNode = FocusNode();
@@ -193,36 +207,108 @@ class _LivePlayerViewState extends State<LivePlayerView> {
     _startControlsTimer();
   }
 
+  @visibleForTesting
+  static DateTime Function() clock = DateTime.now;
+
+  DateTime _lastBackPressTime = DateTime.fromMillisecondsSinceEpoch(0);
+
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-    // Se os controles estiverem ocultos: qualquer tecla (setas ou botões) acorda os controles
+    // 1. Se os controles estiverem ocultos:
     if (!_showControls) {
-      _revealControls();
+      // Tecla Voltar (Escape / goBack)
+      if (event.logicalKey == LogicalKeyboardKey.escape ||
+          event.logicalKey == LogicalKeyboardKey.goBack) {
+        final now = clock();
+        if (now.difference(_lastBackPressTime) < const Duration(milliseconds: 300)) {
+          return KeyEventResult.handled;
+        }
+        _lastBackPressTime = now;
+
+        if (widget.isFullscreen) {
+          widget.onToggleFullscreen();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
+
+      // Teclas físicas de reprodução Play/Pause
       if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
           event.logicalKey == LogicalKeyboardKey.mediaPlay ||
           event.logicalKey == LogicalKeyboardKey.mediaPause) {
         widget.onTogglePlayPause();
+        _revealControls();
+        return KeyEventResult.handled;
       }
+
+      // Tecla Menu no controle Fire TV: favorita/desfavorita diretamente
+      if (event.logicalKey == LogicalKeyboardKey.contextMenu && widget.onToggleFavorite != null) {
+        widget.onToggleFavorite!();
+        _revealControls();
+        return KeyEventResult.handled;
+      }
+
+      // Tecla Guia
+      if (event.logicalKey == LogicalKeyboardKey.guide && widget.onOpenGuide != null) {
+        widget.onOpenGuide!();
+        return KeyEventResult.handled;
+      }
+
+      // Troca física de canal (Channel Up/Down)
+      if (widget.isFullscreen) {
+        if (event.logicalKey == LogicalKeyboardKey.channelUp ||
+            event.logicalKey == LogicalKeyboardKey.pageUp ||
+            event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
+          widget.onNextChannel?.call();
+          _revealControls();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.channelDown ||
+            event.logicalKey == LogicalKeyboardKey.pageDown ||
+            event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
+          widget.onPreviousChannel?.call();
+          _revealControls();
+          return KeyEventResult.handled;
+        }
+      }
+
+      // Qualquer outra tecla (Enter, Select, Espaço, Setas D-Pad): APENAS revela os controles e foca o botão central
+      // Requisito estrito: OK com controles ocultos NÃO pausa nem executa ações inesperadas!
+      _revealControls();
       return KeyEventResult.handled;
     }
 
-    // Atalhos diretos de controle remoto mesmo com controles abertos:
-    // 1. Tecla Menu no controle Fire TV: favorita/desfavorita diretamente
+    // 2. Se os controles estiverem VISÍVEIS:
+    // Tecla Voltar (Escape / goBack)
+    if (event.logicalKey == LogicalKeyboardKey.escape ||
+        event.logicalKey == LogicalKeyboardKey.goBack) {
+      final now = clock();
+      if (now.difference(_lastBackPressTime) < const Duration(milliseconds: 300)) {
+        return KeyEventResult.handled;
+      }
+      _lastBackPressTime = now;
+
+      // Primeiro toque em Voltar: apenas oculta os controles de reprodução mantendo o vídeo em tela cheia
+      _controlsTimer?.cancel();
+      setState(() => _showControls = false);
+      _focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+
+    // Atalhos diretos de controle remoto com controles abertos
     if (event.logicalKey == LogicalKeyboardKey.contextMenu && widget.onToggleFavorite != null) {
       widget.onToggleFavorite!();
       _startControlsTimer();
       return KeyEventResult.handled;
     }
 
-    // 2. Tecla Guia no controle de TV
     if (event.logicalKey == LogicalKeyboardKey.guide && widget.onOpenGuide != null) {
       widget.onOpenGuide!();
       _startControlsTimer();
       return KeyEventResult.handled;
     }
 
-    // 3. Tecla Media Play/Pause física
     if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
         event.logicalKey == LogicalKeyboardKey.mediaPlay ||
         event.logicalKey == LogicalKeyboardKey.mediaPause) {
@@ -231,87 +317,139 @@ class _LivePlayerViewState extends State<LivePlayerView> {
       return KeyEventResult.handled;
     }
 
-    // 4. Teclas Channel Up / Channel Down / Page Up / Page Down
     if (widget.isFullscreen) {
       if (event.logicalKey == LogicalKeyboardKey.channelUp ||
           event.logicalKey == LogicalKeyboardKey.pageUp ||
           event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
-        if (widget.onNextChannel != null) {
-          widget.onNextChannel!();
-          _startControlsTimer();
-          return KeyEventResult.handled;
-        }
+        widget.onNextChannel?.call();
+        _startControlsTimer();
+        return KeyEventResult.handled;
       }
-
       if (event.logicalKey == LogicalKeyboardKey.channelDown ||
           event.logicalKey == LogicalKeyboardKey.pageDown ||
           event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
-        if (widget.onPreviousChannel != null) {
-          widget.onPreviousChannel!();
-          _startControlsTimer();
-          return KeyEventResult.handled;
-        }
+        widget.onPreviousChannel?.call();
+        _startControlsTimer();
+        return KeyEventResult.handled;
       }
     }
 
-    // 5. Tecla Voltar (Escape / goBack) em tela cheia: sai da tela cheia
-    if (widget.isFullscreen &&
-        (event.logicalKey == LogicalKeyboardKey.escape ||
-            event.logicalKey == LogicalKeyboardKey.goBack)) {
-      widget.onToggleFullscreen();
-      return KeyEventResult.handled;
-    }
-
-    // 6. Navegação direcional explícita D-Pad entre botões laterais e centro
+    // Navegação Direcional D-Pad 2D Completa sem armadilhas de foco (no focus traps)
     if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      if (_playPauseFocusNode.hasFocus && widget.isFullscreen && widget.onPreviousChannel != null) {
-        _prevChannelFocusNode.requestFocus();
-        _startControlsTimer();
-        return KeyEventResult.handled;
+      _startControlsTimer();
+      // Linha Central
+      if (_playPauseFocusNode.hasFocus) {
+        if (widget.isFullscreen && widget.onPreviousChannel != null && _prevChannelFocusNode.canRequestFocus) {
+          _prevChannelFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
       } else if (_nextChannelFocusNode.hasFocus) {
         _playPauseFocusNode.requestFocus();
-        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      // Linha Inferior
+      else if (_fsFocusNode.hasFocus && _fitFocusNode.canRequestFocus) {
+        _fitFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      // Linha Superior
+      else if (_favFocusNode.hasFocus) {
+        if (widget.onOpenGuide != null && _guideFocusNode.canRequestFocus) {
+          _guideFocusNode.requestFocus();
+        } else if (widget.isFullscreen && _backFocusNode.canRequestFocus) {
+          _backFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      } else if (_guideFocusNode.hasFocus && widget.isFullscreen && _backFocusNode.canRequestFocus) {
+        _backFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
     }
 
     if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      if (_playPauseFocusNode.hasFocus && widget.isFullscreen && widget.onNextChannel != null) {
-        _nextChannelFocusNode.requestFocus();
-        _startControlsTimer();
-        return KeyEventResult.handled;
+      _startControlsTimer();
+      // Linha Central
+      if (_playPauseFocusNode.hasFocus) {
+        if (widget.isFullscreen && widget.onNextChannel != null && _nextChannelFocusNode.canRequestFocus) {
+          _nextChannelFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
       } else if (_prevChannelFocusNode.hasFocus) {
         _playPauseFocusNode.requestFocus();
-        _startControlsTimer();
+        return KeyEventResult.handled;
+      }
+      // Linha Inferior
+      else if (_fitFocusNode.hasFocus && _fsFocusNode.canRequestFocus) {
+        _fsFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      // Linha Superior
+      else if (_backFocusNode.hasFocus) {
+        if (widget.onOpenGuide != null && _guideFocusNode.canRequestFocus) {
+          _guideFocusNode.requestFocus();
+        } else if (widget.onToggleFavorite != null && _favFocusNode.canRequestFocus) {
+          _favFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      } else if (_guideFocusNode.hasFocus && widget.onToggleFavorite != null && _favFocusNode.canRequestFocus) {
+        _favFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
     }
 
     if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      _startControlsTimer();
+      // Da Linha Inferior -> sobe para o Play/Pause Central
+      if (_fitFocusNode.hasFocus || _fsFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      // Da Linha Central -> sobe para a Barra Superior
       if (_playPauseFocusNode.hasFocus || _prevChannelFocusNode.hasFocus || _nextChannelFocusNode.hasFocus) {
-        if (widget.isFullscreen) {
+        if (_prevChannelFocusNode.hasFocus && widget.isFullscreen && _backFocusNode.canRequestFocus) {
           _backFocusNode.requestFocus();
-        } else if (widget.onToggleFavorite != null) {
+        } else if (_nextChannelFocusNode.hasFocus && widget.onToggleFavorite != null && _favFocusNode.canRequestFocus) {
+          _favFocusNode.requestFocus();
+        } else if (widget.isFullscreen && _backFocusNode.canRequestFocus) {
+          _backFocusNode.requestFocus();
+        } else if (widget.onOpenGuide != null && _guideFocusNode.canRequestFocus) {
+          _guideFocusNode.requestFocus();
+        } else if (widget.onToggleFavorite != null && _favFocusNode.canRequestFocus) {
           _favFocusNode.requestFocus();
         }
-        _startControlsTimer();
         return KeyEventResult.handled;
       }
     }
 
     if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      _startControlsTimer();
+      // Da Barra Superior -> desce para a Linha Central
+      if (_backFocusNode.hasFocus || _guideFocusNode.hasFocus || _favFocusNode.hasFocus) {
+        if (_backFocusNode.hasFocus && widget.isFullscreen && widget.onPreviousChannel != null && _prevChannelFocusNode.canRequestFocus) {
+          _prevChannelFocusNode.requestFocus();
+        } else if (_favFocusNode.hasFocus && widget.isFullscreen && widget.onNextChannel != null && _nextChannelFocusNode.canRequestFocus) {
+          _nextChannelFocusNode.requestFocus();
+        } else {
+          _playPauseFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+      // Da Linha Central -> desce para a Barra Inferior
       if (_playPauseFocusNode.hasFocus || _prevChannelFocusNode.hasFocus || _nextChannelFocusNode.hasFocus) {
-        if (_fsFocusNode.canRequestFocus) {
+        if (_prevChannelFocusNode.hasFocus && _fitFocusNode.canRequestFocus) {
+          _fitFocusNode.requestFocus();
+        } else if (_nextChannelFocusNode.hasFocus && _fsFocusNode.canRequestFocus) {
+          _fsFocusNode.requestFocus();
+        } else if (_fsFocusNode.canRequestFocus) {
           _fsFocusNode.requestFocus();
         } else if (_fitFocusNode.canRequestFocus) {
           _fitFocusNode.requestFocus();
         }
-        _startControlsTimer();
         return KeyEventResult.handled;
       }
     }
 
-    // 7. Execução direta de ação ao pressionar OK/Select/Enter nos botões com foco
+    // Execução direta de ação ao pressionar OK/Select/Enter nos botões com foco
     final isSelectKey = event.logicalKey == LogicalKeyboardKey.select ||
         event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.space ||
@@ -364,7 +502,7 @@ class _LivePlayerViewState extends State<LivePlayerView> {
     // Reinicia o timer de auto-hide em qualquer tecla de navegação D-pad
     _startControlsTimer();
 
-    // Permite que teclas de navegação e ativação (Enter, Select, Espaço) passem para os botões focados
+    // Permite que teclas de navegação passem
     return KeyEventResult.ignored;
   }
 
@@ -390,6 +528,7 @@ class _LivePlayerViewState extends State<LivePlayerView> {
 
         return Focus(
           focusNode: _focusNode,
+          autofocus: true,
           onKeyEvent: _handleKeyEvent,
           child: GestureDetector(
             onTap: _toggleControls,
@@ -1086,13 +1225,51 @@ class _PlayerTvIconButtonState extends State<_PlayerTvIconButton> {
   bool _isFocused = false;
 
   @override
+  void initState() {
+    super.initState();
+    widget.focusNode?.addListener(_onFocusChanged);
+    _isFocused = widget.focusNode?.hasFocus ?? false;
+  }
+
+  @override
+  void didUpdateWidget(covariant _PlayerTvIconButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusNode != oldWidget.focusNode) {
+      oldWidget.focusNode?.removeListener(_onFocusChanged);
+      widget.focusNode?.addListener(_onFocusChanged);
+      _isFocused = widget.focusNode?.hasFocus ?? false;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.focusNode?.removeListener(_onFocusChanged);
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (mounted) {
+      final focused = widget.focusNode?.hasFocus ?? false;
+      if (_isFocused != focused) {
+        setState(() => _isFocused = focused);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final effectiveFocused = _isFocused || (widget.focusNode?.hasFocus ?? false);
+
     return FocusableActionDetector(
       key: widget.buttonKey,
       focusNode: widget.focusNode,
       actions: DeviceUtils.activateAction(widget.onPressed),
       shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      onShowFocusHighlight: (v) {
+        if (mounted && _isFocused != v) {
+          setState(() => _isFocused = v);
+        }
+      },
       child: Tooltip(
         message: widget.tooltip,
         child: InkWell(
@@ -1105,12 +1282,12 @@ class _PlayerTvIconButtonState extends State<_PlayerTvIconButton> {
             padding: widget.padding,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: _isFocused ? const Color(0x3300E5FF) : Colors.transparent,
+              color: effectiveFocused ? const Color(0x3300E5FF) : Colors.transparent,
               border: Border.all(
-                color: _isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+                color: effectiveFocused ? const Color(0xFF00E5FF) : Colors.transparent,
                 width: 2.0,
               ),
-              boxShadow: _isFocused
+              boxShadow: effectiveFocused
                   ? const [
                       BoxShadow(
                         color: Color(0x6600E5FF),

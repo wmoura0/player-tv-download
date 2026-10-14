@@ -134,12 +134,28 @@ class PlayerStabilityManager {
         }
       }
 
-      // 3. Detecção de encerramento inesperado do stream ao vivo (STATE_ENDED / socket drop)
+      // 3. Monitoramento de interrupção de reprodução (STATE_ENDED / queda de conexão)
+      // Em transmissões ao vivo (MPEG-TS/HLS), micro-pausas transitórias de buffer (jitter de 500ms a 3s)
+      // ocorrem com frequência no Fire TV. Não desconectar prematuramente nem reiniciar o socket!
       if (live && !val.isPlaying && !val.isBuffering && !_isUserPaused) {
-        debugPrint('[PLAYER STABILITY] Transmissão ao vivo interrompida inesperadamente pelo servidor (queda de conexão).');
-        metrics?.markInterruption('Conexão encerrada pelo servidor (STATE_ENDED)');
-        _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
-        return;
+        _notPlayingStartTime ??= now;
+        final uninterruptedNonPlaying = now.difference(_notPlayingStartTime!);
+
+        // Tenta manter o pipeline nativo ativo via soft play sem destruir a conexão
+        controller.play().catchError((_) {});
+
+        // Apenas considera queda real da conexão se permanecer estagnado por mais de 8 segundos contínuos
+        if (uninterruptedNonPlaying >= const Duration(seconds: 8)) {
+          debugPrint(
+            '[PLAYER STABILITY] Transmissão estagnada há ${uninterruptedNonPlaying.inSeconds}s (sem dados e sem buffer). Iniciando recuperação...',
+          );
+          metrics?.markInterruption('Conexão encerrada pelo servidor (estagnação > 8s)');
+          _notPlayingStartTime = null;
+          _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
+          return;
+        }
+      } else {
+        _notPlayingStartTime = null;
       }
 
       // 4. Detecção de congelamento de frames / estagnação de posição
@@ -172,6 +188,7 @@ class PlayerStabilityManager {
     });
   }
 
+  DateTime? _notPlayingStartTime;
   String? _lastRetryReason;
   DateTime _lastRetryTime = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -181,6 +198,7 @@ class PlayerStabilityManager {
     _stallCheckTimer?.cancel();
     _openTimeoutTimer = null;
     _stallCheckTimer = null;
+    _notPlayingStartTime = null;
   }
 
   /// Etapa 3: Tenta recuperação leve (soft recovery) sem destruir o controlador.
@@ -291,6 +309,7 @@ class PlayerStabilityManager {
     _retryCount = 0;
     _isReconnecting = false;
     _lastRetryReason = null;
+    _notPlayingStartTime = null;
     _retryTimer?.cancel();
     _retryTimer = null;
   }
@@ -299,6 +318,7 @@ class PlayerStabilityManager {
   void dispose() {
     _isDisposed = true;
     _isReconnecting = false;
+    _notPlayingStartTime = null;
     _openTimeoutTimer?.cancel();
     _stallCheckTimer?.cancel();
     _retryTimer?.cancel();

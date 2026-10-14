@@ -54,7 +54,10 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   late final PlayerStabilityManager _stabilityManager;
   bool _isConnecting = false;
   bool _isBackDebounced = false;
+  bool _isExitingFullscreen = false;
   Timer? _backDebounceTimer;
+  final GlobalKey<LivePlayerViewState> _livePlayerKey = GlobalKey<LivePlayerViewState>();
+  final ScrollController _channelScrollController = ScrollController();
 
   @override
   void initState() {
@@ -136,6 +139,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     HiddenCategoriesService.instance.removeListener(_onHiddenCategoriesChanged);
     _searchController.dispose();
+    _channelScrollController.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
@@ -525,13 +529,35 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   }
 
   void _handleBackFromFullscreen() {
-    if (_isBackDebounced) return;
+    if (_isBackDebounced || _isExitingFullscreen) return;
     _isBackDebounced = true;
+    _isExitingFullscreen = true;
     _backDebounceTimer?.cancel();
-    _backDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+    _backDebounceTimer = Timer(const Duration(milliseconds: 500), () {
       _isBackDebounced = false;
+      _isExitingFullscreen = false;
     });
     _toggleFullscreen();
+    _restoreActiveChannelVisibility();
+  }
+
+  void _restoreActiveChannelVisibility() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _activeChannel == null) return;
+      final items = _filteredChannels;
+      final idx = items.indexWhere((it) => it.streamUrl == _activeChannel!.streamUrl);
+      if (idx >= 0 && _channelScrollController.hasClients) {
+        final targetOffset = (idx * 84.0 - 80.0).clamp(
+          0.0,
+          _channelScrollController.position.maxScrollExtent,
+        );
+        _channelScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
   }
 
   Future<void> _closeMiniPlayer() async {
@@ -598,98 +624,28 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     if (DeviceUtils.isPipMode.value && _activeChannel != null) {
       return Scaffold(
         backgroundColor: Colors.black,
-        body: LivePlayerView(
-          controller: _playerController,
-          channelName: _activeChannel!.name,
-          channelLogo: _activeChannel!.logoUrl,
-          groupTitle: _activeChannel!.groupTitle,
-          isFullscreen: true,
-          isLoading: _isPlayerLoading,
-          isBuffering: _isPlayerBuffering,
-          errorMessage: _playerError,
-          fitMode: _fitMode,
-          onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-          onTogglePlayPause: _togglePlayPause,
-          onToggleFullscreen: _toggleFullscreen,
-          onRetry: _retryPlayback,
-          onPreviousChannel: _playPreviousChannel,
-          onNextChannel: _playNextChannel,
-        ),
+        body: _buildLivePlayerWidget(isFullscreen: true),
       );
     }
 
-    if (_isFullscreen && _activeChannel != null) {
-      final nowNext = EpgService.instance.getNowAndNext(
-        channelId: _activeChannel!.tvgId,
-        channelName: _activeChannel!.name,
-      );
-
-      return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _handleBackFromFullscreen();
-        },
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: LivePlayerView(
-            controller: _playerController,
-            channelName: _activeChannel!.name,
-            channelLogo: _activeChannel!.logoUrl,
-            groupTitle: _activeChannel!.groupTitle,
-            isFullscreen: true,
-            isLoading: _isPlayerLoading,
-            isBuffering: _isPlayerBuffering,
-            errorMessage: _playerError,
-            fitMode: _fitMode,
-            onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-            onTogglePlayPause: _togglePlayPause,
-            onToggleFullscreen: _toggleFullscreen,
-            onRetry: _retryPlayback,
-            onPreviousChannel: _playPreviousChannel,
-            onNextChannel: _playNextChannel,
-            currentProgram: nowNext.now?.title,
-            nextProgram: nowNext.next?.title,
-            onOpenGuide: () {
-              final schedule = EpgService.instance.getSchedule(
-                channelId: _activeChannel!.tvgId,
-                channelName: _activeChannel!.name,
-              );
-              EpgGuideDialog.show(
-                context,
-                channelName: _activeChannel!.name,
-                channelLogo: _activeChannel!.logoUrl,
-                schedule: schedule,
-              );
-            },
-            isFavorite: _activeChannel != null &&
-                FavoritesService.instance.isFavorite(
-                  scopeKey: _currentPlaylist.id,
-                  type: FavoriteType.m3uChannel,
-                  id: FavoriteItem.buildM3uChannelId(
-                    name: _activeChannel!.name,
-                    streamUrl: _activeChannel!.streamUrl,
-                    tvgId: _activeChannel!.tvgId,
-                  ),
-                ),
-            onToggleFavorite: _activeChannel == null
-                ? null
-                : () async {
-                    await FavoritesService.instance.toggleFavorite(
-                      FavoriteItem.fromM3uChannel(
-                        playlistId: _currentPlaylist.id,
-                        channel: _activeChannel!,
-                      ),
-                    );
-                  },
-          ),
-        ),
-      );
-    }
-
+    // 1. Modo Normal ou Tela Cheia Unificado com suporte a controle remoto e dois passos no Voltar
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop || _isBackDebounced) return;
+        if (didPop || _isBackDebounced || _isExitingFullscreen) return;
+
+        // Se estiver em tela cheia de TV ao vivo:
+        if (_isFullscreen && _activeChannel != null) {
+          // Primeiro toque em Voltar com controles visíveis fecha apenas os controles
+          if (_livePlayerKey.currentState?.isControlsVisible ?? false) {
+            _livePlayerKey.currentState?.hideControls();
+            return;
+          }
+          // Segundo toque (ou controles já ocultos): sai da tela cheia, restaura foco e posição do canal
+          _handleBackFromFullscreen();
+          return;
+        }
+
         if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
           setState(() {
             _searchQuery = '';
@@ -697,60 +653,69 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           });
           return;
         }
+
         if (_activeChannel != null) {
           _closeMiniPlayer();
           return;
         }
+
         Navigator.of(context).pop();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF070F18),
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF0A141D),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _currentPlaylist.name,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFFF0F4F8),
+        appBar: _isFullscreen
+            ? null
+            : AppBar(
+                backgroundColor: const Color(0xFF0A141D),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _currentPlaylist.name,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFF0F4F8),
+                      ),
+                    ),
+                    Text(
+                      '${_allChannels.length} canais encontrados',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF8A99AD),
+                      ),
+                    ),
+                  ],
                 ),
+                actions: [
+                  if (_isRefreshing)
+                    const Center(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16.0),
+                        child: SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    IconButton(
+                      icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00E5FF)),
+                      tooltip: 'Atualizar lista',
+                      onPressed: _refreshPlaylist,
+                    ),
+                ],
               ),
-            Text(
-              '${_allChannels.length} canais encontrados',
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF8A99AD),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          if (_isRefreshing)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16.0),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
-                  ),
-                ),
-              ),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00E5FF)),
-              tooltip: 'Atualizar lista',
-              onPressed: _refreshPlaylist,
-            ),
-        ],
-      ),
-      body: SafeArea(
+        body: _isFullscreen && _activeChannel != null
+            ? Container(
+                color: Colors.black,
+                child: _buildLivePlayerWidget(isFullscreen: true),
+              )
+            : SafeArea(
         child: _isLoading
             ? const Center(
                 child: CircularProgressIndicator(
@@ -838,18 +803,19 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     );
   }
 
-  Widget _buildMiniPlayerWidget() {
+  Widget _buildLivePlayerWidget({required bool isFullscreen}) {
     final nowNext = EpgService.instance.getNowAndNext(
       channelId: _activeChannel!.tvgId,
       channelName: _activeChannel!.name,
     );
 
     return LivePlayerView(
+      key: _livePlayerKey,
       controller: _playerController,
       channelName: _activeChannel!.name,
       channelLogo: _activeChannel!.logoUrl,
       groupTitle: _activeChannel!.groupTitle,
-      isFullscreen: false,
+      isFullscreen: isFullscreen,
       isLoading: _isPlayerLoading,
       isBuffering: _isPlayerBuffering,
       errorMessage: _playerError,
@@ -857,7 +823,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       onFitModeChanged: (mode) => setState(() => _fitMode = mode),
       onTogglePlayPause: _togglePlayPause,
       onToggleFullscreen: _toggleFullscreen,
-      onClose: _closeMiniPlayer,
+      onClose: isFullscreen ? null : _closeMiniPlayer,
       onRetry: _retryPlayback,
       onPreviousChannel: _playPreviousChannel,
       onNextChannel: _playNextChannel,
@@ -897,6 +863,8 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
             },
     );
   }
+
+  Widget _buildMiniPlayerWidget() => _buildLivePlayerWidget(isFullscreen: false);
 
   Widget _buildFilterBar() {
     return Container(
@@ -977,6 +945,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
         if (isLandscape) {
           // Layout em grade para TVs e telas largas em paisagem
           return GridView.builder(
+            controller: _channelScrollController,
             padding: const EdgeInsets.all(16),
             gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
               maxCrossAxisExtent: 320,
@@ -997,9 +966,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
                 type: FavoriteType.m3uChannel,
                 id: channelId,
               );
+              final isCurrent = _activeChannel?.streamUrl == channel.streamUrl;
               return _ChannelTile(
                 channel: channel,
-                isPlaying: _activeChannel?.streamUrl == channel.streamUrl,
+                isPlaying: isCurrent,
+                autofocus: isCurrent,
                 isFavorite: isFav,
                 onToggleFavorite: () => _toggleChannelFavorite(channel),
                 onTap: () => _onChannelTap(channel),
@@ -1010,6 +981,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
         // Layout em lista para celulares em modo retrato
         return ListView.builder(
+          controller: _channelScrollController,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           itemCount: _filteredChannels.length,
           itemBuilder: (context, index) {
@@ -1024,11 +996,13 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
               type: FavoriteType.m3uChannel,
               id: channelId,
             );
+            final isCurrent = _activeChannel?.streamUrl == channel.streamUrl;
             return Padding(
               padding: const EdgeInsets.only(bottom: 8.0),
               child: _ChannelTile(
                 channel: channel,
-                isPlaying: _activeChannel?.streamUrl == channel.streamUrl,
+                isPlaying: isCurrent,
+                autofocus: isCurrent,
                 isFavorite: isFav,
                 onToggleFavorite: () => _toggleChannelFavorite(channel),
                 onTap: () => _onChannelTap(channel),
@@ -1105,6 +1079,7 @@ class _ChannelTile extends StatefulWidget {
   final bool isFavorite;
   final VoidCallback? onToggleFavorite;
   final VoidCallback onTap;
+  final bool autofocus;
 
   const _ChannelTile({
     required this.channel,
@@ -1112,6 +1087,7 @@ class _ChannelTile extends StatefulWidget {
     this.isFavorite = false,
     this.onToggleFavorite,
     required this.onTap,
+    this.autofocus = false,
   });
 
   @override
@@ -1188,6 +1164,7 @@ class _ChannelTileState extends State<_ChannelTile> {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
     return Focus(
+      autofocus: widget.autofocus,
       onFocusChange: (focused) {
         if (!focused) {
           _longPressTimer?.cancel();
