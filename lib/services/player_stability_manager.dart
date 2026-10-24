@@ -23,9 +23,11 @@ class PlayerStabilityManager {
   final Duration maxStallDuration;
   final Duration maxBufferingDuration;
   final Duration softRecoveryObservationDuration;
+  final Duration stabilityThreshold;
   final bool isLiveStream;
   bool isMpegTsStream;
   final Future<void> Function(int retryCount)? onReconnectRequest;
+  final VoidCallback? onStabilityConfirmed;
   final void Function(String userMessage)? onError;
   final void Function(PlayerRecoveryState state)? onStateChanged;
   PlaybackMetrics? metrics;
@@ -37,9 +39,11 @@ class PlayerStabilityManager {
     this.maxStallDuration = const Duration(seconds: 6),
     this.maxBufferingDuration = const Duration(seconds: 15),
     this.softRecoveryObservationDuration = const Duration(milliseconds: 1000),
+    this.stabilityThreshold = const Duration(seconds: 15),
     this.isLiveStream = true,
     this.isMpegTsStream = false,
     this.onReconnectRequest,
+    this.onStabilityConfirmed,
     this.onError,
     this.onStateChanged,
     this.metrics,
@@ -155,12 +159,12 @@ class PlayerStabilityManager {
           controller.play().catchError((_) {});
         }
 
-        // Janela de 5 a 8 segundos sem avanço real (configurada em 6s padrão)
-        if (uninterruptedNonPlaying >= const Duration(seconds: 6)) {
+        // Janela de stall configurada (padrão 6s, 5 a 8 segundos recomendados)
+        if (uninterruptedNonPlaying >= maxStallDuration) {
           debugPrint(
             '[PLAYER STABILITY] Transmissão estagnada há ${uninterruptedNonPlaying.inSeconds}s (sem dados e sem buffer). Iniciando recuperação...',
           );
-          metrics?.markInterruption('Conexão estagnada por mais de 6s');
+          metrics?.markInterruption('Conexão estagnada por mais de ${maxStallDuration.inSeconds}s');
           _notPlayingStartTime = null;
           _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
           return;
@@ -170,36 +174,60 @@ class PlayerStabilityManager {
       }
 
       // 4. Detecção de congelamento de frames / estagnação de posição
-      // Para canais ao vivo (MPEG-TS): se position for zero mas isPlaying for true, não assume congelamento falso!
+      // Diferenciação estrita entre VOD e Live TV:
       if (val.isPlaying && !val.isBuffering && !_isUserPaused) {
-        if (val.position != _lastPosition) {
+        if (val.position > _lastPosition) {
           _lastPosition = val.position;
           _lastPositionAdvanceTime = now;
-          // Reseta retries se a reprodução avançar estavelmente por mais de 10s
-          if (_retryCount > 0 && now.difference(_lastRetryTime) > const Duration(seconds: 10)) {
-            debugPrint('[PLAYER STABILITY] Transmissão estabilizada. Resetando contagem de tentativas.');
+        }
+
+        // VOD (Filmes e Séries): onde val.position é um indicador temporal contínuo e mensurável.
+        // Se a posição de VOD parar de avançar durante reprodução ativa além de maxStallDuration,
+        // aciona a recuperação específica de congelamento.
+        if (!live) {
+          final stallDuration = now.difference(_lastPositionAdvanceTime);
+          if (stallDuration > maxStallDuration) {
+            debugPrint('[PLAYER STABILITY] Reprodução de VOD congelada por mais de ${stallDuration.inSeconds} segundos.');
+            metrics?.markInterruption('VOD congelado (${stallDuration.inSeconds}s)');
+            _handleStall('Reprodução congelada', controller);
+            return;
+          }
+        }
+
+        // LIVE TV: Em transmissões ao vivo progressivas/dinâmicas no Flutter, a propriedade
+        // val.position é estática ou limitada pela duração do buffer inicial (clamped), não refletindo
+        // o avanço real de quadros do decodificador nativo. Para não provocar falsos congelamentos a cada
+        // poucos segundos, a posição estática NUNCA é utilizada isoladamente para destruir o player ao vivo.
+        // Em live TV, a perda real de transmissão é detectada com confiabilidade por:
+        // - Buffering persistente estagnado (> maxBufferingDuration no Bloco 2)
+        // - Queda de conexão / encerramento do stream pelo servidor (> maxStallDuration no Bloco 3)
+        // - Falha interna ou erro de decodificação reportado pelo player (Bloco 1)
+      }
+
+      // 5. Confirmação real e documentada de estabilidade da transmissão
+      if (val.isPlaying && !val.isBuffering && !val.hasError && !_isUserPaused) {
+        _playbackStabilizedStartTime ??= now;
+        final stableDuration = now.difference(_playbackStabilizedStartTime!);
+        if (stableDuration >= stabilityThreshold) {
+          if (_retryCount > 0) {
+            debugPrint(
+              '[PLAYER STABILITY] Transmissão estabilizada após ${stableDuration.inSeconds}s '
+              'de reprodução ininterrupta. Resetando contadores de reconexão.',
+            );
             metrics?.markRecoverySuccess();
             _retryCount = 0;
             _lastRetryReason = null;
-          }
-        } else {
-          // Apenas considera congelamento de posição se a posição for mensurável (> 0)
-          // ou se ultrapassar a janela inicial de tolerância (5 a 8s, padrão 6s)
-          if (!live || val.position > Duration.zero) {
-            final stallDuration = now.difference(_lastPositionAdvanceTime);
-            if (stallDuration > maxStallDuration) {
-              debugPrint('[PLAYER STABILITY] Reprodução congelada por mais de ${stallDuration.inSeconds} segundos.');
-              metrics?.markInterruption('Reprodução congelada (${stallDuration.inSeconds}s)');
-              _handleStall('Reprodução congelada', controller);
-              return;
-            }
+            onStabilityConfirmed?.call();
           }
         }
+      } else {
+        _playbackStabilizedStartTime = null;
       }
     });
   }
 
   DateTime? _notPlayingStartTime;
+  DateTime? _playbackStabilizedStartTime;
   String? _lastRetryReason;
   DateTime _lastRetryTime = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -210,6 +238,7 @@ class PlayerStabilityManager {
     _openTimeoutTimer = null;
     _stallCheckTimer = null;
     _notPlayingStartTime = null;
+    _playbackStabilizedStartTime = null;
   }
 
   /// Etapa 3: Tenta recuperação leve (soft recovery) sem destruir o controlador.
@@ -361,6 +390,7 @@ class PlayerStabilityManager {
     _isReconnecting = false;
     _lastRetryReason = null;
     _notPlayingStartTime = null;
+    _playbackStabilizedStartTime = null;
     _retryTimer?.cancel();
     _retryTimer = null;
   }
@@ -370,6 +400,7 @@ class PlayerStabilityManager {
     _isDisposed = true;
     _isReconnecting = false;
     _notPlayingStartTime = null;
+    _playbackStabilizedStartTime = null;
     _openTimeoutTimer?.cancel();
     _stallCheckTimer?.cancel();
     _retryTimer?.cancel();

@@ -389,5 +389,137 @@ void main() {
       expect(manager.maxStallDuration.inSeconds, equals(6));
       manager.dispose();
     });
+
+    test('Live TV: posição estática com reprodução ativa não declara congelamento falso', () async {
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        stallDetectionInterval: const Duration(milliseconds: 40),
+        maxStallDuration: const Duration(milliseconds: 100),
+      );
+
+      final controller = _TestController(
+        const VideoPlayerValue(
+          duration: Duration.zero,
+          position: Duration.zero,
+          isPlaying: true,
+          isBuffering: false,
+          isInitialized: true,
+        ),
+      );
+
+      manager.startStallMonitoring(controller, isLive: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(manager.retryCount, equals(0), reason: 'Live TV não deve considerar posição estática como congelamento');
+      expect(manager.isReconnecting, isFalse);
+      manager.dispose();
+    });
+
+    test('VOD: posição estática com reprodução ativa declara congelamento após maxStallDuration', () async {
+      final manager = PlayerStabilityManager(
+        isLiveStream: false,
+        stallDetectionInterval: const Duration(milliseconds: 40),
+        maxStallDuration: const Duration(milliseconds: 80),
+        softRecoveryObservationDuration: const Duration(milliseconds: 10),
+      );
+
+      final controller = _TestController(
+        const VideoPlayerValue(
+          duration: Duration(hours: 1),
+          position: Duration(minutes: 5),
+          isPlaying: true,
+          isBuffering: false,
+          isInitialized: true,
+        ),
+      );
+
+      manager.startStallMonitoring(controller, isLive: false);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(manager.retryCount, greaterThan(0), reason: 'VOD deve declarar congelamento se a posição não avançar');
+      manager.dispose();
+    });
+
+    test('Live TV: buffering estagnado além de maxBufferingDuration aciona recuperação', () async {
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        stallDetectionInterval: const Duration(milliseconds: 40),
+        maxBufferingDuration: const Duration(milliseconds: 80),
+        softRecoveryObservationDuration: const Duration(milliseconds: 10),
+      );
+
+      final controller = _TestController(
+        const VideoPlayerValue(
+          duration: Duration.zero,
+          position: Duration.zero,
+          isPlaying: true,
+          isBuffering: true,
+          isInitialized: true,
+        ),
+      );
+
+      manager.startStallMonitoring(controller, isLive: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(manager.retryCount, greaterThan(0));
+      manager.dispose();
+    });
+
+    test('Live TV: transmissão sem dados e sem buffer aciona recuperação após maxStallDuration', () async {
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        stallDetectionInterval: const Duration(milliseconds: 40),
+        maxStallDuration: const Duration(milliseconds: 80),
+        softRecoveryObservationDuration: const Duration(milliseconds: 10),
+      );
+
+      final controller = _TestController(
+        const VideoPlayerValue(
+          duration: Duration.zero,
+          position: Duration.zero,
+          isPlaying: false,
+          isBuffering: false,
+          isInitialized: true,
+        ),
+      );
+
+      manager.startStallMonitoring(controller, isLive: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(manager.retryCount, greaterThan(0));
+      manager.dispose();
+    });
+
+    test('Transmissão ininterrupta confirma estabilidade e reseta retryCount via onStabilityConfirmed', () async {
+      bool stabilityConfirmedCalled = false;
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        stallDetectionInterval: const Duration(milliseconds: 40),
+        stabilityThreshold: const Duration(milliseconds: 120),
+        onStabilityConfirmed: () {
+          stabilityConfirmedCalled = true;
+        },
+      );
+
+      manager.scheduleRetry('Falha anterior transitória');
+      expect(manager.retryCount, equals(1));
+
+      final controller = _TestController(
+        const VideoPlayerValue(
+          duration: Duration.zero,
+          position: Duration.zero,
+          isPlaying: true,
+          isBuffering: false,
+          isInitialized: true,
+        ),
+      );
+
+      manager.startStallMonitoring(controller, isLive: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(stabilityConfirmedCalled, isTrue);
+      expect(manager.retryCount, equals(0));
+      manager.dispose();
+    });
   });
 }

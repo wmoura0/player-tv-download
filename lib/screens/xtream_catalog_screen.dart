@@ -98,6 +98,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           _retryPlayback();
         }
       },
+      onStabilityConfirmed: () {
+        if (mounted) {
+          setState(() {
+            _reconnectAttempts = 0;
+          });
+        }
+      },
       onError: (msg) {
         if (mounted) {
           setState(() {
@@ -726,7 +733,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         setState(() {
           _isPlayerLoading = false;
           _playerError = null;
-          _reconnectAttempts = 0;
         });
       }
     } catch (e) {
