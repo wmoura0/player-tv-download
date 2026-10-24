@@ -91,6 +91,10 @@ class PlaybackMetrics {
 
   /// Registra o início de um evento de buffering
   void markBufferingStart([DateTime? time]) {
+    // Se já houver um intervalo de buffering ativo aberto, ignora chamada redundante
+    // para não duplicar eventos nem sobrescrever o início real do intervalo
+    if (_bufferingStartTime != null) return;
+
     _bufferingStartTime = time ?? DateTime.now();
     _bufferingEventCount++;
     debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Buffering #$_bufferingEventCount iniciado às ${_formatTime(_bufferingStartTime!)}');
@@ -107,6 +111,9 @@ class PlaybackMetrics {
     debugPrint('[LIVE_DIAG] [sess:$sessionId] [$_typeTag] Buffering finalizado em ${durMs}ms (total acumulado: ${_totalBufferingMs}ms)');
     return durMs;
   }
+
+  /// Indica se há um intervalo de buffering atualmente em aberto
+  bool get isBufferingActive => _bufferingStartTime != null;
 
   /// Registra uma interrupção detectada no stream (queda de socket, travamento ou erro)
   void markInterruption(String reason, [DateTime? time]) {

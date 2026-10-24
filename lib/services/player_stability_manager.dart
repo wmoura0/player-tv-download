@@ -22,7 +22,9 @@ class PlayerStabilityManager {
   final Duration stallDetectionInterval;
   final Duration maxStallDuration;
   final Duration maxBufferingDuration;
+  final Duration softRecoveryObservationDuration;
   final bool isLiveStream;
+  bool isMpegTsStream;
   final Future<void> Function(int retryCount)? onReconnectRequest;
   final void Function(String userMessage)? onError;
   final void Function(PlayerRecoveryState state)? onStateChanged;
@@ -32,9 +34,11 @@ class PlayerStabilityManager {
     this.maxRetries = 3,
     this.openTimeout = const Duration(seconds: 15),
     this.stallDetectionInterval = const Duration(seconds: 2),
-    this.maxStallDuration = const Duration(seconds: 15),
+    this.maxStallDuration = const Duration(seconds: 6),
     this.maxBufferingDuration = const Duration(seconds: 15),
+    this.softRecoveryObservationDuration = const Duration(milliseconds: 1000),
     this.isLiveStream = true,
+    this.isMpegTsStream = false,
     this.onReconnectRequest,
     this.onError,
     this.onStateChanged,
@@ -84,7 +88,10 @@ class PlayerStabilityManager {
   /// Inicia monitoramento ativo de travamento/congelamento durante reprodução.
   /// Implementa recuperação em etapas com diferenciação precisa entre buffering legítimo
   /// e estagnação real, sem invocar seekTo indiscriminado em streams ao vivo.
-  void startStallMonitoring(VideoPlayerController controller, {bool? isLive}) {
+  void startStallMonitoring(VideoPlayerController controller, {bool? isLive, bool? isMpegTs}) {
+    if (isMpegTs != null) {
+      isMpegTsStream = isMpegTs;
+    }
     _stallCheckTimer?.cancel();
     _lastPosition = controller.value.position;
     _lastPositionAdvanceTime = DateTime.now();
@@ -111,7 +118,7 @@ class PlayerStabilityManager {
         return;
       }
 
-      // 2. Monitoramento de buffering legítimo com janela de tolerância
+      // 2. Monitoramento de buffering legítimo com janela de tolerância a microbuffering
       if (val.isBuffering) {
         if (!_isBuffering) {
           _isBuffering = true;
@@ -134,22 +141,26 @@ class PlayerStabilityManager {
         }
       }
 
-      // 3. Monitoramento de interrupção de reprodução (STATE_ENDED / queda de conexão)
+      // 3. Monitoramento de interrupção de reprodução (STATE_ENDED / estagnação sem buffer)
       // Em transmissões ao vivo (MPEG-TS/HLS), micro-pausas transitórias de buffer (jitter de 500ms a 3s)
       // ocorrem com frequência no Fire TV. Não desconectar prematuramente nem reiniciar o socket!
       if (live && !val.isPlaying && !val.isBuffering && !_isUserPaused) {
         _notPlayingStartTime ??= now;
         final uninterruptedNonPlaying = now.difference(_notPlayingStartTime!);
 
-        // Tenta manter o pipeline nativo ativo via soft play sem destruir a conexão
-        controller.play().catchError((_) {});
+        // Para fluxos que não sejam MPEG-TS, tenta manter pipeline nativo ativo via soft play.
+        // Em fluxos MPEG-TS confirmados, chamar controller.play() quando estagnado provoca flush
+        // e replay de buffers obsoletos da SampleQueue com salto retroativo de PTS.
+        if (!isMpegTsStream) {
+          controller.play().catchError((_) {});
+        }
 
-        // Apenas considera queda real da conexão se permanecer estagnado por mais de 8 segundos contínuos
-        if (uninterruptedNonPlaying >= const Duration(seconds: 8)) {
+        // Janela de 5 a 8 segundos sem avanço real (configurada em 6s padrão)
+        if (uninterruptedNonPlaying >= const Duration(seconds: 6)) {
           debugPrint(
             '[PLAYER STABILITY] Transmissão estagnada há ${uninterruptedNonPlaying.inSeconds}s (sem dados e sem buffer). Iniciando recuperação...',
           );
-          metrics?.markInterruption('Conexão encerrada pelo servidor (estagnação > 8s)');
+          metrics?.markInterruption('Conexão estagnada por mais de 6s');
           _notPlayingStartTime = null;
           _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
           return;
@@ -173,7 +184,7 @@ class PlayerStabilityManager {
           }
         } else {
           // Apenas considera congelamento de posição se a posição for mensurável (> 0)
-          // ou se ultrapassar um timeout longo com evidência de congelamento
+          // ou se ultrapassar a janela inicial de tolerância (5 a 8s, padrão 6s)
           if (!live || val.position > Duration.zero) {
             final stallDuration = now.difference(_lastPositionAdvanceTime);
             if (stallDuration > maxStallDuration) {
@@ -202,24 +213,61 @@ class PlayerStabilityManager {
   }
 
   /// Etapa 3: Tenta recuperação leve (soft recovery) sem destruir o controlador.
-  /// Requisito estrito: NÃO fazer seekTo(duration) em transmissões ao vivo.
-  /// Tenta restaurar play() diretamente e aguarda confirmação de retomada.
+  /// Requisito estrito: NÃO considerar isPlaying == true ou isBuffering == true
+  /// isoladamente como sucesso. A posição deve avançar comprovadamente durante
+  /// a janela de observação para certificar que o pipeline de decodificação voltou a renderizar.
+  /// Para fluxos MPEG-TS confirmados, a recuperação suave é ignorada para evitar saltos retroativos
+  /// de PTS causados pelo replay de buffers obsoletos da SampleQueue do ExoPlayer.
   Future<bool> attemptSoftRecovery(VideoPlayerController? controller) async {
     if (controller == null || _isDisposed || !controller.value.isInitialized || controller.value.hasError) {
       return false;
     }
 
+    if (isMpegTsStream) {
+      debugPrint(
+        '[PLAYER STABILITY] Fluxo MPEG-TS detectado: soft recovery ignorada para evitar saltos retroativos de PTS. Priorizando reconexão real.',
+      );
+      return false;
+    }
+
     try {
       debugPrint('[PLAYER STABILITY] Tentando recuperação leve (soft play)...');
-      await controller.play();
-      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final posBefore = controller.value.position;
 
-      if (controller.value.isPlaying || (controller.value.isBuffering && !controller.value.hasError)) {
-        debugPrint('[PLAYER STABILITY] Recuperação leve bem-sucedida (stream ativo no socket existente)!');
+      await controller.play();
+
+      // Janela de observação para confirmar avanço real da reprodução
+      await Future<void>.delayed(softRecoveryObservationDuration);
+
+      if (_isDisposed || !controller.value.isInitialized || controller.value.hasError) {
+        return false;
+      }
+
+      final posAfter = controller.value.position;
+      final isPlaying = controller.value.isPlaying;
+      final isBuffering = controller.value.isBuffering;
+
+      // Confirmação de avanço real:
+      // 1. A posição deve ter avançado em relação à posição inicial (posAfter > posBefore)
+      // 2. O player deve estar efetivamente reproduzindo (isPlaying == true)
+      // 3. O player NÃO deve estar estagnado em buffering no final da janela
+      final hasAdvanced = posAfter > posBefore;
+
+      if (hasAdvanced && isPlaying && !isBuffering) {
+        debugPrint(
+          '[PLAYER STABILITY] Recuperação leve bem-sucedida! Avanço confirmado: '
+          '${posBefore.inMilliseconds}ms -> ${posAfter.inMilliseconds}ms',
+        );
         metrics?.markRecoverySuccess();
         resetRetries();
         return true;
       }
+
+      debugPrint(
+        '[PLAYER STABILITY] Recuperação leve ineficaz (sem avanço comprovado: '
+        'posBefore=${posBefore.inMilliseconds}ms, posAfter=${posAfter.inMilliseconds}ms, '
+        'isPlaying=$isPlaying, isBuffering=$isBuffering). Prosseguindo para reconexão real...',
+      );
       return false;
     } catch (e) {
       debugPrint('[PLAYER STABILITY] Falha na recuperação leve: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
@@ -228,22 +276,25 @@ class PlayerStabilityManager {
   }
 
   /// Trata stall aplicando recuperação em etapas:
-  /// Primeiro tenta recuperação leve se o controller for fornecido; se falhar ou não aplicável,
-  /// agenda reinicialização controlada via backoff.
+  /// Primeiro tenta recuperação leve se o controlador for fornecido, se o fluxo NÃO for MPEG-TS,
+  /// e se ainda não houver retries acumulados (_retryCount == 0);
+  /// se falhar, se for MPEG-TS ou já estivermos em ciclo de retries, agenda reinicialização controlada via backoff.
   Future<void> _handleStall(String reason, [VideoPlayerController? controller]) async {
     _stallCheckTimer?.cancel();
 
-    // Etapa 3: Tenta recuperação leve se o controlador ainda estiver ativo
-    if (controller != null && controller.value.isInitialized && !controller.value.hasError) {
+    // Etapa 3: Tenta recuperação leve se o controlador ainda estiver ativo,
+    // o fluxo NÃO for MPEG-TS e ainda não estivermos no meio de um ciclo de retries (_retryCount == 0).
+    // Para MPEG-TS comprovado, prioriza reconexão real direta para restabelecer na borda ao vivo.
+    if (!isMpegTsStream && _retryCount == 0 && controller != null && controller.value.isInitialized && !controller.value.hasError) {
       final softOk = await attemptSoftRecovery(controller);
       if (softOk) {
-        // Reinicia monitoramento contínuo
+        // Reinicia monitoramento contínuo se realmente estabilizou e avançou
         startStallMonitoring(controller);
         return;
       }
     }
 
-    // Etapa 4: Reconexão completa controlada
+    // Etapa 4: Reconexão completa controlada (hard recovery)
     onStateChanged?.call(PlayerRecoveryState.stalled);
     scheduleRetry(reason);
   }
@@ -349,5 +400,32 @@ class PlayerStabilityManager {
     }
 
     return UrlSanitizer.sanitizeErrorMessage(error.toString());
+  }
+
+  /// Identifica com precisão se uma URL de stream corresponde ao formato MPEG-TS (.ts ou endpoint progressivo)
+  static bool isMpegTsUrl(String? url) {
+    if (url == null || url.trim().isEmpty) return false;
+    final clean = url.trim().toLowerCase();
+    final uri = Uri.tryParse(clean);
+    final path = uri?.path ?? clean;
+
+    if (path.endsWith('.ts')) return true;
+    if (path.contains('.ts?') || path.contains('.ts&')) return true;
+
+    // Se for formato explicitamente HLS ou contêiner de arquivo, não é TS direto
+    if (path.contains('.m3u8') || path.contains('.mp4') || path.contains('.mkv') || path.contains('.webm')) {
+      return false;
+    }
+
+    // Endpoints IPTV numéricos sem extensão (ex: /live/user/pass/123 ou /user/pass/123)
+    // são entregues nativamente pelos servidores Xtream como MPEG-TS progressivo.
+    final segments = uri?.pathSegments ?? [];
+    if (segments.isNotEmpty) {
+      final last = segments.last;
+      if (int.tryParse(last) != null && !path.contains('.')) {
+        return true;
+      }
+    }
+    return false;
   }
 }

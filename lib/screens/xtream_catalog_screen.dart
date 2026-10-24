@@ -688,6 +688,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final sanitizedDisplay = UrlSanitizer.sanitize(url);
     debugPrint('[PLAYER] Conectando ao canal: $sanitizedDisplay');
 
+    final isMpegTs = PlayerStabilityManager.isMpegTsUrl(url);
+    _stabilityManager.isMpegTsStream = isMpegTs;
+
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
       uri,
@@ -715,7 +718,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         _stabilityManager.clearOpenWatchdog();
         _stabilityManager.metrics?.markConnectionEstablished();
         _stabilityManager.metrics?.markPlayerInitialized();
-        _stabilityManager.startStallMonitoring(controller);
+        _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
@@ -896,9 +899,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
     _stabilityManager.clearOpenWatchdog();
 
-    // Tenta soft recovery antes de descartar o controlador se ele ainda estiver vivo
+    // Tenta soft recovery antes de descartar o controlador apenas se o fluxo NÃO for MPEG-TS,
+    // se o controlador ainda estiver vivo e se ainda não estivermos no meio de um ciclo de retries ativo
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError) {
+    if (!_stabilityManager.isMpegTsStream &&
+        c != null &&
+        c.value.isInitialized &&
+        !c.value.hasError &&
+        _stabilityManager.retryCount == 0) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {
@@ -907,12 +915,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           _isPlayerLoading = false;
           _isPlayerBuffering = false;
         });
+        _stabilityManager.startStallMonitoring(c, isMpegTs: _stabilityManager.isMpegTsStream);
         return;
       }
     }
 
-    // Rotaciona candidatos caso haja mais de um (ex: .ts -> .m3u8) para contornar limitações do proxy
-    if (_candidateUrls.length > 1) {
+    // Se tentativas consecutivas na URL atual falharem e houver formato alternativo (ex: .ts -> .m3u8),
+    // tenta o formato alternativo com segurança a partir da segunda tentativa de reconexão
+    if (_reconnectAttempts >= 1 && _candidateUrls.length > 1) {
       _currentCandidateIndex = (_currentCandidateIndex + 1) % _candidateUrls.length;
       debugPrint('[PLAYER] Tentando formato alternativo: candidato $_currentCandidateIndex de ${_candidateUrls.length}');
     }
@@ -922,7 +932,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       _isPlayerLoading = true;
       _playerError = null;
     });
-    debugPrint('[PLAYER] Reconectando (tentativa $_reconnectAttempts)...');
+    debugPrint('[PLAYER] Reconectando com novo controlador (tentativa $_reconnectAttempts)...');
     if (_candidateUrls.isNotEmpty) {
       await _initControllerWithUrl(_candidateUrls[_currentCandidateIndex]);
     }

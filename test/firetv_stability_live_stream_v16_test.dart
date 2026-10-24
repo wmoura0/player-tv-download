@@ -196,5 +196,87 @@ void main() {
       expect(reconnectAttempts, equals(0));
       manager.dispose();
     });
+
+    test('Transmissão estabilizada com avanço contínuo zera contador de retries sem reconectar', () {
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        maxRetries: 3,
+      );
+
+      manager.scheduleRetry('Oscilação passageira');
+      expect(manager.retryCount, equals(1));
+
+      // Após normalização, resetRetries zera as tentativas mantendo a conexão ativa
+      manager.resetRetries();
+      expect(manager.retryCount, equals(0));
+      expect(manager.isReconnecting, isFalse);
+
+      manager.dispose();
+    });
+
+    test('Protege contra reconexões simultâneas e mantém tolerância a microbuffering', () {
+      int reconnectInvocationCount = 0;
+      final manager = PlayerStabilityManager(
+        isLiveStream: true,
+        isMpegTsStream: true,
+        maxRetries: 3,
+        onReconnectRequest: (count) async {
+          reconnectInvocationCount++;
+        },
+      );
+
+      expect(manager.isMpegTsStream, isTrue);
+      expect(manager.maxStallDuration.inSeconds, equals(6));
+      expect(reconnectInvocationCount, equals(0));
+
+      // Dispara primeiro agendamento
+      manager.scheduleRetry('Congelamento comprovado');
+      expect(manager.retryCount, equals(1));
+
+      // Tentativa simultânea imediata é rejeitada por debounce e lock
+      manager.scheduleRetry('Congelamento comprovado');
+      expect(manager.retryCount, equals(1), reason: 'Reconexão simultânea duplicada deve ser bloqueada');
+
+      manager.dispose();
+    });
+
+    testWidgets('LivePlayerView em tela cheia preserva controles, foco e proporção sem piscar tela', (tester) async {
+      LiveVideoFitMode currentFit = LiveVideoFitMode.contain;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return LivePlayerView(
+                  controller: null,
+                  channelName: 'CNN Brasil',
+                  groupTitle: 'Notícias',
+                  isFullscreen: true,
+                  isLoading: false,
+                  isBuffering: false,
+                  fitMode: currentFit,
+                  onFitModeChanged: (mode) {
+                    setState(() => currentFit = mode);
+                  },
+                  onTogglePlayPause: () {},
+                  onToggleFullscreen: () {},
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+      expect(find.text('CNN Brasil'), findsWidgets);
+      expect(find.text('Original'), findsOneWidget);
+
+      // Alterna modo de proporção
+      await tester.tap(find.text('Original'));
+      await tester.pumpAndSettle();
+      expect(currentFit, equals(LiveVideoFitMode.cover));
+      expect(find.text('Preencher'), findsOneWidget);
+    });
   });
 }

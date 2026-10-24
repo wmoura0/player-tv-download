@@ -411,6 +411,9 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     final sanitizedDisplay = UrlSanitizer.sanitize(channel.streamUrl);
     debugPrint('[PLAYER] Conectando ao canal M3U: $sanitizedDisplay');
 
+    final isMpegTs = PlayerStabilityManager.isMpegTsUrl(channel.streamUrl);
+    _stabilityManager.isMpegTsStream = isMpegTs;
+
     final uri = Uri.tryParse(channel.streamUrl);
     if (uri == null) {
       _isConnecting = false;
@@ -450,7 +453,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
         if (!isRetry) {
           _stabilityManager.resetRetries();
         }
-        _stabilityManager.startStallMonitoring(controller);
+        _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
 
         await controller.play();
         DeviceUtils.setPipState(enabled: true);
@@ -593,7 +596,11 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     _stabilityManager.clearOpenWatchdog();
 
     final c = _playerController;
-    if (c != null && c.value.isInitialized && !c.value.hasError) {
+    if (!_stabilityManager.isMpegTsStream &&
+        c != null &&
+        c.value.isInitialized &&
+        !c.value.hasError &&
+        _stabilityManager.retryCount == 0) {
       debugPrint('[PLAYER] Tentando recuperação suave (soft recovery)...');
       final ok = await _stabilityManager.attemptSoftRecovery(c);
       if (ok && mounted) {
@@ -602,6 +609,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           _isPlayerLoading = false;
           _isPlayerBuffering = false;
         });
+        _stabilityManager.startStallMonitoring(c, isMpegTs: _stabilityManager.isMpegTsStream);
         return;
       }
     }
