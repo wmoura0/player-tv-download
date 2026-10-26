@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/screens/settings_screen.dart';
 import 'package:projeto_tv/services/settings_service.dart';
+import 'package:projeto_tv/services/ota_update_service.dart';
 import 'package:projeto_tv/widgets/live_player_view.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -117,7 +118,7 @@ void main() {
 
       await tester.scrollUntilVisible(find.text('Sobre o Aplicativo'), 300);
       expect(find.text('Sobre o Aplicativo'), findsOneWidget);
-      expect(find.text('Versão 1.0.2 (Build 3)'), findsOneWidget);
+      expect(find.text('Versão 1.2.1 (Build 4)'), findsOneWidget);
     });
 
     testWidgets('Botão Voltar retorna corretamente à tela anterior', (tester) async {

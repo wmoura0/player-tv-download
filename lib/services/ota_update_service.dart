@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -88,8 +88,8 @@ class OtaUpdateService extends ChangeNotifier {
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
   // Versão instalada corrente (1.0.2+3)
-  static const String currentVersionName = '1.0.2';
-  static const int currentVersionCode = 3;
+  static const String currentVersionName = '1.2.1';
+  static const int currentVersionCode = 4;
 
   final http.Client _client;
   http.Client? _activeDownloadClient;

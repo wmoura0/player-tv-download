@@ -239,7 +239,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
                 width: 76,
                 height: 76,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
+                  shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
                       color: AppColors.focusCyan.withValues(alpha: 0.35),
@@ -252,7 +252,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
                 child: Image.asset(
                   'assets/images/jessflix_monogram.png',
                   fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const Icon(Icons.tv_rounded, size: 48, color: Colors.white),
+                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.tv_rounded, size: 48, color: Colors.white),
                 ),
               ),
               const SizedBox(height: 24),
@@ -326,7 +326,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
           width: 72,
           height: 72,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
+            shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
                 color: AppColors.focusCyan.withValues(alpha: 0.3),
@@ -339,7 +339,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
           child: Image.asset(
             'assets/images/jessflix_monogram.png',
             fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => const Icon(Icons.tv_rounded, size: 40, color: Colors.white),
+            errorBuilder: (context, error, stackTrace) => const Icon(Icons.tv_rounded, size: 40, color: Colors.white),
           ),
         ),
         const SizedBox(height: 16),
@@ -367,7 +367,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: AppColors.surfaceSecondary,
-        borderRadius: BorderRadius.circular(16),
+        shape: BoxShape.circle,
         border: Border.all(color: AppColors.borderSubtle),
         boxShadow: const [
           BoxShadow(

@@ -756,10 +756,10 @@ class _AppHeader extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 32,
-                  height: 32,
+                  width: 34,
+                  height: 34,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
+                    shape: BoxShape.circle,
                     color: AppColors.surfaceSecondary,
                     boxShadow: [
                       BoxShadow(
@@ -773,7 +773,7 @@ class _AppHeader extends StatelessWidget {
                   child: Image.asset(
                     'assets/images/jessflix_monogram.png',
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Icon(
+                    errorBuilder: (context, error, stackTrace) => const Icon(
                       Icons.play_arrow_rounded,
                       color: AppColors.focusCyan,
                       size: 20,

@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -9,7 +9,7 @@ void main() {
   group('Manifesto de Atualização OTA (UpdateManifest)', () {
     const validJson = {
       'version': '1.1.0',
-      'versionCode': 4,
+      'versionCode': OtaUpdateService.currentVersionCode + 1,
       'minSupportedVersion': '1.0.0',
       'apkUrl': 'https://raw.githubusercontent.com/wmoura0/player-tv-download/main/releases/PlayerTV-release.apk',
       'fileSize': 52428800,
@@ -22,7 +22,7 @@ void main() {
     test('Desserializa JSON válido com todos os campos preenchidos', () {
       final manifest = UpdateManifest.fromJson(validJson);
       expect(manifest.version, equals('1.1.0'));
-      expect(manifest.versionCode, equals(4));
+      expect(manifest.versionCode, equals(OtaUpdateService.currentVersionCode + 1));
       expect(manifest.minSupportedVersion, equals('1.0.0'));
       expect(manifest.apkUrl, startsWith('https://'));
       expect(manifest.fileSize, equals(52428800));
@@ -72,7 +72,7 @@ void main() {
         if (request.url.path.endsWith('.json')) {
           final manifestData = {
             'version': '1.0.3',
-            'versionCode': 4,
+            'versionCode': OtaUpdateService.currentVersionCode + 1,
             'apkUrl': 'https://github.com/wmoura0/player-tv-download/releases/download/v1.0.3/app.apk',
             'fileSize': 45000000,
             'sha256': 'a' * 64,
@@ -88,7 +88,7 @@ void main() {
 
       expect(result.hasUpdate, isTrue);
       expect(result.isUpToDate, isFalse);
-      expect(result.manifest?.versionCode, equals(4));
+      expect(result.manifest?.versionCode, equals(OtaUpdateService.currentVersionCode + 1));
     });
 
     test('Indica que aplicativo está atualizado quando versionCode é igual ou inferior', () async {

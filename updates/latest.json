@@ -1,0 +1,11 @@
+﻿{
+  "version": "1.2.1",
+  "versionCode": 4,
+  "minSupportedVersion": "1.0.0",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.1/JessFlix-v1.2.1.apk",
+  "fileSize": 57218778,
+  "sha256": "7edfd288aeca8f1564a468b4dadc00ac3cf49ae8ad2a39fc2479a4de481d4bc5",
+  "releaseNotes": "• Logo perfeitamente circular e ícones adaptativos para Android (elimina fundo quadrado).\n• Transparência real nas bordas e cantos do monograma JF.\n• Abertura (SplashScreen) e cabeçalhos com o monograma circular oficial.\n• Atualizador OTA integrado e funcional diretamente pelo aplicativo.",
+  "publishedAt": "2026-10-26T22:13:38.287Z",
+  "mandatory": false
+}

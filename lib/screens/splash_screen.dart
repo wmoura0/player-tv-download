@@ -1,6 +1,5 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter/material.dart';
-import '../models/xtream_account.dart';
 import '../services/secure_storage_service.dart';
 import '../services/xtream_auth_service.dart';
 import '../theme/app_colors.dart';
@@ -240,13 +239,13 @@ class _SplashScreenState extends State<SplashScreen>
                       width: 130,
                       height: 130,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(24),
+                        shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
                             color: AppColors.focusCyan.withValues(alpha: 0.35),
-                            blurRadius: 36,
-                            spreadRadius: 4,
-                            offset: const Offset(0, 8),
+                            blurRadius: 40,
+                            spreadRadius: 2,
+                            offset: Offset.zero,
                           ),
                         ],
                       ),
@@ -254,8 +253,11 @@ class _SplashScreenState extends State<SplashScreen>
                       child: Image.asset(
                         'assets/images/jessflix_monogram.png',
                         fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => Container(
-                          color: AppColors.surfaceSecondary,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: AppColors.surfaceSecondary,
+                          ),
                           alignment: Alignment.center,
                           child: const Icon(
                             Icons.play_arrow_rounded,
