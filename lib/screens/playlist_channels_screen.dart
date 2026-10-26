@@ -12,6 +12,7 @@ import '../services/playback_metrics.dart';
 import '../services/player_stability_manager.dart';
 import '../services/playlist_storage.dart';
 import '../services/url_sanitizer.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import '../widgets/epg_guide_view.dart';
 import '../widgets/live_player_view.dart';
@@ -352,9 +353,9 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       } else {
         _stabilityManager.metrics?.markBufferingEnd();
       }
-      setState(() {
-        _isPlayerBuffering = val.isBuffering;
-      });
+      _isPlayerBuffering = val.isBuffering;
+      // Não dispara setState() na lista inteira de canais durante micro-buffering,
+      // pois o LivePlayerView gerencia o indicador de buffer localmente.
     }
   }
 
@@ -1053,14 +1054,14 @@ class _CategoryFilterChipState extends State<_CategoryFilterChip> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           decoration: BoxDecoration(
             color: widget.isSelected
-                ? const Color(0xFF1E88E5)
-                : (_isFocused ? const Color(0xFF1A2638) : const Color(0xFF141D2D)),
+                ? AppColors.primary
+                : (_isFocused ? AppColors.surfaceSecondary.withValues(alpha: 0.8) : AppColors.surfaceSecondary),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
               color: _isFocused
-                  ? const Color(0xFF00E5FF)
-                  : (widget.isSelected ? const Color(0xFF1E88E5) : const Color(0xFF1E283D)),
-              width: _isFocused ? 1.5 : 1.0,
+                  ? AppColors.focusCyan
+                  : (widget.isSelected ? AppColors.primary : AppColors.borderSubtle),
+              width: _isFocused ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
           ),
           child: Center(
@@ -1169,7 +1170,8 @@ class _ChannelTileState extends State<_ChannelTile> {
 
   @override
   Widget build(BuildContext context) {
-    final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
+    final isFocusHighlight = _isFocused || _isHovered;
+    final isHighlighted = isFocusHighlight || widget.isPlaying;
 
     return Focus(
       autofocus: widget.autofocus,
@@ -1190,23 +1192,29 @@ class _ChannelTileState extends State<_ChannelTile> {
           duration: const Duration(milliseconds: 150),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
-            decoration: BoxDecoration(
-              color: widget.isPlaying ? const Color(0xFF0F2636) : const Color(0xFF0C1622),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: isHighlighted ? const Color(0xFF00E5FF) : (widget.isPlaying ? const Color(0xFF00E5FF).withValues(alpha: 0.6) : const Color(0xFF162536)),
-                width: widget.isPlaying ? 2.0 : 1.5,
-              ),
-              boxShadow: isHighlighted
-                  ? [
-                      BoxShadow(
-                        color: const Color(0xFF00E5FF).withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
-                        blurRadius: 10,
-                        offset: const Offset(0, 2),
-                      ),
-                    ]
-                  : null,
+          decoration: BoxDecoration(
+            color: widget.isPlaying
+                ? AppColors.surfaceSecondary.withValues(alpha: 0.9)
+                : AppColors.surfaceSecondary,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isFocusHighlight
+                  ? AppColors.focusCyan
+                  : (widget.isPlaying ? AppColors.primary : AppColors.borderSubtle),
+              width: isFocusHighlight
+                  ? AppColors.focusBorderWidth
+                  : (widget.isPlaying ? 2.0 : AppColors.normalBorderWidth),
             ),
+            boxShadow: isFocusHighlight
+                ? [
+                    BoxShadow(
+                      color: AppColors.focusCyan.withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
             child: Material(
               color: Colors.transparent,
               child: InkWell(

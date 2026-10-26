@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/xtream_account.dart';
 import '../services/secure_storage_service.dart';
 import '../services/xtream_auth_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import '../main.dart';
 
@@ -235,27 +236,28 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.all(20),
+                width: 76,
+                height: 76,
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF00E5FF), Color(0xFF1E88E5)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
+                  borderRadius: BorderRadius.circular(18),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                      color: AppColors.focusCyan.withValues(alpha: 0.35),
                       blurRadius: 24,
                       offset: const Offset(0, 4),
                     ),
                   ],
                 ),
-                child: const Icon(Icons.tv_rounded, size: 48, color: Colors.white),
+                clipBehavior: Clip.antiAlias,
+                child: Image.asset(
+                  'assets/images/jessflix_monogram.png',
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.tv_rounded, size: 48, color: Colors.white),
+                ),
               ),
               const SizedBox(height: 24),
               const Text(
-                'Player TV',
+                'JessFlix',
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.bold,
@@ -284,7 +286,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -321,31 +323,32 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.all(16),
+          width: 72,
+          height: 72,
           decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              colors: [Color(0xFF00E5FF), Color(0xFF1E88E5)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
+            borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+                color: AppColors.focusCyan.withValues(alpha: 0.3),
                 blurRadius: 20,
                 offset: const Offset(0, 4),
               ),
             ],
           ),
-          child: const Icon(Icons.tv_rounded, size: 40, color: Colors.white),
+          clipBehavior: Clip.antiAlias,
+          child: Image.asset(
+            'assets/images/jessflix_monogram.png',
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => const Icon(Icons.tv_rounded, size: 40, color: Colors.white),
+          ),
         ),
         const SizedBox(height: 16),
         const Text(
-          'Player TV',
+          'JessFlix',
           style: TextStyle(
             fontSize: 26,
             fontWeight: FontWeight.bold,
-            color: Color(0xFFF0F4F8),
+            color: AppColors.textPrimary,
             letterSpacing: 0.5,
           ),
         ),
@@ -353,7 +356,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
         const Text(
           'Acesso por Servidor Xtream Codes ou Listas M3U',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: Color(0xFF8A99AD)),
+          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
         ),
       ],
     );
@@ -363,9 +366,9 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFF121824),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1E283D)),
+        border: Border.all(color: AppColors.borderSubtle),
         boxShadow: const [
           BoxShadow(
             color: Color(0x33000000),
@@ -385,22 +388,22 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
             enabled: !_isLoading,
             textInputAction: TextInputAction.next,
             onFieldSubmitted: (_) => _userFocusNode.requestFocus(),
-            style: const TextStyle(color: Color(0xFFF0F4F8)),
+            style: const TextStyle(color: AppColors.textPrimary),
             decoration: InputDecoration(
               labelText: 'Servidor / DNS',
               hintText: 'http://ls-prime.site ou http://host:8080',
-              hintStyle: const TextStyle(color: Color(0xFF5A6E85)),
-              labelStyle: const TextStyle(color: Color(0xFF90A4AE)),
-              prefixIcon: const Icon(Icons.dns_rounded, color: Color(0xFF90A4AE)),
+              hintStyle: const TextStyle(color: AppColors.textMuted),
+              labelStyle: const TextStyle(color: AppColors.textSecondary),
+              prefixIcon: const Icon(Icons.dns_rounded, color: AppColors.textSecondary),
               filled: true,
-              fillColor: const Color(0xFF0A0E17),
+              fillColor: AppColors.background,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF1E283D)),
+                borderSide: const BorderSide(color: AppColors.borderSubtle),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF00E5FF), width: 1.5),
+                borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
               ),
             ),
             validator: (v) {
@@ -419,22 +422,22 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
             enabled: !_isLoading,
             textInputAction: TextInputAction.next,
             onFieldSubmitted: (_) => _passwordFocusNode.requestFocus(),
-            style: const TextStyle(color: Color(0xFFF0F4F8)),
+            style: const TextStyle(color: AppColors.textPrimary),
             decoration: InputDecoration(
               labelText: 'Usuário',
               hintText: 'Seu usuário do serviço',
-              hintStyle: const TextStyle(color: Color(0xFF5A6E85)),
-              labelStyle: const TextStyle(color: Color(0xFF90A4AE)),
-              prefixIcon: const Icon(Icons.person_outline_rounded, color: Color(0xFF90A4AE)),
+              hintStyle: const TextStyle(color: AppColors.textMuted),
+              labelStyle: const TextStyle(color: AppColors.textSecondary),
+              prefixIcon: const Icon(Icons.person_outline_rounded, color: AppColors.textSecondary),
               filled: true,
-              fillColor: const Color(0xFF0A0E17),
+              fillColor: AppColors.background,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF1E283D)),
+                borderSide: const BorderSide(color: AppColors.borderSubtle),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF00E5FF), width: 1.5),
+                borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
               ),
             ),
             validator: (v) {
@@ -454,33 +457,33 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
             obscureText: _obscurePassword,
             textInputAction: TextInputAction.done,
             onFieldSubmitted: (_) => _handleLogin(),
-            style: const TextStyle(color: Color(0xFFF0F4F8)),
+            style: const TextStyle(color: AppColors.textPrimary),
             decoration: InputDecoration(
               labelText: 'Senha',
               hintText: 'Sua senha',
-              hintStyle: const TextStyle(color: Color(0xFF5A6E85)),
-              labelStyle: const TextStyle(color: Color(0xFF90A4AE)),
-              prefixIcon: const Icon(Icons.lock_outline_rounded, color: Color(0xFF90A4AE)),
+              hintStyle: const TextStyle(color: AppColors.textMuted),
+              labelStyle: const TextStyle(color: AppColors.textSecondary),
+              prefixIcon: const Icon(Icons.lock_outline_rounded, color: AppColors.textSecondary),
               suffixIcon: Focus(
                 canRequestFocus: false,
                 skipTraversal: true,
                 child: IconButton(
                   icon: Icon(
                     _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                    color: const Color(0xFF90A4AE),
+                    color: AppColors.textSecondary,
                   ),
                   onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                 ),
               ),
               filled: true,
-              fillColor: const Color(0xFF0A0E17),
+              fillColor: AppColors.background,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF1E283D)),
+                borderSide: const BorderSide(color: AppColors.borderSubtle),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Color(0xFF00E5FF), width: 1.5),
+                borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
               ),
             ),
             validator: (v) {
@@ -516,19 +519,19 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
-                        width: 1.5,
+                        color: isFocused ? AppColors.focusCyan : Colors.transparent,
+                        width: AppColors.focusBorderWidth,
                       ),
                       color: isFocused
-                          ? const Color(0xFF00E5FF).withValues(alpha: 0.1)
+                          ? AppColors.focusCyan.withValues(alpha: 0.1)
                           : Colors.transparent,
                     ),
                     child: Row(
                       children: [
                         Checkbox(
                           value: _rememberCredentials,
-                          activeColor: const Color(0xFF00E5FF),
-                          checkColor: const Color(0xFF090D14),
+                          activeColor: AppColors.primary,
+                          checkColor: Colors.white,
                           onChanged: _isLoading
                               ? null
                               : (val) => setState(() => _rememberCredentials = val ?? false),
@@ -536,7 +539,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
                         const Expanded(
                           child: Text(
                             'Salvar dados com segurança (Criptografado)',
-                            style: TextStyle(color: Color(0xFF8A99AD), fontSize: 13),
+                            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
                           ),
                         ),
                       ],
@@ -605,7 +608,7 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
       focusNode: _connectFocusNode,
       onPressed: _isLoading ? null : _handleLogin,
       style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF1E88E5),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(vertical: 16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -642,10 +645,10 @@ class _XtreamLoginScreenState extends State<XtreamLoginScreen> {
       child: TextButton.icon(
         focusNode: _skipFocusNode,
         onPressed: _isLoading ? null : () => _navigateToHome(),
-        icon: const Icon(Icons.playlist_play_rounded, color: Color(0xFF00E5FF)),
+        icon: const Icon(Icons.playlist_play_rounded, color: AppColors.primary),
         label: const Text(
           'Continuar para Listas M3U (Sem Login)',
-          style: TextStyle(color: Color(0xFF00E5FF), fontSize: 14),
+          style: TextStyle(color: AppColors.primary, fontSize: 14),
         ),
       ),
     );

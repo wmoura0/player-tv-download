@@ -209,6 +209,37 @@ class DeviceUtils {
     _mockIsPipSupported = value;
   }
 
+  /// Verifica se o aplicativo possui autorização do sistema para instalar pacotes APK.
+  static Future<bool> canRequestPackageInstalls() async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('canRequestPackageInstalls');
+      return res ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Abre a tela de permissões do Android para permitir a instalação de fontes desconhecidas para este app.
+  static Future<bool> openInstallPermissionSettings() async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('openInstallPermissionSettings');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Dispara a instalação nativa do APK através do PackageInstaller oficial via FileProvider.
+  static Future<bool> installApk(String filePath) async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('installApk', {'filePath': filePath});
+      return res ?? false;
+    } catch (e) {
+      debugPrint('Erro ao acionar instalador de pacotes: $e');
+      return false;
+    }
+  }
+
   /// Atalhos comuns de seleção (OK / Enter / Espaço / Botão A do gamepad) para controle remoto
   static const Map<ShortcutActivator, Intent> dpadSelectShortcuts = {
     SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),

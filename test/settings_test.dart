@@ -117,7 +117,7 @@ void main() {
 
       await tester.scrollUntilVisible(find.text('Sobre o Aplicativo'), 300);
       expect(find.text('Sobre o Aplicativo'), findsOneWidget);
-      expect(find.text('Versão 1.0.1 (Build 2)'), findsOneWidget);
+      expect(find.text('Versão 1.0.2 (Build 3)'), findsOneWidget);
     });
 
     testWidgets('Botão Voltar retorna corretamente à tela anterior', (tester) async {

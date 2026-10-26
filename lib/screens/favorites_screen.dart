@@ -5,6 +5,7 @@ import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/secure_storage_service.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import 'series_detail_screen.dart';
 import 'vod_detail_screen.dart';
 import 'xtream_catalog_screen.dart';
@@ -183,33 +184,33 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
     final totalCount = _liveFavorites.length + _movieFavorites.length + _seriesFavorites.length;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F1523),
+        backgroundColor: AppColors.background,
         title: Row(
           children: [
-            const Icon(Icons.favorite_rounded, color: Color(0xFFEF5350), size: 24),
+            const Icon(Icons.favorite_rounded, color: AppColors.error, size: 24),
             const SizedBox(width: 10),
             const Text(
               'Meus Favoritos',
               style: TextStyle(
                 fontSize: 19,
                 fontWeight: FontWeight.bold,
-                color: Color(0xFFF0F4F8),
+                color: AppColors.textPrimary,
               ),
             ),
             const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: const Color(0xFFEF5350).withValues(alpha: 0.15),
+                color: AppColors.error.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFEF5350).withValues(alpha: 0.3)),
+                border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
               ),
               child: Text(
                 '$totalCount',
                 style: const TextStyle(
-                  color: Color(0xFFEF5350),
+                  color: AppColors.error,
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
                 ),
@@ -219,10 +220,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
         ),
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: const Color(0xFF00E5FF),
+          indicatorColor: AppColors.primary,
           indicatorWeight: 3,
-          labelColor: const Color(0xFF00E5FF),
-          unselectedLabelColor: const Color(0xFF8A99AD),
+          labelColor: AppColors.primary,
+          unselectedLabelColor: AppColors.textSecondary,
           labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
           tabs: [
             Tab(
@@ -244,7 +245,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
         child: _isLoading
             ? const Center(
                 child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
                 ),
               )
             : TabBarView(
@@ -473,19 +474,28 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
-            color: const Color(0xFF121824),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A2436),
-              width: isHighlighted ? 1.5 : 1.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : 1.0,
             ),
+            boxShadow: isHighlighted
+                ? [
+                    BoxShadow(
+                      color: AppColors.focusCyan.withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
           ),
           child: Material(
             color: Colors.transparent,
             child: InkWell(
               onTap: widget.onTap,
               borderRadius: BorderRadius.circular(10),
-              splashColor: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+              splashColor: AppColors.primary.withValues(alpha: 0.15),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
@@ -504,19 +514,19 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
                             style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
-                              color: Color(0xFFF0F4F8),
+                              color: AppColors.textPrimary,
                             ),
                           ),
                           const SizedBox(height: 2),
                           const Row(
                             children: [
-                              Icon(Icons.play_circle_outline_rounded, size: 12, color: Color(0xFF00E5FF)),
+                              Icon(Icons.play_circle_outline_rounded, size: 12, color: AppColors.primary),
                               SizedBox(width: 4),
                               Text(
                                 'Toque para assistir',
                                 style: TextStyle(
                                   fontSize: 10,
-                                  color: Color(0xFF00E5FF),
+                                  color: AppColors.primary,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
@@ -527,7 +537,7 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
                     ),
                     IconButton(
                       tooltip: 'Remover dos favoritos',
-                      icon: const Icon(Icons.favorite_rounded, color: Color(0xFFEF5350), size: 20),
+                      icon: const Icon(Icons.favorite_rounded, color: AppColors.error, size: 20),
                       onPressed: widget.onRemove,
                     ),
                   ],
@@ -546,10 +556,11 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: const Color(0xFF1A2436),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.borderSubtle),
       ),
-      child: const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 20),
+      child: const Icon(Icons.live_tv_rounded, color: AppColors.primary, size: 20),
     );
 
     if (logoUrl == null || logoUrl.trim().isEmpty) return fallback;
@@ -611,12 +622,21 @@ class _FavoritePosterCardState extends State<_FavoritePosterCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
-            color: const Color(0xFF121824),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isHighlighted ? widget.accentColor : const Color(0xFF1A2436),
-              width: isHighlighted ? 2.0 : 1.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : 1.0,
             ),
+            boxShadow: isHighlighted
+                ? [
+                    BoxShadow(
+                      color: AppColors.focusCyan.withValues(alpha: 0.45),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
           ),
           child: Material(
             color: Colors.transparent,

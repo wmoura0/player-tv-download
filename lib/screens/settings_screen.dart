@@ -1,10 +1,13 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
+import '../models/update_manifest.dart';
 import '../models/xtream_account.dart';
+import '../services/ota_update_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/playlist_storage.dart';
 import '../services/secure_storage_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import 'hidden_categories_screen.dart';
 import 'playlists_screen.dart';
@@ -14,6 +17,7 @@ enum SettingsMenuSection {
   generalInfo,
   hiddenCategories,
   clearCache,
+  updates,
   logout,
 }
 
@@ -46,13 +50,134 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _loadLastUpdated();
+    OtaUpdateService.instance.addListener(_onOtaServiceChanged);
   }
 
   @override
   void dispose() {
+    OtaUpdateService.instance.removeListener(_onOtaServiceChanged);
     _menuFocusNode.dispose();
     _contentFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onOtaServiceChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _checkForOtaUpdates() async {
+    final result = await OtaUpdateService.instance.checkForUpdates();
+    if (!mounted) return;
+    if (result.hasUpdate) {
+      _showSnackbar('Nova versão ${result.manifest?.version} disponível para atualização!');
+    } else if (result.isUpToDate) {
+      _showSnackbar('O aplicativo já está na versão mais recente publicada.');
+    } else if (result.isChannelNotPublished) {
+      _showSnackbar(result.errorMessage ?? 'Canal de atualização ainda não publicado ou configurado no servidor remoto.');
+    } else if (result.errorMessage != null) {
+      _showSnackbar('Aviso: ${result.errorMessage}');
+    }
+  }
+
+  Future<void> _startOtaDownload(UpdateManifest manifest) async {
+    try {
+      final file = await OtaUpdateService.instance.downloadApk(manifest);
+      if (file != null && mounted) {
+        _showSnackbar('Download concluído e validado com sucesso! Pronto para instalar.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackbar('Erro no download: $e');
+      }
+    }
+  }
+
+  Future<void> _triggerOtaInstall() async {
+    final success = await OtaUpdateService.instance.installDownloadedApk();
+    if (!success && mounted) {
+      _showSnackbar('Verifique as permissões de instalação de fontes desconhecidas.');
+    }
+  }
+
+  Future<void> _openManifestUrlDialog() async {
+    final service = OtaUpdateService.instance;
+    final currentUrl = await service.getManifestUrl();
+    final controller = TextEditingController(text: currentUrl);
+
+    if (!mounted) return;
+
+    final updated = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.borderSubtle),
+        ),
+        title: const Text(
+          'Servidor de Manifesto OTA',
+          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Endereço HTTPS do arquivo JSON com as versões publicadas:',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: AppColors.background,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppColors.borderSubtle),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await service.resetManifestUrl();
+              if (ctx.mounted) Navigator.of(ctx).pop(true);
+            },
+            child: const Text('Restaurar Padrão', style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final newUrl = controller.text.trim();
+              if (newUrl.isNotEmpty) {
+                await service.setManifestUrl(newUrl);
+                if (ctx.mounted) Navigator.of(ctx).pop(true);
+              }
+            },
+            child: const Text('Salvar'),
+          ),
+        ],
+      ),
+    );
+
+    if (updated == true && mounted) {
+      _showSnackbar('URL do manifesto atualizada com sucesso.');
+      setState(() {});
+    }
   }
 
   Future<void> _loadLastUpdated() async {
@@ -272,28 +397,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const accent = Color(0xFF00E5FF);
+    const accent = AppColors.primary;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF070F18),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0A141D),
+        backgroundColor: AppColors.background,
         elevation: 0,
         leading: IconButton(
           tooltip: 'Voltar',
-          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFF5F8FC)),
+          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: const Row(
           children: [
-            Icon(Icons.tune_rounded, color: accent, size: 22),
+            Icon(Icons.tune_rounded, color: AppColors.primary, size: 22),
             SizedBox(width: 10),
             Text(
               'Configurações',
               style: TextStyle(
                 fontSize: 19,
                 fontWeight: FontWeight.bold,
-                color: Color(0xFFF5F8FC),
+                color: AppColors.textPrimary,
               ),
             ),
           ],
@@ -316,9 +441,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   width: 280,
                   child: Container(
                     decoration: const BoxDecoration(
-                      color: Color(0xFF0A141D),
+                      color: AppColors.background,
                       border: Border(
-                        right: BorderSide(color: Color(0xFF162A38), width: 1.5),
+                        right: BorderSide(color: AppColors.borderSubtle, width: 1.5),
                       ),
                     ),
                     child: ListView(
@@ -331,6 +456,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           icon: Icons.account_circle_outlined,
                           accentColor: accent,
                           autofocus: true,
+                        ),
+                        const SizedBox(height: 8),
+                        _buildMenuItem(
+                          section: SettingsMenuSection.updates,
+                          title: 'Atualizações',
+                          subtitle: 'Verificar versão OTA',
+                          icon: Icons.system_update_rounded,
+                          accentColor: accent,
                         ),
                         const SizedBox(height: 8),
                         _buildMenuItem(
@@ -349,41 +482,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           accentColor: accent,
                         ),
                         const SizedBox(height: 16),
-                        const Divider(color: Color(0xFF162A38), height: 1),
+                        const Divider(color: AppColors.borderSubtle, height: 1),
                         const SizedBox(height: 16),
                         _buildMenuItem(
                           section: SettingsMenuSection.logout,
                           title: 'Sair da conta',
                           subtitle: 'Desconectar sessão atual',
                           icon: Icons.logout_rounded,
-                          accentColor: const Color(0xFFEF5350),
+                          accentColor: AppColors.error,
                           isDanger: true,
                         ),
                         const SizedBox(height: 20),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0C1622),
+                            color: AppColors.surfaceSecondary,
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFF162A38)),
+                            border: Border.all(color: AppColors.borderSubtle),
                           ),
-                          child: const Column(
+                          child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
+                              const Text(
                                 'Sobre o Aplicativo',
                                 style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
-                                  color: Color(0xFFBAC7D5),
+                                  color: AppColors.textPrimary,
                                 ),
                               ),
-                              SizedBox(height: 2),
+                              const SizedBox(height: 2),
                               Text(
-                                'Versão 1.0.1 (Build 2)',
-                                style: TextStyle(
+                                'Versão ${OtaUpdateService.currentVersionName} (Build ${OtaUpdateService.currentVersionCode})',
+                                style: const TextStyle(
                                   fontSize: 11,
-                                  color: Color(0xFF64748B),
+                                  color: AppColors.textSecondary,
                                 ),
                               ),
                             ],
@@ -443,6 +576,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     switch (_selectedSection) {
       case SettingsMenuSection.generalInfo:
         return _buildGeneralInfoPanel(accent);
+      case SettingsMenuSection.updates:
+        return _buildUpdatesPanel(accent);
       case SettingsMenuSection.hiddenCategories:
         return _buildHiddenCategoriesPanel(accent);
       case SettingsMenuSection.clearCache:
@@ -464,9 +599,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0E1E2A),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1A384C), width: 1.5),
+        border: Border.all(color: AppColors.borderSubtle, width: 1.5),
         boxShadow: const [
           BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
         ],
@@ -482,13 +617,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: isXtream
-                      ? const Color(0xFF00E676).withValues(alpha: 0.15)
-                      : const Color(0xFF29B6F6).withValues(alpha: 0.15),
+                      ? AppColors.success.withValues(alpha: 0.15)
+                      : AppColors.primary.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
                   isXtream ? Icons.cloud_done_rounded : Icons.playlist_play_rounded,
-                  color: isXtream ? const Color(0xFF00E676) : const Color(0xFF29B6F6),
+                  color: isXtream ? AppColors.success : AppColors.primary,
                   size: 26,
                 ),
               ),
@@ -502,13 +637,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFFF5F8FC),
+                        color: AppColors.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       isXtream ? 'Conectado via Xtream Codes API' : 'Utilizando arquivos e URLs M3U/M3U8',
-                      style: const TextStyle(fontSize: 13, color: Color(0xFF8DAEC4)),
+                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
                     ),
                   ],
                 ),
@@ -516,7 +651,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          const Divider(color: Color(0xFF1A384C), height: 1),
+          const Divider(color: AppColors.borderSubtle, height: 1),
           const SizedBox(height: 20),
           if (isXtream) ...[
             _buildInfoRow('Servidor', UrlSanitizer.sanitize(account.serverUrl)),
@@ -559,7 +694,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _TvActionButton(
                     icon: Icons.sync_rounded,
                     label: _isRefreshingCatalog ? 'Sincronizando...' : 'Sincronizar Catálogo',
-                    accentColor: const Color(0xFF00E676),
+                    accentColor: AppColors.success,
                     isLoading: _isRefreshingCatalog,
                     onTap: _isRefreshingCatalog ? null : _refreshCatalogNow,
                   ),
@@ -575,9 +710,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildHiddenCategoriesPanel(Color accent) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0E1E2A),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1A384C), width: 1.5),
+        border: Border.all(color: AppColors.borderSubtle, width: 1.5),
         boxShadow: const [
           BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
         ],
@@ -592,10 +727,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.15),
+                  color: AppColors.primary.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.visibility_off_rounded, color: accent, size: 26),
+                child: const Icon(Icons.visibility_off_rounded, color: AppColors.primary, size: 26),
               ),
               const SizedBox(width: 14),
               const Expanded(
@@ -607,13 +742,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFFF5F8FC),
+                        color: AppColors.textPrimary,
                       ),
                     ),
                     SizedBox(height: 2),
                     Text(
                       'Personalize a exibição do catálogo de TV ao vivo',
-                      style: TextStyle(fontSize: 13, color: Color(0xFF8DAEC4)),
+                      style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
                     ),
                   ],
                 ),
@@ -621,16 +756,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          const Divider(color: Color(0xFF1A384C), height: 1),
+          const Divider(color: AppColors.borderSubtle, height: 1),
           const SizedBox(height: 16),
           const Text(
             'Você pode ocultar categorias inteiras de canais que não deseja ver na navegação por controle remoto, na lista geral de canais e nos resultados de busca.',
-            style: TextStyle(fontSize: 14, color: Color(0xFF8DAEC4), height: 1.4),
+            style: TextStyle(fontSize: 14, color: AppColors.textSecondary, height: 1.4),
           ),
           const SizedBox(height: 16),
           const Text(
             'As categorias ocultas permanecem salvas localmente e podem ser reativadas a qualquer momento.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+            style: TextStyle(fontSize: 13, color: AppColors.textMuted),
           ),
           const SizedBox(height: 24),
           _TvActionButton(
@@ -649,9 +784,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0E1E2A),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1A384C), width: 1.5),
+        border: Border.all(color: AppColors.borderSubtle, width: 1.5),
         boxShadow: const [
           BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
         ],
@@ -666,10 +801,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.15),
+                  color: AppColors.primary.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.storage_rounded, color: accent, size: 26),
+                child: const Icon(Icons.storage_rounded, color: AppColors.primary, size: 26),
               ),
               const SizedBox(width: 14),
               const Expanded(
@@ -681,13 +816,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFFF5F8FC),
+                        color: AppColors.textPrimary,
                       ),
                     ),
                     SizedBox(height: 2),
                     Text(
                       'Gerenciamento dos arquivos temporários e catálogos salvos',
-                      style: TextStyle(fontSize: 13, color: Color(0xFF8DAEC4)),
+                      style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
                     ),
                   ],
                 ),
@@ -695,7 +830,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          const Divider(color: Color(0xFF1A384C), height: 1),
+          const Divider(color: AppColors.borderSubtle, height: 1),
           const SizedBox(height: 16),
           _buildInfoRow('Última sincronização', lastUpdatedStr),
           const SizedBox(height: 10),
@@ -703,7 +838,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const Text(
             'A limpeza de cache remove todos os índices e capas salvos localmente. Na próxima vez que uma categoria for aberta, os dados serão recarregados do servidor.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF8DAEC4), height: 1.4),
+            style: TextStyle(fontSize: 13, color: AppColors.textSecondary, height: 1.4),
           ),
           const SizedBox(height: 24),
           Row(
@@ -722,7 +857,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: _TvActionButton(
                   icon: Icons.delete_outline_rounded,
                   label: 'Limpar Cache',
-                  accentColor: const Color(0xFFEF5350),
+                  accentColor: AppColors.error,
                   isDanger: true,
                   onTap: _confirmClearCache,
                 ),
@@ -739,9 +874,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0E1E2A),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFEF5350).withValues(alpha: 0.5), width: 1.5),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.5), width: 1.5),
         boxShadow: const [
           BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
         ],
@@ -787,21 +922,415 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          const Divider(color: Color(0xFF1A384C), height: 1),
+          const Divider(color: AppColors.borderSubtle, height: 1),
           const SizedBox(height: 16),
           Text(
             isXtream
-                ? 'Ao confirmar a saída, sua sessão será encerrada e você retornará à tela de login do Player TV. As configurações gerais serão preservadas.'
+                ? 'Ao confirmar a saída, sua sessão será encerrada e você retornará à tela de login do JessFlix. As configurações gerais serão preservadas.'
                 : 'Você retornará à tela de seleção e login para conectar uma nova conta Xtream Codes ou gerenciar listas M3U.',
-            style: const TextStyle(fontSize: 14, color: Color(0xFF8DAEC4), height: 1.4),
+            style: const TextStyle(fontSize: 14, color: AppColors.textSecondary, height: 1.4),
           ),
           const SizedBox(height: 24),
           _TvActionButton(
             icon: Icons.logout_rounded,
             label: isXtream ? 'Desconectar e Sair' : 'Ir para Tela de Conexão',
-            accentColor: const Color(0xFFE50914),
+            accentColor: AppColors.error,
             isDanger: true,
             onTap: _confirmLogout,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUpdatesPanel(Color accent) {
+    final ota = OtaUpdateService.instance;
+    final manifest = ota.latestManifest;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSecondary,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.borderSubtle, width: 1.5),
+        boxShadow: const [
+          BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
+        ],
+      ),
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.system_update_rounded, color: AppColors.primary, size: 26),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Atualizações do Aplicativo',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Verificação remota e instalação de novas versões',
+                      style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          const Divider(color: AppColors.borderSubtle, height: 1),
+          const SizedBox(height: 16),
+          _buildInfoRow('Versão Instalada', '${OtaUpdateService.currentVersionName} (Build ${OtaUpdateService.currentVersionCode})'),
+          const SizedBox(height: 10),
+          _buildInfoRow('Canal de Atualização', 'Versões Oficiais (HTTPS)'),
+          const SizedBox(height: 16),
+
+          // Estado: Verificando
+          if (ota.status == UpdateStatus.checking) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+              ),
+              child: const Row(
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(AppColors.primary)),
+                  ),
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'Consultando manifesto de atualizações no servidor seguro...',
+                      style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Atualizado
+          if (ota.status == UpdateStatus.upToDate) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.success.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.success.withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.check_circle_rounded, color: AppColors.success, size: 24),
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'Seu aplicativo já está atualizado com a versão mais recente publicada.',
+                      style: TextStyle(color: AppColors.textPrimary, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Canal não publicado
+          if (ota.status == UpdateStatus.channelNotPublished && ota.errorMessage != null) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.info_outline_rounded, color: AppColors.primary, size: 22),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Canal de Atualização em Configuração',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          ota.errorMessage!,
+                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Erro
+          if (ota.status == UpdateStatus.error && ota.errorMessage != null) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.error.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.error.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 22),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      ota.errorMessage!,
+                      style: const TextStyle(color: AppColors.error, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Nova versão disponível
+          if (ota.status == UpdateStatus.updateAvailable && manifest != null) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.5)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.new_releases_rounded, color: AppColors.primary, size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Nova Versão Disponível: ${manifest.version} (Build ${manifest.versionCode})',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tamanho do download: ${manifest.formattedSize}',
+                    style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Novidades desta versão:',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.borderSubtle),
+                    ),
+                    child: Text(
+                      manifest.releaseNotes,
+                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Baixando
+          if (ota.status == UpdateStatus.downloading) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceSecondary,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.5)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Baixando atualização...',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                      ),
+                      Text(
+                        '${(ota.downloadProgress * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.primary),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: ota.downloadProgress > 0 ? ota.downloadProgress : null,
+                      minHeight: 8,
+                      backgroundColor: Colors.white12,
+                      valueColor: const AlwaysStoppedAnimation(AppColors.primary),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${(ota.bytesDownloaded / (1024 * 1024)).toStringAsFixed(1)} MB de ${(ota.totalBytesToDownload / (1024 * 1024)).toStringAsFixed(1)} MB',
+                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                      ),
+                      TextButton(
+                        onPressed: () => ota.cancelDownload(),
+                        child: const Text('Cancelar', style: TextStyle(color: AppColors.error, fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Verificando SHA-256 e tamanho
+          if (ota.status == UpdateStatus.verifying) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.focusCyan.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.focusCyan.withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(AppColors.focusCyan)),
+                  ),
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'Validando integridade do pacote (checando SHA-256 e tamanho)...',
+                      style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Pronto para instalar
+          if (ota.status == UpdateStatus.readyToInstall) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.success.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.success.withValues(alpha: 0.5)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.verified_rounded, color: AppColors.success, size: 26),
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'Arquivo verificado com sucesso! Assinatura e integridade validadas.',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Botões de Ação
+          Row(
+            children: [
+              if (ota.status == UpdateStatus.readyToInstall)
+                Expanded(
+                  child: _TvActionButton(
+                    icon: Icons.install_mobile_rounded,
+                    label: 'Instalar Atualização Agora',
+                    accentColor: AppColors.success,
+                    onTap: _triggerOtaInstall,
+                  ),
+                )
+              else if (ota.status == UpdateStatus.updateAvailable && manifest != null) ...[
+                Expanded(
+                  child: _TvActionButton(
+                    icon: Icons.download_rounded,
+                    label: 'Baixar Atualização',
+                    accentColor: AppColors.primary,
+                    onTap: () => _startOtaDownload(manifest),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                TextButton(
+                  onPressed: () => setState(() => _selectedSection = SettingsMenuSection.generalInfo),
+                  child: const Text('Lembrar depois', style: TextStyle(color: AppColors.textSecondary)),
+                ),
+              ] else if (ota.status != UpdateStatus.downloading && ota.status != UpdateStatus.verifying) ...[
+                Expanded(
+                  child: _TvActionButton(
+                    icon: Icons.refresh_rounded,
+                    label: ota.status == UpdateStatus.checking ? 'Verificando...' : 'Verificar Atualizações',
+                    accentColor: AppColors.primary,
+                    isLoading: ota.status == UpdateStatus.checking,
+                    onTap: ota.status == UpdateStatus.checking ? null : _checkForOtaUpdates,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  tooltip: 'Configurar URL do Manifesto',
+                  icon: const Icon(Icons.settings_suggest_rounded, color: AppColors.textSecondary),
+                  onPressed: _openManifestUrlDialog,
+                ),
+              ],
+            ],
           ),
         ],
       ),
@@ -812,13 +1341,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF8DAEC4))),
+        Text(label, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
         const SizedBox(width: 12),
         Flexible(
           child: Text(
             value,
             textAlign: TextAlign.end,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFF5F8FC)),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
           ),
         ),
       ],
@@ -830,6 +1359,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.all(16),
       children: [
         _buildGeneralInfoPanel(accent),
+        const SizedBox(height: 16),
+        _buildUpdatesPanel(accent),
         const SizedBox(height: 16),
         _buildHiddenCategoriesPanel(accent),
         const SizedBox(height: 16),
@@ -874,7 +1405,7 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    final color = widget.isDanger ? const Color(0xFFEF5350) : widget.accentColor;
+    final color = widget.isDanger ? AppColors.error : AppColors.primary;
 
     return FocusableActionDetector(
       autofocus: widget.autofocus,
@@ -886,19 +1417,19 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
         duration: const Duration(milliseconds: 140),
         decoration: BoxDecoration(
           color: widget.isSelected
-              ? (widget.isDanger ? const Color(0xFFEF5350).withValues(alpha: 0.15) : const Color(0xFF132635))
-              : (isHighlighted ? const Color(0xFF0F1E2A) : Colors.transparent),
+              ? (widget.isDanger ? AppColors.error.withValues(alpha: 0.15) : AppColors.primary.withValues(alpha: 0.15))
+              : (isHighlighted ? AppColors.surfaceSecondary : Colors.transparent),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isHighlighted
-                ? color
+                ? AppColors.focusCyan
                 : (widget.isSelected ? color.withValues(alpha: 0.6) : Colors.transparent),
-            width: isHighlighted ? 2.0 : 1.2,
+            width: isHighlighted ? AppColors.focusBorderWidth : 1.2,
           ),
           boxShadow: isHighlighted
               ? [
                   BoxShadow(
-                    color: color.withValues(alpha: 0.35),
+                    color: AppColors.focusCyan.withValues(alpha: 0.4),
                     blurRadius: 10,
                   ),
                 ]
@@ -919,7 +1450,7 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
                     size: 22,
                     color: widget.isSelected || isHighlighted
                         ? color
-                        : const Color(0xFF8DAEC4),
+                        : AppColors.textSecondary,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -932,8 +1463,8 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
                             fontSize: 14,
                             fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.w600,
                             color: widget.isSelected || isHighlighted
-                                ? const Color(0xFFF5F8FC)
-                                : const Color(0xFFBAC7D5),
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -942,8 +1473,8 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
                           style: TextStyle(
                             fontSize: 11,
                             color: widget.isSelected || isHighlighted
-                                ? const Color(0xFF8DAEC4)
-                                : const Color(0xFF64748B),
+                                ? AppColors.textPrimary.withValues(alpha: 0.8)
+                                : AppColors.textMuted,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -970,7 +1501,7 @@ class _SettingsMenuTileState extends State<_SettingsMenuTile> {
   }
 }
 
-/// Botão de ação otimizado para TV com suporte a foco D-pad e brilho ciano/verde
+/// Botão de ação otimizado para TV com suporte a foco D-pad e borda de foco ciano
 class _TvActionButton extends StatefulWidget {
   final IconData icon;
   final String label;
@@ -999,8 +1530,8 @@ class _TvActionButtonState extends State<_TvActionButton> {
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    final bg = widget.isDanger ? const Color(0xFFE50914) : widget.accentColor;
-    final fg = widget.isDanger ? Colors.white : const Color(0xFF070F18);
+    final bg = widget.isDanger ? AppColors.error : widget.accentColor;
+    const fg = Colors.white;
 
     return FocusableActionDetector(
       actions: widget.onTap == null ? {} : DeviceUtils.activateAction(widget.onTap!),
@@ -1012,14 +1543,14 @@ class _TvActionButtonState extends State<_TvActionButton> {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: isHighlighted ? Colors.white : Colors.transparent,
-            width: isHighlighted ? 2.0 : 0.0,
+            color: isHighlighted ? AppColors.focusCyan : Colors.transparent,
+            width: isHighlighted ? AppColors.focusBorderWidth : 0.0,
           ),
           boxShadow: isHighlighted
               ? [
                   BoxShadow(
-                    color: bg.withValues(alpha: 0.5),
-                    blurRadius: 10,
+                    color: AppColors.focusCyan.withValues(alpha: 0.5),
+                    blurRadius: 12,
                   ),
                 ]
               : null,
@@ -1034,7 +1565,7 @@ class _TvActionButtonState extends State<_TvActionButton> {
           ),
           onPressed: widget.onTap,
           icon: widget.isLoading
-              ? SizedBox(
+              ? const SizedBox(
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(

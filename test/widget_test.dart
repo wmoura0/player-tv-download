@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -23,7 +23,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 1. Deve exibir a tela de login inicial
-    expect(find.text('Player TV'), findsOneWidget);
+    expect(find.text('JessFlix'), findsOneWidget);
     expect(find.text('Servidor / DNS'), findsOneWidget);
     expect(find.text('Usuário'), findsOneWidget);
     expect(find.text('Senha'), findsOneWidget);

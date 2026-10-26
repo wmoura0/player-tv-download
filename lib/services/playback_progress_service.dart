@@ -397,6 +397,18 @@ class PlaybackProgressService {
     final key = _buildContinueWatchingKey(accountKey);
 
     final currentList = await getContinueWatchingList(accountKey: accountKey);
+    final existingIndex = currentList.indexWhere((i) {
+      if (i.type == item.type) {
+        if (item.type == ContinueWatchingType.movie) {
+          return i.streamId == item.streamId;
+        } else {
+          return (i.seriesId ?? i.streamId) == (item.seriesId ?? item.streamId);
+        }
+      }
+      return false;
+    });
+    final existingItem = existingIndex >= 0 ? currentList[existingIndex] : null;
+
     currentList.removeWhere((i) {
       if (i.type == item.type) {
         if (item.type == ContinueWatchingType.movie) {
@@ -410,6 +422,12 @@ class PlaybackProgressService {
 
     if (item.canResume) {
       currentList.insert(0, item);
+    } else if (item.isCompleted) {
+      // Concluído normalmente: item removido do índice
+    } else if (existingItem != null && existingItem.canResume) {
+      // Proteção: se a sessão atual não atingiu o limite (ex.: saída durante carregamento/busca),
+      // preserva o progresso anterior válido em vez de apagá-lo
+      currentList.insert(0, existingItem);
     }
 
     final capped = currentList.take(10).toList();

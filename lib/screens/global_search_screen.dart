@@ -1,10 +1,10 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/playlist.dart';
 import '../models/xtream_catalog.dart';
-import '../services/settings_service.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import 'series_detail_screen.dart';
 import 'vod_detail_screen.dart';
 import 'xtream_catalog_screen.dart';
@@ -33,7 +33,6 @@ class GlobalSearchScreen extends StatefulWidget {
 class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
-  final SettingsService _settings = SettingsService.instance;
 
   Timer? _debounceTimer;
   String _currentQuery = '';
@@ -218,15 +217,15 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final accent = _settings.accentColor.color;
+    const accent = AppColors.primary;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF070A12),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0E1424),
+        backgroundColor: AppColors.background,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFF5F8FC)),
+          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: _buildSearchBar(accent),
@@ -246,22 +245,22 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
     return Container(
       height: 44,
       decoration: BoxDecoration(
-        color: const Color(0xFF141C33),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF263352), width: 1),
+        border: Border.all(color: AppColors.borderSubtle, width: 1),
       ),
       child: TextField(
         controller: _searchController,
         focusNode: _searchFocusNode,
         onChanged: _onSearchChanged,
-        style: const TextStyle(color: Color(0xFFF5F8FC), fontSize: 15),
+        style: const TextStyle(color: AppColors.textPrimary, fontSize: 15),
         decoration: InputDecoration(
           hintText: 'Buscar canais, filmes ou séries...',
-          hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 14),
-          prefixIcon: Icon(Icons.search_rounded, color: accent, size: 20),
+          hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
+          prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary, size: 20),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(
-                  icon: const Icon(Icons.close_rounded, color: Color(0xFF94A3B8), size: 18),
+                  icon: const Icon(Icons.close_rounded, color: AppColors.textSecondary, size: 18),
                   onPressed: _clearSearch,
                 )
               : null,
@@ -281,8 +280,8 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: const BoxDecoration(
-        color: Color(0xFF0B0F1D),
-        border: Border(bottom: BorderSide(color: Color(0xFF1D263B), width: 1)),
+        color: AppColors.background,
+        border: Border(bottom: BorderSide(color: AppColors.borderSubtle, width: 1)),
       ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -309,10 +308,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected ? accent.withValues(alpha: 0.18) : const Color(0xFF141C33),
+          color: isSelected ? AppColors.primary.withValues(alpha: 0.18) : AppColors.surfaceSecondary,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isSelected ? accent : const Color(0xFF263352),
+            color: isSelected ? AppColors.primary : AppColors.borderSubtle,
             width: isSelected ? 1.5 : 1,
           ),
         ),
@@ -321,7 +320,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
           style: TextStyle(
             fontSize: 13,
             fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            color: isSelected ? accent : const Color(0xFF94A3B8),
+            color: isSelected ? AppColors.primary : AppColors.textSecondary,
           ),
         ),
       ),
@@ -389,7 +388,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
               ),
               const SizedBox(height: 16),
               const Text(
-                'Pesquisa Global no Player TV',
+                'Pesquisa Global no JessFlix',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -558,87 +557,154 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
     required IconData fallbackIcon,
     required VoidCallback onTap,
   }) {
+    return _SearchResultTile(
+      title: title,
+      subtitle: subtitle,
+      badgeText: badgeText,
+      badgeColor: badgeColor,
+      imageUrl: imageUrl,
+      fallbackIcon: fallbackIcon,
+      onTap: onTap,
+    );
+  }
+}
+
+class _SearchResultTile extends StatefulWidget {
+  final String title;
+  final String subtitle;
+  final String badgeText;
+  final Color badgeColor;
+  final String? imageUrl;
+  final IconData fallbackIcon;
+  final VoidCallback onTap;
+
+  const _SearchResultTile({
+    required this.title,
+    required this.subtitle,
+    required this.badgeText,
+    required this.badgeColor,
+    required this.imageUrl,
+    required this.fallbackIcon,
+    required this.onTap,
+  });
+
+  @override
+  State<_SearchResultTile> createState() => _SearchResultTileState();
+}
+
+class _SearchResultTileState extends State<_SearchResultTile> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF0E1424),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF1D263B), width: 1),
+      child: FocusableActionDetector(
+        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        actions: <Type, Action<Intent>>{
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              widget.onTap();
+              return null;
+            },
           ),
-          padding: const EdgeInsets.all(10),
-          child: Row(
-            children: [
-              // Capa / Thumbnail com fallback gracioso
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  width: 54,
-                  height: 70,
-                  color: const Color(0xFF141C33),
-                  child: imageUrl != null && imageUrl.isNotEmpty
-                      ? Image.network(
-                          imageUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Icon(fallbackIcon, color: const Color(0xFF64748B), size: 24),
-                        )
-                      : Icon(fallbackIcon, color: const Color(0xFF64748B), size: 24),
-                ),
+        },
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.8),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+                width: _isFocused ? AppColors.focusBorderWidth : 1,
               ),
-              const SizedBox(width: 14),
-              // Informações do item
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: badgeColor.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: badgeColor, width: 0.8),
-                          ),
-                          child: Text(
-                            badgeText,
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: badgeColor,
-                              letterSpacing: 0.5,
+              boxShadow: _isFocused
+                  ? [
+                      BoxShadow(
+                        color: AppColors.focusCyan.withValues(alpha: 0.35),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      )
+                    ]
+                  : null,
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                // Capa / Thumbnail com fallback gracioso
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    width: 54,
+                    height: 70,
+                    color: AppColors.background,
+                    child: widget.imageUrl != null && widget.imageUrl!.isNotEmpty
+                        ? Image.network(
+                            widget.imageUrl!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                Icon(widget.fallbackIcon, color: AppColors.textSecondary, size: 24),
+                          )
+                        : Icon(widget.fallbackIcon, color: AppColors.textSecondary, size: 24),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                // Informações do item
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: widget.badgeColor.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: widget.badgeColor, width: 0.8),
+                            ),
+                            child: Text(
+                              widget.badgeText,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: widget.badgeColor,
+                                letterSpacing: 0.5,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFFF5F8FC),
+                        ],
                       ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                      const SizedBox(height: 6),
+                      Text(
+                        widget.title,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.subtitle,
+                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Color(0xFF64748B), size: 22),
-            ],
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: _isFocused ? AppColors.focusCyan : AppColors.textSecondary,
+                  size: 22,
+                ),
+              ],
+            ),
           ),
         ),
       ),

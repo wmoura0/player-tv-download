@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,7 +36,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Cabeçalho (botão de favoritos do topo removido conforme solicitado)
-      expect(find.text('Player TV'), findsWidgets);
+      expect(find.text('JessFlix'), findsWidgets);
       expect(find.text('user_home'), findsOneWidget);
       expect(find.byKey(const Key('header_search_btn')), findsOneWidget);
       expect(find.byKey(const Key('header_favorites_btn')), findsNothing);
@@ -103,7 +103,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Player TV'), findsOneWidget);
+      expect(find.text('JessFlix'), findsOneWidget);
       expect(find.byKey(const Key('cat_live_tv')), findsOneWidget);
       expect(find.text('Continuar assistindo'), findsNothing);
     });

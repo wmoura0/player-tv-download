@@ -85,8 +85,13 @@ class XtreamVodInfo {
     final rawRating = info['rating']?.toString().trim();
     final rating = (rawRating != null && rawRating.isNotEmpty) ? rawRating : null;
 
-    final ext = movieData['container_extension']?.toString() ?? info['container_extension']?.toString();
-    final containerExtension = (ext != null && ext.trim().isNotEmpty) ? ext.trim().toLowerCase() : null;
+    final ext = movieData['container_extension']?.toString() ??
+        info['container_extension']?.toString() ??
+        movieData['extension']?.toString() ??
+        info['extension']?.toString();
+    final containerExtension = (ext != null && ext.trim().isNotEmpty)
+        ? ext.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+        : null;
 
     return XtreamVodInfo(
       streamId: streamId,

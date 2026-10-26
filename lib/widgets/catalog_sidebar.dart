@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/xtream_catalog.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 
 /// Barra lateral de navegação contextual que exibe as CATEGORIAS reais do catálogo selecionado
@@ -29,7 +30,7 @@ class CatalogSidebar extends StatelessWidget {
     required this.onCategorySelected,
     required this.onHomeTap,
     this.onCloseTap,
-    this.accentColor = const Color(0xFF00E5FF),
+    this.accentColor = AppColors.primary,
     required this.isCompact,
     this.isLoading = false,
     this.searchQuery = '',
@@ -44,10 +45,10 @@ class CatalogSidebar extends StatelessWidget {
     return Container(
       width: width,
       decoration: const BoxDecoration(
-        color: Color(0xFF0A141D),
+        color: AppColors.surfaceSecondary,
         border: Border(
           right: BorderSide(
-            color: Color(0xFF162A38),
+            color: AppColors.borderSubtle,
             width: 1.5,
           ),
         ),
@@ -197,7 +198,7 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    const activeColor = Color(0xFF00E5FF);
+    const focusColor = AppColors.focusCyan;
 
     return FocusableActionDetector(
       key: const Key('sidebar_home'),
@@ -221,11 +222,11 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
               ),
               decoration: BoxDecoration(
                 color: isHighlighted
-                    ? activeColor.withValues(alpha: 0.18)
+                    ? focusColor.withValues(alpha: 0.18)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(8),
                 border: isHighlighted
-                    ? Border.all(color: activeColor, width: 1.5)
+                    ? Border.all(color: focusColor, width: AppColors.focusBorderWidth)
                     : null,
               ),
               child: Row(
@@ -234,7 +235,7 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
                   Icon(
                     Icons.home_rounded,
                     size: 18,
-                    color: isHighlighted ? activeColor : const Color(0xFF8A99AD),
+                    color: isHighlighted ? focusColor : AppColors.textSecondary,
                   ),
                   if (!widget.isCompact) ...[
                     const SizedBox(width: 6),
@@ -294,21 +295,20 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
 
   Color get _iconColor {
     if (widget.category.id == 'favorites') {
-      return const Color(0xFFFF5252);
+      return AppColors.primary;
     }
     if (widget.isSelected) {
-      return widget.accentColor;
+      return AppColors.primary;
     }
     if (_isFocused || _isHovered) {
-      return Colors.white;
+      return AppColors.focusCyan;
     }
-    return const Color(0xFF64748B);
+    return AppColors.textSecondary;
   }
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
-    final activeColor = widget.accentColor;
 
     return FocusableActionDetector(
       actions: DeviceUtils.activateAction(widget.onTap),
@@ -332,20 +332,20 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
               ),
               decoration: BoxDecoration(
                 color: isHighlighted
-                    ? activeColor.withValues(alpha: 0.25)
+                    ? AppColors.focusCyan.withValues(alpha: 0.2)
                     : (widget.isSelected
-                        ? activeColor.withValues(alpha: 0.16)
+                        ? AppColors.primary.withValues(alpha: 0.22)
                         : Colors.transparent),
                 borderRadius: BorderRadius.circular(8),
                 border: isHighlighted
-                    ? Border.all(color: activeColor, width: 2.0)
+                    ? Border.all(color: AppColors.focusCyan, width: AppColors.focusBorderWidth)
                     : (widget.isSelected
-                        ? Border.all(color: activeColor.withValues(alpha: 0.55), width: 1.2)
+                        ? Border.all(color: AppColors.primary.withValues(alpha: 0.55), width: 1.2)
                         : Border.all(color: Colors.transparent, width: 1.2)),
                 boxShadow: isHighlighted
                     ? [
                         BoxShadow(
-                          color: activeColor.withValues(alpha: 0.35),
+                          color: AppColors.focusCyan.withValues(alpha: 0.35),
                           blurRadius: 8,
                         ),
                       ]
@@ -360,7 +360,7 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                       height: 16,
                       margin: const EdgeInsets.only(right: 6),
                       decoration: BoxDecoration(
-                        color: activeColor,
+                        color: AppColors.primary,
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
@@ -396,12 +396,12 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                       decoration: BoxDecoration(
                         color: widget.isSelected
-                            ? activeColor.withValues(alpha: 0.22)
+                            ? AppColors.primary.withValues(alpha: 0.22)
                             : const Color(0xFF132230),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
                           color: widget.isSelected
-                              ? activeColor.withValues(alpha: 0.45)
+                              ? AppColors.primary.withValues(alpha: 0.45)
                               : const Color(0xFF1E3547),
                           width: 0.8,
                         ),
@@ -411,7 +411,7 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                         style: TextStyle(
                           fontSize: widget.isCompact ? 9.5 : 10.5,
                           fontWeight: FontWeight.bold,
-                          color: widget.isSelected ? activeColor : const Color(0xFF8DAEC4),
+                          color: widget.isSelected ? AppColors.primary : const Color(0xFF8DAEC4),
                         ),
                       ),
                     ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/hidden_categories_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 
 /// Modelo de categoria para a interface de configuração de categorias ocultas.
@@ -65,28 +66,28 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0E1424),
+        backgroundColor: AppColors.surfaceSecondary,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFF1D263B)),
+          side: const BorderSide(color: AppColors.borderSubtle),
         ),
         title: const Text(
           'Restaurar Todas as Categorias?',
-          style: TextStyle(color: Color(0xFFF5F8FC), fontWeight: FontWeight.bold),
+          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
         ),
         content: const Text(
           'Todas as categorias ocultas voltarão a ficar visíveis na TV ao vivo.',
-          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF94A3B8))),
+            child: const Text('Cancelar', style: TextStyle(color: AppColors.textSecondary)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF),
-              foregroundColor: const Color(0xFF070A12),
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Restaurar Todas', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -120,13 +121,13 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
     final filtered = _filteredCategories;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF070A12),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0E1424),
+        backgroundColor: AppColors.background,
         elevation: 0,
         leading: IconButton(
           tooltip: 'Voltar',
-          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFF5F8FC)),
+          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -137,14 +138,14 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
-                color: Color(0xFFF5F8FC),
+                color: AppColors.textPrimary,
               ),
             ),
             Text(
               widget.sourceTitle,
               style: const TextStyle(
                 fontSize: 12,
-                color: Color(0xFF8A99AD),
+                color: AppColors.textSecondary,
               ),
             ),
           ],
@@ -155,7 +156,7 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
               padding: const EdgeInsets.only(right: 12.0),
               child: TextButton.icon(
                 style: TextButton.styleFrom(
-                  foregroundColor: accent,
+                  foregroundColor: AppColors.primary,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
                 icon: const Icon(Icons.visibility_rounded, size: 18),
@@ -170,7 +171,7 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
           // Banner informativo e estatísticas
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-            color: const Color(0xFF0B101C),
+            color: AppColors.surfaceSecondary,
             child: Row(
               children: [
                 Expanded(
@@ -296,8 +297,6 @@ class _CategoryHideTileState extends State<_CategoryHideTile> {
 
   @override
   Widget build(BuildContext context) {
-    const accent = Color(0xFF00E5FF);
-
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
       child: FocusableActionDetector(
@@ -307,20 +306,20 @@ class _CategoryHideTileState extends State<_CategoryHideTile> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           decoration: BoxDecoration(
-            color: widget.isHidden ? const Color(0xFF101420) : const Color(0xFF0E1424),
+            color: widget.isHidden ? AppColors.surfaceSecondary.withValues(alpha: 0.5) : AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: _isFocused
-                  ? accent
-                  : (widget.isHidden ? const Color(0xFF33202A) : const Color(0xFF1D263B)),
-              width: 2.0,
+                  ? AppColors.focusCyan
+                  : (widget.isHidden ? AppColors.error.withValues(alpha: 0.4) : AppColors.borderSubtle),
+              width: _isFocused ? AppColors.focusBorderWidth : 1.0,
             ),
             boxShadow: _isFocused
                 ? [
-                    const BoxShadow(
-                      color: Color(0x5500E5FF),
+                    BoxShadow(
+                      color: AppColors.focusCyan.withValues(alpha: 0.35),
                       blurRadius: 8,
-                      offset: Offset(0, 1),
+                      offset: const Offset(0, 1),
                     )
                   ]
                 : null,
@@ -336,7 +335,7 @@ class _CategoryHideTileState extends State<_CategoryHideTile> {
                   children: [
                     Icon(
                       widget.isHidden ? Icons.visibility_off_rounded : Icons.visibility_rounded,
-                      color: widget.isHidden ? const Color(0xFFEF5350) : const Color(0xFF00E676),
+                      color: widget.isHidden ? AppColors.error : AppColors.success,
                       size: 20,
                     ),
                     const SizedBox(width: 14),

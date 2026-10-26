@@ -14,6 +14,7 @@ import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import '../widgets/catalog_sidebar.dart';
 import '../widgets/epg_guide_view.dart';
@@ -245,16 +246,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
   }
 
-  Color get _accentColor {
-    switch (_currentType) {
-      case XtreamCatalogType.live:
-        return const Color(0xFF00E5FF);
-      case XtreamCatalogType.movies:
-        return const Color(0xFF29B6F6);
-      case XtreamCatalogType.series:
-        return const Color(0xFF1E88E5);
-    }
-  }
+  Color get _accentColor => AppColors.primary;
 
   Future<void> _initialize() async {
     setState(() {
@@ -579,9 +571,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       } else {
         _stabilityManager.metrics?.markBufferingEnd();
       }
-      setState(() {
-        _isPlayerBuffering = val.isBuffering;
-      });
+      _isPlayerBuffering = val.isBuffering;
+      // Não dispara setState() na tela inteira do catálogo durante micro-buffering,
+      // pois o LivePlayerView gerencia e debouça o indicador localmente, prevenindo
+      // travamentos de 0,5s na thread principal da interface.
     }
   }
 
@@ -1289,9 +1282,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: const BoxDecoration(
-        color: Color(0xFF0A141D),
+        color: AppColors.surfaceSecondary,
         border: Border(
-          bottom: BorderSide(color: Color(0xFF162A38), width: 1.0),
+          bottom: BorderSide(color: AppColors.borderSubtle, width: 1.0),
         ),
       ),
       child: Row(
@@ -1300,7 +1293,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             width: 3.5,
             height: 16,
             decoration: BoxDecoration(
-              color: const Color(0xFF00E5FF),
+              color: AppColors.primary,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -1312,7 +1305,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 0.8,
-                color: Color(0xFFF5F8FC),
+                color: AppColors.textPrimary,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1321,16 +1314,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: const Color(0xFF132534),
+              color: AppColors.background,
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: const Color(0xFF1A384C)),
+              border: Border.all(color: AppColors.borderSubtle),
             ),
             child: Text(
               '$count ${count == 1 ? 'canal' : 'canais'}',
               style: const TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
-                color: Color(0xFF8FA7BD),
+                color: AppColors.textSecondary,
               ),
             ),
           ),
@@ -1421,9 +1414,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   Widget _buildLivePlaceholderPlayer() {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0A141D),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF162A38)),
+        border: Border.all(color: AppColors.borderSubtle),
       ),
       child: Center(
         child: SingleChildScrollView(
@@ -1431,14 +1424,14 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.tv_rounded, size: 36, color: const Color(0xFF00E5FF).withValues(alpha: 0.6)),
+              Icon(Icons.tv_rounded, size: 36, color: AppColors.primary.withValues(alpha: 0.6)),
               const SizedBox(height: 6),
               const Text(
                 'Selecione um canal na lista',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFFF5F8FC),
+                  color: AppColors.textPrimary,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1448,7 +1441,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 'Use o controle remoto e pressione OK para assistir',
                 style: TextStyle(
                   fontSize: 11,
-                  color: Color(0xFF8FA7BD),
+                  color: AppColors.textSecondary,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1473,16 +1466,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF0A141D),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF162A38)),
+        border: Border.all(color: AppColors.borderSubtle),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.event_note_rounded, size: 16, color: Color(0xFF00E5FF)),
+              const Icon(Icons.event_note_rounded, size: 16, color: AppColors.primary),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -1493,7 +1486,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.6,
-                    color: Color(0xFF8FA7BD),
+                    color: AppColors.textSecondary,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1559,10 +1552,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                             margin: const EdgeInsets.only(bottom: 8),
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                             decoration: BoxDecoration(
-                              color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.08) : const Color(0xFF0C1622),
+                              color: isNow ? AppColors.primary.withValues(alpha: 0.12) : AppColors.background,
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                color: isNow ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : const Color(0xFF142436),
+                                color: isNow ? AppColors.primary : AppColors.borderSubtle,
                                 width: isNow ? 1.5 : 1.0,
                               ),
                             ),
@@ -1578,7 +1571,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                                       style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.bold,
-                                        color: isNow ? const Color(0xFF00E5FF) : const Color(0xFF8FA7BD),
+                                        color: isNow ? AppColors.primary : AppColors.textSecondary,
                                       ),
                                     ),
                                     if (isNow) ...[
@@ -1586,7 +1579,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFF00E5FF),
+                                          color: AppColors.primary,
                                           borderRadius: BorderRadius.circular(4),
                                         ),
                                         child: const Text(
@@ -1594,7 +1587,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                                           style: TextStyle(
                                             fontSize: 9,
                                             fontWeight: FontWeight.bold,
-                                            color: Color(0xFF070F18),
+                                            color: Colors.white,
                                           ),
                                         ),
                                       ),
@@ -2017,16 +2010,20 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             decoration: BoxDecoration(
-              color: widget.isPlaying ? const Color(0xFF0F2636) : const Color(0xFF0C1622),
+              color: AppColors.surfaceSecondary,
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: isHighlighted ? widget.accentColor : (widget.isPlaying ? widget.accentColor.withValues(alpha: 0.6) : const Color(0xFF162536)),
-                width: widget.isPlaying ? 2.0 : (isHighlighted ? 1.5 : 1.0),
+                color: isHighlighted
+                    ? AppColors.focusCyan
+                    : (widget.isPlaying ? AppColors.primary : AppColors.borderSubtle),
+                width: isHighlighted
+                    ? AppColors.focusBorderWidth
+                    : (widget.isPlaying ? 2.0 : AppColors.normalBorderWidth),
               ),
               boxShadow: isHighlighted
                   ? [
                       BoxShadow(
-                        color: widget.accentColor.withValues(alpha: widget.isPlaying ? 0.35 : 0.2),
+                        color: AppColors.focusCyan.withValues(alpha: 0.35),
                         blurRadius: 10,
                         offset: const Offset(0, 2),
                       ),
@@ -2201,22 +2198,22 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
-            color: const Color(0xFF0E1E2A),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isHighlighted ? widget.accentColor : const Color(0xFF162A38),
-              width: isHighlighted ? 2.0 : 1.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: widget.accentColor.withValues(alpha: 0.25),
+                      color: AppColors.focusCyan.withValues(alpha: 0.25),
                       blurRadius: 14,
                       offset: const Offset(0, 4),
                     ),
                   ]
-                : [
-                    const BoxShadow(
+                : const [
+                    BoxShadow(
                       color: Color(0x33000000),
                       blurRadius: 6,
                       offset: Offset(0, 2),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/playlist.dart';
 import '../services/playlist_storage.dart';
 import '../services/url_sanitizer.dart';
+import '../theme/app_colors.dart';
 import 'add_playlist_dialog.dart';
 import 'playlist_channels_screen.dart';
 
@@ -147,21 +148,21 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF090D14),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F1523),
+        backgroundColor: AppColors.background,
         title: const Text(
           'Gerenciador de Listas',
           style: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.bold,
-            color: Color(0xFFF0F4F8),
+            color: AppColors.textPrimary,
           ),
         ),
         actions: [
           IconButton(
             tooltip: 'Adicionar Lista',
-            icon: const Icon(Icons.add_rounded, color: Color(0xFF00E5FF)),
+            icon: const Icon(Icons.add_rounded, color: AppColors.primary),
             onPressed: _openAddDialog,
           ),
         ],
@@ -170,7 +171,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         child: _isLoading
             ? const Center(
                 child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
                 ),
               )
             : _playlists.isEmpty
@@ -193,17 +194,17 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF141D2D),
+                  color: AppColors.surfaceSecondary,
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: const Color(0xFF00E5FF).withValues(alpha: 0.2),
+                    color: AppColors.primary.withValues(alpha: 0.2),
                     width: 2,
                   ),
                 ),
                 child: const Icon(
                   Icons.playlist_play_rounded,
                   size: 48,
-                  color: Color(0xFF00E5FF),
+                  color: AppColors.primary,
                 ),
               ),
               const SizedBox(height: 18),
@@ -212,7 +213,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFFF0F4F8),
+                  color: AppColors.textPrimary,
                 ),
               ),
               const SizedBox(height: 8),
@@ -221,7 +222,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 13,
-                  color: Color(0xFF8A99AD),
+                  color: AppColors.textSecondary,
                   height: 1.4,
                 ),
               ),
@@ -235,7 +236,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                   style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1E88E5),
+                  backgroundColor: AppColors.primary,
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
@@ -322,16 +323,16 @@ class _PlaylistCardState extends State<_PlaylistCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
-            color: const Color(0xFF121824),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1E283D),
-              width: isHighlighted ? 1.8 : 1.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : 1.0,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.18),
+                      color: AppColors.focusCyan.withValues(alpha: 0.35),
                       blurRadius: 12,
                       offset: const Offset(0, 3),
                     ),
@@ -349,7 +350,7 @@ class _PlaylistCardState extends State<_PlaylistCard> {
             child: InkWell(
               onTap: widget.isRefreshing ? null : widget.onTap,
               borderRadius: BorderRadius.circular(14),
-              splashColor: const Color(0xFF00E5FF).withValues(alpha: 0.1),
+              splashColor: AppColors.primary.withValues(alpha: 0.1),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
                 child: Row(
@@ -357,12 +358,12 @@ class _PlaylistCardState extends State<_PlaylistCard> {
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
+                        color: AppColors.primary.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: const Icon(
                         Icons.live_tv_rounded,
-                        color: Color(0xFF00E5FF),
+                        color: AppColors.primary,
                         size: 28,
                       ),
                     ),
@@ -378,7 +379,7 @@ class _PlaylistCardState extends State<_PlaylistCard> {
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
-                              color: Color(0xFFF0F4F8),
+                              color: AppColors.textPrimary,
                             ),
                           ),
                           const SizedBox(height: 4),
@@ -388,7 +389,7 @@ class _PlaylistCardState extends State<_PlaylistCard> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontSize: 12,
-                              color: Color(0xFF5A6E85),
+                              color: AppColors.textMuted,
                             ),
                           ),
                           const SizedBox(height: 6),
@@ -400,14 +401,14 @@ class _PlaylistCardState extends State<_PlaylistCard> {
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF1E88E5).withValues(alpha: 0.15),
+                                  color: AppColors.primary.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text(
                                   '${widget.playlist.channelCount} canais',
                                   style: const TextStyle(
                                     fontSize: 11,
-                                    color: Color(0xFF64B5F6),
+                                    color: AppColors.primary,
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),

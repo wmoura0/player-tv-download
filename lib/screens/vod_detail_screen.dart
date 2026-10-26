@@ -5,6 +5,7 @@ import '../models/xtream_vod_info.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import 'vod_player_screen.dart';
 
@@ -502,16 +503,16 @@ class _VodBackButtonPillState extends State<_VodBackButtonPill> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF182A3D) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
-              width: _isFocused ? 2.0 : 1.2,
+              color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: _isFocused ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      color: AppColors.focusCyan.withValues(alpha: 0.5),
                       blurRadius: 10,
                       spreadRadius: 1,
                     )
@@ -524,13 +525,13 @@ class _VodBackButtonPillState extends State<_VodBackButtonPill> {
               Icon(
                 Icons.arrow_back_rounded,
                 size: 16,
-                color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
               ),
               const SizedBox(width: 6),
               Text(
                 'Voltar',
                 style: TextStyle(
-                  color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                  color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
                 ),
@@ -581,16 +582,16 @@ class _VodSiloPrimaryButtonState extends State<_VodSiloPrimaryButton> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFFE8FDF8) : const Color(0xFF0C2434),
+            color: AppColors.primary,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
-              width: _isFocused ? 2.5 : 1.5,
+              color: _isFocused ? AppColors.focusCyan : AppColors.primary,
+              width: _isFocused ? AppColors.focusBorderWidth : 1.5,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                      color: AppColors.focusCyan.withValues(alpha: 0.6),
                       blurRadius: 18,
                       spreadRadius: 2,
                     ),
@@ -600,10 +601,10 @@ class _VodSiloPrimaryButtonState extends State<_VodSiloPrimaryButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
+              const Icon(
                 Icons.play_arrow_rounded,
                 size: 26,
-                color: _isFocused ? const Color(0xFF00838F) : const Color(0xFF00E5FF),
+                color: Colors.white,
               ),
               const SizedBox(width: 8),
               Flexible(
@@ -611,8 +612,8 @@ class _VodSiloPrimaryButtonState extends State<_VodSiloPrimaryButton> {
                   widget.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: _isFocused ? const Color(0xFF004D40) : const Color(0xFFF0F4F8),
+                  style: const TextStyle(
+                    color: Colors.white,
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.4,
@@ -664,16 +665,16 @@ class _VodSiloSecondaryButtonState extends State<_VodSiloSecondaryButton> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF16283C) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF22354A),
-              width: _isFocused ? 2.0 : 1.2,
+              color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: _isFocused ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      color: AppColors.focusCyan.withValues(alpha: 0.45),
                       blurRadius: 12,
                       spreadRadius: 1,
                     ),
@@ -744,18 +745,18 @@ class _VodSiloFavoriteButtonState extends State<_VodSiloFavoriteButton> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF16283C) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _isFocused
-                  ? const Color(0xFF00E5FF)
-                  : (widget.isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.6) : const Color(0xFF22354A)),
-              width: _isFocused ? 2.2 : 1.2,
+                  ? AppColors.focusCyan
+                  : (widget.isFavorite ? AppColors.error.withValues(alpha: 0.6) : AppColors.borderSubtle),
+              width: _isFocused ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      color: AppColors.focusCyan.withValues(alpha: 0.45),
                       blurRadius: 14,
                       spreadRadius: 1,
                     ),

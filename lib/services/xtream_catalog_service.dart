@@ -976,7 +976,7 @@ class XtreamCatalogService extends ChangeNotifier {
     final pass = Uri.encodeComponent(password.trim());
 
     final cleanExt = (extension != null && extension.trim().isNotEmpty)
-        ? extension.trim().toLowerCase().replaceAll('.', '')
+        ? extension.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
         : 'mp4';
 
     final urls = <String>[];
@@ -1018,7 +1018,7 @@ class XtreamCatalogService extends ChangeNotifier {
     final pass = Uri.encodeComponent(password.trim());
 
     final cleanExt = (extension != null && extension.trim().isNotEmpty)
-        ? extension.trim().toLowerCase().replaceAll('.', '')
+        ? extension.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
         : 'mp4';
 
     final urls = <String>[];

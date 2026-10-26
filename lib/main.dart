@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/xtream_account.dart';
@@ -12,12 +12,14 @@ import 'screens/settings_screen.dart';
 import 'screens/vod_detail_screen.dart';
 import 'screens/vod_player_screen.dart';
 import 'screens/xtream_catalog_screen.dart';
+import 'screens/splash_screen.dart';
 import 'screens/xtream_login_screen.dart';
 import 'services/hidden_categories_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
 import 'services/xtream_catalog_service.dart';
+import 'theme/app_colors.dart';
 import 'utils/device_utils.dart';
 
 void main() async {
@@ -46,29 +48,29 @@ void main() async {
 
 /// Widget principal do aplicativo configurado com tema escuro e identidade visual dinâmica.
 class PlayerTvApp extends StatelessWidget {
-  const PlayerTvApp({super.key});
+  final Widget? home;
+  const PlayerTvApp({super.key, this.home});
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: SettingsService.instance,
       builder: (context, _) {
-        final accent = SettingsService.instance.accentColor;
         return MaterialApp(
-          title: 'Player TV',
+          title: 'JessFlix',
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             brightness: Brightness.dark,
-            scaffoldBackgroundColor: const Color(0xFF070F18),
-            colorScheme: ColorScheme.dark(
-              primary: accent.color,
-              secondary: accent.secondaryColor,
-              surface: const Color(0xFF0E1E2A),
-              onSurface: const Color(0xFFF5F8FC),
+            scaffoldBackgroundColor: AppColors.background,
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.primary,
+              secondary: AppColors.focusCyan,
+              surface: AppColors.surfaceSecondary,
+              onSurface: AppColors.textPrimary,
             ),
             useMaterial3: true,
           ),
-          home: const XtreamLoginScreen(),
+          home: home ?? const SplashScreen(),
         );
       },
     );
@@ -382,14 +384,14 @@ class _HomeScreenState extends State<HomeScreen> {
       SnackBar(
         content: Text(
           '$itemTitle: funcionalidade em desenvolvimento.',
-          style: const TextStyle(color: Color(0xFFF5F8FC)),
+          style: const TextStyle(color: AppColors.textPrimary),
         ),
-        backgroundColor: const Color(0xFF0E1424),
+        backgroundColor: AppColors.surfaceSecondary,
         duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: Color(0xFF00E5FF), width: 1),
+          side: const BorderSide(color: AppColors.focusCyan, width: 1),
         ),
       ),
     );
@@ -439,22 +441,22 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: const Color(0xFF0E1424),
+          backgroundColor: AppColors.surfaceSecondary,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: Color(0xFF1D263B), width: 1),
+            side: const BorderSide(color: AppColors.borderSubtle, width: 1),
           ),
           title: Row(
             children: [
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEF5350).withValues(alpha: 0.15),
+                  color: AppColors.error.withValues(alpha: 0.15),
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(
                   Icons.delete_outline_rounded,
-                  color: Color(0xFFEF5350),
+                  color: AppColors.error,
                   size: 22,
                 ),
               ),
@@ -465,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFFF5F8FC),
+                    color: AppColors.textPrimary,
                   ),
                 ),
               ),
@@ -475,7 +477,7 @@ class _HomeScreenState extends State<HomeScreen> {
             'Deseja remover "${item.title}" de Continuar assistindo?\n\nO progresso original não será apagado.',
             style: const TextStyle(
               fontSize: 14,
-              color: Color(0xFF94A3B8),
+              color: AppColors.textSecondary,
               height: 1.4,
             ),
           ),
@@ -485,12 +487,12 @@ class _HomeScreenState extends State<HomeScreen> {
               onPressed: () => Navigator.of(ctx).pop(false),
               child: const Text(
                 'Cancelar',
-                style: TextStyle(color: Color(0xFF94A3B8)),
+                style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFEF5350),
+                backgroundColor: AppColors.error,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
@@ -521,14 +523,14 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(
           content: Text(
             '"${item.title}" removido de Continuar assistindo.',
-            style: const TextStyle(color: Color(0xFFF5F8FC)),
+            style: const TextStyle(color: AppColors.textPrimary),
           ),
-          backgroundColor: const Color(0xFF0E1424),
+          backgroundColor: AppColors.surfaceSecondary,
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
-            side: const BorderSide(color: Color(0xFF00E5FF), width: 1),
+            side: const BorderSide(color: AppColors.focusCyan, width: 1),
           ),
         ),
       );
@@ -558,25 +560,25 @@ class _HomeScreenState extends State<HomeScreen> {
     final shouldExit = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0E1424),
+        backgroundColor: AppColors.surfaceSecondary,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFF1D263B), width: 1),
+          side: const BorderSide(color: AppColors.borderSubtle, width: 1),
         ),
-        title: const Text('Sair do Player TV', style: TextStyle(color: Color(0xFFF5F8FC))),
+        title: const Text('Sair do JessFlix', style: TextStyle(color: AppColors.textPrimary)),
         content: const Text(
           'Deseja realmente fechar o aplicativo?',
-          style: TextStyle(color: Color(0xFF94A3B8)),
+          style: TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF94A3B8))),
+            child: const Text('Cancelar', style: TextStyle(color: AppColors.textSecondary)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE50914),
+              backgroundColor: AppColors.error,
               foregroundColor: Colors.white,
             ),
             child: const Text('Sair'),
@@ -749,36 +751,38 @@ class _AppHeader extends StatelessWidget {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Identidade visual / Logotipo
+            // Identidade visual / Logotipo JessFlix
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(7),
+                  width: 32,
+                  height: 32,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Color(0xFF00E5FF), Color(0xFF00E676)],
-                    ),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
+                    color: AppColors.surfaceSecondary,
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                        color: AppColors.focusCyan.withValues(alpha: 0.3),
                         blurRadius: 8,
                         offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                  child: const Icon(
-                    Icons.tv_rounded,
-                    color: Color(0xFF070F18),
-                    size: 18,
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.asset(
+                    'assets/images/jessflix_monogram.png',
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.play_arrow_rounded,
+                      color: AppColors.focusCyan,
+                      size: 20,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 const Text(
-                  'Player TV',
+                  'JessFlix',
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -809,7 +813,7 @@ class _AppHeader extends StatelessWidget {
                       icon: Icons.search_rounded,
                       tooltip: 'Buscar no catálogo',
                       label: isCompact ? null : 'Buscar',
-                      iconColor: const Color(0xFF8DAEC4),
+                      iconColor: AppColors.textSecondary,
                       isCompact: isCompact,
                       onTap: onSearchTap,
                     ),
@@ -820,7 +824,7 @@ class _AppHeader extends StatelessWidget {
                         icon: Icons.history_rounded,
                         tooltip: 'Recentes',
                         label: 'Recentes',
-                        iconColor: const Color(0xFF8DAEC4),
+                        iconColor: AppColors.textSecondary,
                         isCompact: false,
                         onTap: onRecentsTap!,
                       ),
@@ -831,7 +835,7 @@ class _AppHeader extends StatelessWidget {
                       icon: Icons.settings_outlined,
                       tooltip: 'Configurações',
                       label: isCompact ? null : 'Configurações',
-                      iconColor: const Color(0xFF8DAEC4),
+                      iconColor: AppColors.textSecondary,
                       isCompact: isCompact,
                       onTap: onSettingsTap,
                     ),
@@ -846,7 +850,7 @@ class _AppHeader extends StatelessWidget {
                             : (xtreamAccount!.username.length > 12
                                 ? '${xtreamAccount!.username.substring(0, 10)}...'
                                 : xtreamAccount!.username),
-                        iconColor: const Color(0xFF8DAEC4),
+                        iconColor: AppColors.textSecondary,
                         isCompact: isCompact,
                         onTap: onLogoutTap,
                       ),
@@ -993,17 +997,17 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
           duration: const Duration(milliseconds: 140),
           decoration: BoxDecoration(
             color: isHighlighted
-                ? const Color(0xFF00E5FF).withValues(alpha: 0.18)
-                : const Color(0xFF0E1E2A),
+                ? AppColors.focusCyan.withValues(alpha: 0.18)
+                : AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(isPill ? 18 : 20),
             border: Border.all(
-              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1A384C),
-              width: isHighlighted ? 2.0 : 1.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.35),
+                      color: AppColors.focusCyan.withValues(alpha: 0.35),
                       blurRadius: 8,
                     ),
                   ]
@@ -1025,7 +1029,7 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
                   children: [
                     Icon(
                       widget.icon,
-                      color: isHighlighted ? const Color(0xFF00E5FF) : widget.iconColor,
+                      color: isHighlighted ? AppColors.focusCyan : widget.iconColor,
                       size: 17,
                     ),
                     if (isPill) ...[
@@ -1036,7 +1040,7 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: isHighlighted ? Colors.white : const Color(0xFFBAC7D5),
+                            color: isHighlighted ? Colors.white : AppColors.textPrimary,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -1090,7 +1094,7 @@ class _ContinueWatchingSection extends StatelessWidget {
               const Icon(
                 Icons.play_circle_outline_rounded,
                 size: 19,
-                color: Color(0xFF00E5FF),
+                color: AppColors.primary,
               ),
               const SizedBox(width: 8),
               const Text(
@@ -1178,16 +1182,16 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
           width: widget.width,
           height: widget.height,
           decoration: BoxDecoration(
-            color: const Color(0xFF0E1424),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isHighlighted ? const Color(0xFF00E5FF) : const Color(0xFF1D263B),
-              width: 2.0,
+              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.25),
+                      color: AppColors.focusCyan.withValues(alpha: 0.25),
                       blurRadius: 12,
                       offset: const Offset(0, 3),
                     ),
@@ -1252,17 +1256,15 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: isSeries
-                            ? const Color(0xFF1E88E5).withValues(alpha: 0.9)
-                            : const Color(0xFF00E5FF).withValues(alpha: 0.9),
+                        color: AppColors.primary.withValues(alpha: 0.9),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         isSeries ? 'SÉRIE' : 'FILME',
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.bold,
-                          color: isSeries ? Colors.white : const Color(0xFF070A12),
+                          color: Colors.white,
                           letterSpacing: 0.5,
                         ),
                       ),
@@ -1293,7 +1295,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
                       ),
                       child: Icon(
                         Icons.play_arrow_rounded,
-                        color: isHighlighted ? const Color(0xFF00E5FF) : Colors.white,
+                        color: isHighlighted ? AppColors.focusCyan : Colors.white,
                         size: 20,
                       ),
                     ),
@@ -1337,7 +1339,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
                             value: widget.item.progressRatio,
                             minHeight: 3.5,
                             backgroundColor: Colors.white24,
-                            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
                           ),
                         ),
                       ],
@@ -1604,16 +1606,16 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
         child: Container(
           width: DeviceUtils.isTv ? 124 : 110,
           decoration: BoxDecoration(
-            color: const Color(0xFF0E1424),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF1D263B),
-              width: 2.0,
+              color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: _isFocused ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.25),
+                      color: AppColors.focusCyan.withValues(alpha: 0.25),
                       blurRadius: 10,
                     ),
                   ]
@@ -1701,24 +1703,24 @@ class _ExploreCatalogBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       decoration: BoxDecoration(
-        color: const Color(0xFF0E1424),
+        color: AppColors.surfaceSecondary,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF1D263B), width: 1),
+        border: Border.all(color: AppColors.borderSubtle, width: 1),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: const Color(0xFF00E5FF).withValues(alpha: 0.12),
+              color: AppColors.primary.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+                color: AppColors.primary.withValues(alpha: 0.35),
               ),
             ),
             child: const Icon(
               Icons.auto_awesome_rounded,
-              color: Color(0xFF00E5FF),
+              color: AppColors.primary,
               size: 24,
             ),
           ),
@@ -1789,7 +1791,7 @@ class _MainCategoriesSection extends StatelessWidget {
       title: 'TV ao vivo',
       subtitle: liveCount != null ? '$liveCount canais' : 'Canais em tempo real',
       icon: Icons.live_tv_rounded,
-      accentColor: const Color(0xFF00E5FF),
+      accentColor: AppColors.primary,
       autofocus: true,
     );
 
@@ -1799,28 +1801,28 @@ class _MainCategoriesSection extends StatelessWidget {
         title: 'Filmes',
         subtitle: 'Catálogo sob demanda',
         icon: Icons.movie_outlined,
-        accentColor: Color(0xFF29B6F6),
+        accentColor: AppColors.primary,
       ),
       const _CategoryItem(
         key: Key('cat_series'),
         title: 'Séries',
         subtitle: 'Temporadas e episódios',
         icon: Icons.video_library_outlined,
-        accentColor: Color(0xFF1E88E5),
+        accentColor: AppColors.primary,
       ),
       const _CategoryItem(
         key: Key('cat_favorites'),
         title: 'Favoritos',
         subtitle: 'Seus itens marcados',
         icon: Icons.favorite_rounded,
-        accentColor: Color(0xFFEF5350),
+        accentColor: AppColors.primary,
       ),
       const _CategoryItem(
         key: Key('cat_playlists'),
         title: 'Playlist',
         subtitle: 'Adicionar / gerenciar',
         icon: Icons.playlist_play_rounded,
-        accentColor: Color(0xFF00E676),
+        accentColor: AppColors.primary,
       ),
     ];
 
@@ -1979,20 +1981,18 @@ class _CategoryCardState extends State<_CategoryCard> {
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOutCubic,
           decoration: BoxDecoration(
-            color: isHighlighted
-                ? (widget.isHero ? const Color(0xFF132A3B) : const Color(0xFF132230))
-                : (widget.isHero ? const Color(0xFF0C1A26) : const Color(0xFF0E1E2A)),
+            color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isHighlighted
-                  ? widget.item.accentColor
-                  : const Color(0xFF1A384C),
-              width: isHighlighted ? (widget.isHero ? 2.5 : 2.0) : 1.2,
+                  ? AppColors.focusCyan
+                  : AppColors.borderSubtle,
+              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
             ),
             boxShadow: isHighlighted
                 ? [
                     BoxShadow(
-                      color: widget.item.accentColor.withValues(alpha: widget.isHero ? 0.35 : 0.25),
+                      color: AppColors.focusCyan.withValues(alpha: widget.isHero ? 0.35 : 0.25),
                       blurRadius: widget.isHero ? 16 : 12,
                       offset: const Offset(0, 3),
                     ),
@@ -2150,7 +2150,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                 style: const TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFFF5F8FC),
+                  color: AppColors.primary,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -2202,7 +2202,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFFF5F8FC),
+                  color: AppColors.primary,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

@@ -48,11 +48,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
 
   bool _isLoading = true;
   bool _isBuffering = false;
+  bool _isSeekingToInitial = false;
+  bool _isExiting = false;
   String? _errorMessage;
   List<String> _streamUrls = [];
   int _currentUrlIndex = 0;
 
   Timer? _progressSaveTimer;
+  Timer? _initialBufferingWatchdog;
+  int _connectionEpoch = 0;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
 
   // Controle de Próximo Episódio
@@ -92,19 +96,37 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   void dispose() {
     DeviceUtils.setKeepScreenOn(false);
     _cancelCountdown();
+    _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
-    _saveCurrentProgress();
+    if (!_isExiting) {
+      _saveCurrentProgress(force: true);
+    }
 
     if (widget.testController == null) {
       final c = _controller;
       _controller = null;
       c?.removeListener(_onControllerUpdate);
-      c?.pause();
+      if (c != null && c.value.isInitialized && c.value.isPlaying) {
+        c.pause();
+      }
       c?.dispose();
     }
 
     DeviceUtils.restoreOrientation();
     super.dispose();
+  }
+
+  Future<void> _handleExit() async {
+    if (_isExiting) return;
+    _isExiting = true;
+    _cancelCountdown();
+    _initialBufferingWatchdog?.cancel();
+    _progressSaveTimer?.cancel();
+    await _saveCurrentProgress(force: true);
+    DeviceUtils.restoreOrientation();
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   void _updateNextEpisode() {
@@ -113,19 +135,26 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
 
   void _startPeriodicProgressSave() {
     _progressSaveTimer?.cancel();
-    _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _progressSaveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted && (_controller?.value.isPlaying ?? false)) {
         _saveCurrentProgress();
       }
     });
   }
 
-  Future<void> _saveCurrentProgress() async {
+  Future<void> _saveCurrentProgress({bool force = false}) async {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
+    if (_isLoading && !force) return;
+    if (_isSeekingToInitial && !force) return;
 
     final pos = c.value.position;
     final dur = c.value.duration;
+
+    // Proteção: não sobrescrever posição anterior válida se o vídeo ainda não avançou
+    if (pos.inSeconds < 5 && widget.initialPosition != null && widget.initialPosition!.inSeconds >= 10 && !force) {
+      return;
+    }
 
     if (dur > Duration.zero) {
       await _progressService.saveEpisodeProgress(
@@ -165,6 +194,23 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     }
   }
 
+  Future<void> _disposeCurrentController() async {
+    _initialBufferingWatchdog?.cancel();
+    final oldController = _controller;
+    _controller = null;
+    if (oldController != null) {
+      oldController.removeListener(_onControllerUpdate);
+      try {
+        if (oldController.value.isInitialized && oldController.value.isPlaying) {
+          await oldController.pause();
+        }
+      } catch (_) {}
+      try {
+        await oldController.dispose();
+      } catch (_) {}
+    }
+  }
+
   Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
     _streamUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
     _currentUrlIndex = 0;
@@ -183,13 +229,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   }
 
   Future<void> _connectToUrl(String url, {Duration? initialPosition}) async {
-    final oldController = _controller;
-    _controller = null;
-    oldController?.removeListener(_onControllerUpdate);
-    await oldController?.pause();
-    await oldController?.dispose();
-
-    if (!mounted) return;
+    final epoch = ++_connectionEpoch;
+    await _disposeCurrentController();
+    if (!mounted || epoch != _connectionEpoch) return;
 
     setState(() {
       _isLoading = true;
@@ -211,51 +253,126 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     _controller = controller;
     controller.addListener(_onControllerUpdate);
 
-    final hasAlternatives = (_currentUrlIndex + 1 < _streamUrls.length);
-    final timeoutDuration = hasAlternatives ? const Duration(seconds: 7) : const Duration(seconds: 15);
+    // Timeout de inicialização adequado para arquivos grandes de VOD/Séries (25 segundos)
+    const timeoutDuration = Duration(seconds: 25);
 
     try {
       await controller.initialize().timeout(timeoutDuration);
 
-      if (!mounted || _controller != controller) return;
+      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
 
       _metrics.markConnectionEstablished();
       _metrics.markPlayerInitialized();
 
       if (initialPosition != null && initialPosition > Duration.zero) {
         if (initialPosition < controller.value.duration) {
+          _isSeekingToInitial = true;
           await controller.seekTo(initialPosition);
+          _isSeekingToInitial = false;
           debugPrint('[SERIES PLAYER] Retomando reprodução em ${PlaybackProgressService.formatDuration(initialPosition)}');
         }
       }
 
+      _startInitialBufferingWatchdog(epoch);
       await controller.play();
 
-      if (mounted) {
+      if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
           _isLoading = false;
           _errorMessage = null;
         });
       }
     } catch (e) {
-      if (!mounted || _controller != controller) return;
-
-      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
-      debugPrint('[SERIES PLAYER] Falha na URL ($_currentUrlIndex): $safeErr');
-      _metrics.markError(safeErr);
-
-      // Tentativa de contingência para próxima URL da lista
-      if (_currentUrlIndex + 1 < _streamUrls.length) {
-        _currentUrlIndex++;
-        debugPrint('[SERIES PLAYER] Tentando URL de contingência: $_currentUrlIndex');
-        await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
-      } else {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Não foi possível reproduzir o episódio. Verifique sua conexão ou tente novamente mais tarde.';
-        });
-      }
+      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+      await _handleConnectionError(e, epoch: epoch, initialPosition: initialPosition);
     }
+  }
+
+  Future<void> _handleConnectionError(
+    Object e, {
+    required int epoch,
+    Duration? initialPosition,
+  }) async {
+    final errLower = e.toString().toLowerCase();
+    final isTimeout = e is TimeoutException || errLower.contains('timeoutexception');
+
+    String userMessage;
+    bool isResourceNotFound = false;
+
+    if (isTimeout) {
+      userMessage = 'O servidor demorou muito para responder (tempo limite de 25s excedido). Verifique sua conexão ou tente novamente.';
+    } else if (errLower.contains('response code: 404') ||
+               errLower.contains('code: 404') ||
+               errLower.contains('404 not found')) {
+      userMessage = 'Episódio não encontrado no servidor remoto (HTTP 404).';
+      isResourceNotFound = true;
+    } else if (errLower.contains('response code: 401') ||
+               errLower.contains('response code: 403') ||
+               errLower.contains('code: 401') ||
+               errLower.contains('code: 403')) {
+      userMessage = 'Acesso não autorizado pelo servidor ou limite de conexões simultâneas atingido (HTTP 401/403).';
+    } else if (errLower.contains('response code: 5') ||
+               errLower.contains('code: 500') ||
+               errLower.contains('code: 502') ||
+               errLower.contains('code: 503')) {
+      userMessage = 'O servidor de transmissão apresentou instabilidade interna (HTTP 5xx). Tente novamente mais tarde.';
+    } else if (errLower.contains('decoderinitializationexception') ||
+               errLower.contains('mediacodec') ||
+               errLower.contains('unrecognizedinputformat') ||
+               errLower.contains('parserexception')) {
+      userMessage = 'Formato de vídeo ou áudio do episódio não suportado pelo decodificador deste aparelho.';
+      isResourceNotFound = true;
+    } else if (errLower.contains('unknownhostexception') ||
+               errLower.contains('connectexception') ||
+               errLower.contains('socketexception') ||
+               errLower.contains('network is unreachable') ||
+               errLower.contains('httpdatasourceexception')) {
+      userMessage = 'Falha de conexão com o servidor de streaming. Verifique sua conexão com a internet.';
+    } else {
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
+      userMessage = 'Não foi possível reproduzir o episódio. $safeErr';
+    }
+
+    _metrics.markError(userMessage);
+
+    // REGRA 3: Não tentar outra extensão ou rota apenas porque houve timeout.
+    // Tenta alternativa somente quando for falha comprovada de rota/recurso (ex: 404 ou formato não reconhecido)
+    // e houver URL alternativa válida na lista.
+    final canTryAlternative = isResourceNotFound && (_currentUrlIndex + 1 < _streamUrls.length);
+
+    if (canTryAlternative) {
+      _currentUrlIndex++;
+      debugPrint('[SERIES PLAYER] Tentando URL de contingência $_currentUrlIndex devido a erro de recurso.');
+      await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
+    } else {
+      setState(() {
+        _isLoading = false;
+        _isBuffering = false;
+        _errorMessage = userMessage;
+      });
+    }
+  }
+
+  void _startInitialBufferingWatchdog(int epoch) {
+    _initialBufferingWatchdog?.cancel();
+    _initialBufferingWatchdog = Timer(const Duration(seconds: 25), () {
+      if (!mounted || epoch != _connectionEpoch) return;
+      final c = _controller;
+      if (c != null &&
+          !_metrics.hasFirstFrame &&
+          (_isLoading || _isBuffering || (c.value.position <= Duration.zero && !c.value.isPlaying))) {
+        debugPrint('[SERIES PLAYER WATCHDOG] Tempo limite de buffer inicial excedido (25s sem reprodução).');
+        _initialBufferingWatchdog?.cancel();
+        _disposeCurrentController();
+        if (mounted && epoch == _connectionEpoch) {
+          setState(() {
+            _isLoading = false;
+            _isBuffering = false;
+            _errorMessage = 'O fluxo de vídeo não iniciou a reprodução a tempo (tempo limite de buffer excedido). Tente novamente.';
+          });
+        }
+      }
+    });
   }
 
   void _onControllerUpdate() {
@@ -265,6 +382,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     // Se houver erro, cancela qualquer contagem regressiva e interrompe avanço automático
     if (c.value.hasError) {
       _cancelCountdown();
+      _initialBufferingWatchdog?.cancel();
       final err = UrlSanitizer.sanitizeErrorMessage(c.value.errorDescription ?? 'Erro de mídia');
       _metrics.markError(err);
       if (_errorMessage == null) {
@@ -277,8 +395,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       return;
     }
 
-    if (c.value.isPlaying || c.value.position > Duration.zero) {
+    if (c.value.isPlaying && c.value.position > Duration.zero) {
       _metrics.markFirstFrame();
+      _initialBufferingWatchdog?.cancel();
     }
 
     final isBuff = c.value.isBuffering;
@@ -387,6 +506,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       milliseconds: newPos.inMilliseconds.clamp(0, c.value.duration.inMilliseconds),
     );
     c.seekTo(clamped);
+    _saveCurrentProgress();
   }
 
   void _seekFraction(double fraction) {
@@ -396,6 +516,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     _cancelCountdown();
     final targetMs = (fraction * c.value.duration.inMilliseconds).round();
     c.seekTo(Duration(milliseconds: targetMs));
+    _saveCurrentProgress();
   }
 
   String get _displayTitle {
@@ -414,9 +535,10 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      onPopInvokedWithResult: (didPop, _) {
-        _saveCurrentProgress();
-        DeviceUtils.restoreOrientation();
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await _handleExit();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -436,10 +558,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
             onTogglePlayPause: _togglePlayPause,
             onSeekRelative: _seekRelative,
             onSeekFraction: _seekFraction,
-            onBack: () {
-              DeviceUtils.restoreOrientation();
-              Navigator.of(context).pop();
-            },
+            onBack: _handleExit,
             onNextEpisode: _nextEpisode != null ? _playNextEpisode : null,
             nextEpisodeTitle: _nextEpisodeDisplayTitle,
             nextEpisodeCountdown: _countdownSeconds,

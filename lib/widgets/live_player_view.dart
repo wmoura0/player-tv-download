@@ -138,9 +138,20 @@ class LivePlayerViewState extends State<LivePlayerView> {
 
   void _onControllerStateChanged() {
     if (!mounted) return;
-    final isPlaying = widget.controller?.value.isPlaying ?? false;
-    if (isPlaying) {
+    final val = widget.controller?.value;
+    if (val == null) return;
+
+    if (val.isPlaying) {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    }
+
+    final isBuff = val.isBuffering || widget.isBuffering;
+    if (isBuff) {
+      if (!_showBufferingIndicator && _bufferingDebounceTimer == null) {
+        _startBufferingDebounce();
+      }
+    } else {
+      _cancelBufferingDebounce();
     }
   }
 

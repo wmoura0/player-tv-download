@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,7 +40,7 @@ void main() {
 
       expect(find.byType(TextField), findsOneWidget);
       expect(find.text('Buscar canais, filmes ou séries...'), findsOneWidget);
-      expect(find.text('Pesquisa Global no Player TV'), findsOneWidget);
+      expect(find.text('Pesquisa Global no JessFlix'), findsOneWidget);
       expect(
         find.text(
           'Digite o que deseja assistir para pesquisar simultaneamente em canais de TV ao vivo, filmes e séries.',
@@ -130,7 +130,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       // Campo foi limpo e voltou ao estado inicial
-      expect(find.text('Pesquisa Global no Player TV'), findsOneWidget);
+      expect(find.text('Pesquisa Global no JessFlix'), findsOneWidget);
     });
 
     testWidgets('Exibe mensagem amigável quando nenhum item coincide com a busca', (tester) async {

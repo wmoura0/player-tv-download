@@ -79,14 +79,59 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   bool _isBackDebounced = false;
   Timer? _backDebounceTimer;
 
+  // Estado explícito de intenção de reprodução vs. busca de posição
+  bool _isUserPaused = false;
+  bool _isRelativeSeeking = false;
+  Timer? _relativeSeekResetTimer;
+
   @override
   void initState() {
     super.initState();
+    final c = widget.controller;
+    _isUserPaused = c != null && c.value.isInitialized && !c.value.isPlaying;
+    _attachController(widget.controller);
     _startControlsTimer();
   }
 
   @override
+  void didUpdateWidget(covariant VodPlayerView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.controller != oldWidget.controller) {
+      _detachController(oldWidget.controller);
+      _attachController(widget.controller);
+      if (widget.controller?.value.isPlaying ?? false) {
+        _isUserPaused = false;
+      }
+    }
+  }
+
+  void _attachController(VideoPlayerController? c) {
+    c?.addListener(_onControllerStateChanged);
+  }
+
+  void _detachController(VideoPlayerController? c) {
+    c?.removeListener(_onControllerStateChanged);
+  }
+
+  void _onControllerStateChanged() {
+    if (!mounted) return;
+    final val = widget.controller?.value;
+    if (val != null) {
+      if (val.isPlaying) {
+        if (_isUserPaused || _isRelativeSeeking) {
+          setState(() {
+            _isUserPaused = false;
+            _isRelativeSeeking = false;
+          });
+        }
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    _detachController(widget.controller);
+    _relativeSeekResetTimer?.cancel();
     _controlsTimer?.cancel();
     _initialHoldTimer?.cancel();
     _continuousSeekTicker?.cancel();
@@ -94,6 +139,31 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _backDebounceTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _triggerSeekRelative(int seconds) {
+    _isRelativeSeeking = true;
+    _relativeSeekResetTimer?.cancel();
+    _relativeSeekResetTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) {
+        setState(() => _isRelativeSeeking = false);
+      }
+    });
+    widget.onSeekRelative?.call(seconds);
+    _startControlsTimer();
+    setState(() {});
+  }
+
+  void _handleTogglePlayPause() {
+    final c = widget.controller;
+    if (c != null && c.value.isInitialized) {
+      _isUserPaused = c.value.isPlaying;
+    } else {
+      _isUserPaused = !_isUserPaused;
+    }
+    widget.onTogglePlayPause();
+    setState(() => _showControls = true);
+    _startControlsTimer();
   }
 
   void _startControlsTimer() {
@@ -142,8 +212,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         } else if (_initialHoldTimer != null) {
           _cancelHoldTimer();
           final isForward = key == LogicalKeyboardKey.arrowRight;
-          widget.onSeekRelative?.call(isForward ? 10 : -10);
-          _startControlsTimer();
+          _triggerSeekRelative(isForward ? 10 : -10);
           return KeyEventResult.handled;
         }
       }
@@ -155,9 +224,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         key == LogicalKeyboardKey.mediaPlay ||
         key == LogicalKeyboardKey.mediaPause) {
       if (event is KeyDownEvent) {
-        widget.onTogglePlayPause();
-        setState(() => _showControls = true);
-        _startControlsTimer();
+        _handleTogglePlayPause();
       }
       return KeyEventResult.handled;
     }
@@ -174,8 +241,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           _startControlsTimer();
         } else {
           // Controles já estão visíveis: alterna play/pause normalmente
-          widget.onTogglePlayPause();
-          _startControlsTimer();
+          _handleTogglePlayPause();
         }
       }
       return KeyEventResult.handled;
@@ -735,10 +801,14 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   }
 
   Widget _buildCenterControls(bool isPlaying) {
+    final isSeekingActive = _isRelativeSeeking || _isContinuousSeeking || _isDraggingSlider;
+    final showPausedPill = _isUserPaused && !isPlaying && !isSeekingActive && !widget.isLoading && !widget.isBuffering;
+    final showPauseIcon = (isPlaying || isSeekingActive) && !_isUserPaused;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (!isPlaying)
+        if (showPausedPill)
           Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -808,14 +878,11 @@ class _VodPlayerViewState extends State<VodPlayerView> {
               tooltip: 'Retroceder 10s',
               iconSize: 42,
               icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
-              onPressed: () {
-                widget.onSeekRelative?.call(-10);
-                _startControlsTimer();
-              },
+              onPressed: () => _triggerSeekRelative(-10),
             ),
             const SizedBox(width: 20),
             IconButton(
-              tooltip: isPlaying ? 'Pausar' : 'Reproduzir',
+              tooltip: showPauseIcon ? 'Pausar' : 'Reproduzir',
               iconSize: 64,
               icon: Container(
                 padding: const EdgeInsets.all(8),
@@ -825,25 +892,18 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                   border: Border.all(color: const Color(0xFFE50914), width: 1.5),
                 ),
                 child: Icon(
-                  isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  showPauseIcon ? Icons.pause_rounded : Icons.play_arrow_rounded,
                   color: const Color(0xFFE50914),
                 ),
               ),
-              onPressed: () {
-                widget.onTogglePlayPause();
-                setState(() => _showControls = true);
-                _startControlsTimer();
-              },
+              onPressed: _handleTogglePlayPause,
             ),
             const SizedBox(width: 20),
             IconButton(
               tooltip: 'Avançar 10s',
               iconSize: 42,
               icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
-              onPressed: () {
-                widget.onSeekRelative?.call(10);
-                _startControlsTimer();
-              },
+              onPressed: () => _triggerSeekRelative(10),
             ),
             if (widget.onNextEpisode != null) ...[
               const SizedBox(width: 20),

@@ -6,6 +6,7 @@ import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
+import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
 import 'series_player_screen.dart';
 
@@ -736,16 +737,16 @@ class _BackButtonPillState extends State<_BackButtonPill> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF182A3D) : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+            color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
-              width: _isFocused ? 2.0 : 1.2,
+              color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+              width: _isFocused ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      color: AppColors.focusCyan.withValues(alpha: 0.5),
                       blurRadius: 10,
                       spreadRadius: 1,
                     )
@@ -758,13 +759,13 @@ class _BackButtonPillState extends State<_BackButtonPill> {
               Icon(
                 Icons.arrow_back_rounded,
                 size: 16,
-                color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
               ),
               const SizedBox(width: 6),
               Text(
                 'Voltar',
                 style: TextStyle(
-                  color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                  color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
                 ),
@@ -777,7 +778,7 @@ class _BackButtonPillState extends State<_BackButtonPill> {
   }
 }
 
-/// Botão Principal Silo com destaque intenso no foco do controle remoto (fundo branco/menta, contorno ciano luminoso e texto ciano escuro)
+/// Botão Principal Silo com destaque intenso no foco do controle remoto
 class _SiloPrimaryButton extends StatefulWidget {
   final String label;
   final VoidCallback onTap;
@@ -815,16 +816,16 @@ class _SiloPrimaryButtonState extends State<_SiloPrimaryButton> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFFE8FDF8) : const Color(0xFF0C2434),
+            color: AppColors.primary,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
-              width: _isFocused ? 2.5 : 1.5,
+              color: _isFocused ? AppColors.focusCyan : AppColors.primary,
+              width: _isFocused ? AppColors.focusBorderWidth : 1.5,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                      color: AppColors.focusCyan.withValues(alpha: 0.6),
                       blurRadius: 18,
                       spreadRadius: 2,
                     ),
@@ -834,10 +835,10 @@ class _SiloPrimaryButtonState extends State<_SiloPrimaryButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
+              const Icon(
                 Icons.play_arrow_rounded,
                 size: 26,
-                color: _isFocused ? const Color(0xFF00838F) : const Color(0xFF00E5FF),
+                color: Colors.white,
               ),
               const SizedBox(width: 8),
               Flexible(
@@ -845,8 +846,8 @@ class _SiloPrimaryButtonState extends State<_SiloPrimaryButton> {
                   widget.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: _isFocused ? const Color(0xFF004D40) : const Color(0xFFF0F4F8),
+                  style: const TextStyle(
+                    color: Colors.white,
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.5,
@@ -897,19 +898,19 @@ class _SiloFavoriteButtonState extends State<_SiloFavoriteButton> {
           padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
           decoration: BoxDecoration(
             color: _isFocused
-                ? const Color(0xFF16283C)
-                : const Color(0xFF0E1A27).withValues(alpha: 0.85),
+                ? AppColors.surfaceSecondary
+                : AppColors.surfaceSecondary.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _isFocused
-                  ? const Color(0xFF00E5FF)
-                  : (widget.isFavorite ? const Color(0xFFEF5350).withValues(alpha: 0.6) : const Color(0xFF22354A)),
-              width: _isFocused ? 2.2 : 1.2,
+                  ? AppColors.focusCyan
+                  : (widget.isFavorite ? AppColors.error.withValues(alpha: 0.6) : AppColors.borderSubtle),
+              width: _isFocused ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.45),
+                      color: AppColors.focusCyan.withValues(alpha: 0.45),
                       blurRadius: 14,
                       spreadRadius: 1,
                     ),
@@ -922,13 +923,13 @@ class _SiloFavoriteButtonState extends State<_SiloFavoriteButton> {
               Icon(
                 widget.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
                 size: 20,
-                color: widget.isFavorite ? const Color(0xFFEF5350) : const Color(0xFFF0F4F8),
+                color: widget.isFavorite ? AppColors.error : AppColors.textPrimary,
               ),
               const SizedBox(width: 8),
               Text(
                 widget.isFavorite ? 'REMOVER DOS FAVORITOS' : 'ADICIONAR AOS FAVORITOS',
                 style: const TextStyle(
-                  color: Color(0xFFF0F4F8),
+                  color: AppColors.textPrimary,
                   fontSize: 13.5,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 0.4,
@@ -980,19 +981,19 @@ class _SeasonChipState extends State<_SeasonChip> {
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
           decoration: BoxDecoration(
             color: widget.isSelected
-                ? const Color(0xFF00E5FF).withValues(alpha: 0.22)
-                : (_isFocused ? const Color(0xFF162538) : const Color(0xFF0F1A28)),
+                ? AppColors.primary.withValues(alpha: 0.22)
+                : (_isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.6)),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _isFocused
-                  ? const Color(0xFF00E5FF)
-                  : (widget.isSelected ? const Color(0xFF00E5FF) : const Color(0xFF233549)),
-              width: _isFocused || widget.isSelected ? 2.0 : 1.2,
+                  ? AppColors.focusCyan
+                  : (widget.isSelected ? AppColors.primary : AppColors.borderSubtle),
+              width: _isFocused || widget.isSelected ? AppColors.focusBorderWidth : 1.2,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                      color: AppColors.focusCyan.withValues(alpha: 0.5),
                       blurRadius: 10,
                       spreadRadius: 1,
                     )
@@ -1002,7 +1003,7 @@ class _SeasonChipState extends State<_SeasonChip> {
           child: Text(
             widget.season.name,
             style: TextStyle(
-              color: widget.isSelected || _isFocused ? Colors.white : const Color(0xFFB0BEC5),
+              color: widget.isSelected ? AppColors.primary : (_isFocused ? AppColors.focusCyan : AppColors.textSecondary),
               fontWeight: widget.isSelected || _isFocused ? FontWeight.bold : FontWeight.w500,
               fontSize: 13.5,
             ),
@@ -1057,18 +1058,18 @@ class _EpisodeTileState extends State<_EpisodeTile> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: _isFocused ? const Color(0xFF142436) : const Color(0xFF0C1622).withValues(alpha: 0.85),
+            color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: _isFocused
-                  ? const Color(0xFF00E5FF)
-                  : (hasProgress ? const Color(0xFF00A0B0) : const Color(0xFF1B2C3F)),
-              width: _isFocused ? 2.0 : 1.0,
+                  ? AppColors.focusCyan
+                  : (hasProgress ? AppColors.primary.withValues(alpha: 0.6) : AppColors.borderSubtle),
+              width: _isFocused ? AppColors.focusBorderWidth : 1.0,
             ),
             boxShadow: _isFocused
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
+                      color: AppColors.focusCyan.withValues(alpha: 0.4),
                       blurRadius: 10,
                       spreadRadius: 1,
                     ),
@@ -1087,18 +1088,18 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: _isFocused
-                          ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                          : const Color(0xFF162538),
+                          ? AppColors.focusCyan.withValues(alpha: 0.2)
+                          : AppColors.surfaceSecondary,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF26394F),
+                        color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
                         width: 1.2,
                       ),
                     ),
                     child: Text(
                       'E${ep.episodeNum}',
                       style: TextStyle(
-                        color: _isFocused ? Colors.white : const Color(0xFF00E5FF),
+                        color: _isFocused ? AppColors.focusCyan : AppColors.primary,
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
                       ),
@@ -1116,7 +1117,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFFF0F4F8),
+                            color: _isFocused ? AppColors.focusCyan : AppColors.textPrimary,
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
                           ),
@@ -1127,7 +1128,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                             if (ep.duration != null && ep.duration!.isNotEmpty) ...[
                               Text(
                                 ep.duration!,
-                                style: const TextStyle(color: Color(0xFF8A99AD), fontSize: 12),
+                                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
                               ),
                               const SizedBox(width: 8),
                             ],
@@ -1135,7 +1136,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                               Text(
                                 '•  ${PlaybackProgressService.formatDuration(prog.position)} assistido',
                                 style: const TextStyle(
-                                  color: Color(0xFF00E5FF),
+                                  color: AppColors.primary,
                                   fontSize: 11.5,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -1150,7 +1151,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                   // Ícone de Play
                   Icon(
                     Icons.play_circle_fill_rounded,
-                    color: _isFocused ? const Color(0xFF00E5FF) : const Color(0xFF00A0B0),
+                    color: _isFocused ? AppColors.focusCyan : AppColors.primary,
                     size: 32,
                   ),
                 ],
@@ -1165,7 +1166,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                     value: progressFraction,
                     minHeight: 3,
                     backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                    valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
                   ),
                 ),
               ],

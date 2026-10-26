@@ -51,9 +51,14 @@ class XtreamSeriesEpisode {
     final rawTitle = json['title']?.toString() ?? info['title']?.toString() ?? json['name']?.toString() ?? 'Episódio $episodeNum';
     final title = rawTitle.trim().isNotEmpty ? rawTitle.trim() : 'Episódio $episodeNum';
 
-    final rawExt = json['container_extension']?.toString() ?? info['container_extension']?.toString();
+    final rawExt = json['container_extension']?.toString() ??
+        info['container_extension']?.toString() ??
+        json['extension']?.toString() ??
+        info['extension']?.toString() ??
+        json['video_type']?.toString() ??
+        info['video_type']?.toString();
     final containerExtension = (rawExt != null && rawExt.trim().isNotEmpty)
-        ? rawExt.trim().toLowerCase().replaceAll('.', '')
+        ? rawExt.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
         : null;
 
     final rawPlot = info['plot']?.toString() ?? json['plot']?.toString() ?? info['overview']?.toString();
