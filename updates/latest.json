@@ -1,11 +1,11 @@
 {
-  "version": "1.2.1",
-  "versionCode": 4,
+  "version": "1.2.2",
+  "versionCode": 5,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.1/JessFlix-v1.2.1.apk",
-  "fileSize": 57218778,
-  "sha256": "7edfd288aeca8f1564a468b4dadc00ac3cf49ae8ad2a39fc2479a4de481d4bc5",
-  "releaseNotes": "• Logo perfeitamente circular e ícones adaptativos para Android (elimina fundo quadrado).\n• Transparência real nas bordas e cantos do monograma JF.\n• Abertura (SplashScreen) e cabeçalhos com o monograma circular oficial.\n• Atualizador OTA integrado e funcional diretamente pelo aplicativo.",
-  "publishedAt": "2026-10-26T22:13:38.287Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.2/JessFlix-v1.2.2.apk",
+  "fileSize": 57251578,
+  "sha256": "e0dceb477aeb4d36a5cddb7a7065b646cc29cd516352ca4f0c1b3460a4092e84",
+  "releaseNotes": "• Correção da retomada de reprodução de filmes e episódios de séries (elimina travamento ao continuar assistindo).\n• Ordem estável de reprodução no decodificador antes de buscar posições remotas.\n• Proteção contra perda acidental de progresso ao fechar o player durante o buffer inicial.\n• Transição sequencial aperfeiçoada entre episódios.",
+  "publishedAt": "2026-10-30T15:35:00.000Z",
   "mandatory": false
 }

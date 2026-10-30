@@ -1,13 +1,9 @@
-import 'dart:convert';
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/models/xtream_series_info.dart';
 import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
-import 'package:projeto_tv/screens/vod_player_screen.dart';
-import 'package:projeto_tv/screens/series_player_screen.dart';
 
 void main() {
   setUp(() {
