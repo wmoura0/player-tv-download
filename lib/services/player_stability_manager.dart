@@ -73,6 +73,8 @@ class PlayerStabilityManager {
     _isUserPaused = paused;
   }
 
+  bool _hasAttemptedJitterSoftPlay = false;
+
   /// Inicia monitoramento de timeout na abertura do stream
   void startOpenWatchdog(VoidCallback onTimeoutAction) {
     _openTimeoutTimer?.cancel();
@@ -152,10 +154,13 @@ class PlayerStabilityManager {
         _notPlayingStartTime ??= now;
         final uninterruptedNonPlaying = now.difference(_notPlayingStartTime!);
 
-        // Para fluxos que não sejam MPEG-TS, tenta manter pipeline nativo ativo via soft play.
-        // Em fluxos MPEG-TS confirmados, chamar controller.play() quando estagnado provoca flush
-        // e replay de buffers obsoletos da SampleQueue com salto retroativo de PTS.
-        if (!isMpegTsStream) {
+        // Para fluxos que não sejam MPEG-TS, tenta manter pipeline nativo ativo via soft play
+        // somente uma vez após tolerância inicial de micro-jitter (1.5s).
+        // Disparar controller.play() repetitivamente a cada ciclo forçava o ExoPlayer a sair
+        // prematuramente do estado de re-buffering antes de recompor a SampleQueue, gerando
+        // micro-travamentos recorrentes de alguns segundos.
+        if (!isMpegTsStream && !_hasAttemptedJitterSoftPlay && uninterruptedNonPlaying >= const Duration(milliseconds: 1500)) {
+          _hasAttemptedJitterSoftPlay = true;
           controller.play().catchError((_) {});
         }
 
@@ -166,11 +171,13 @@ class PlayerStabilityManager {
           );
           metrics?.markInterruption('Conexão estagnada por mais de ${maxStallDuration.inSeconds}s');
           _notPlayingStartTime = null;
+          _hasAttemptedJitterSoftPlay = false;
           _handleStall('Conexão com a transmissão ao vivo encerrada', controller);
           return;
         }
       } else {
         _notPlayingStartTime = null;
+        _hasAttemptedJitterSoftPlay = false;
       }
 
       // 4. Detecção de congelamento de frames / estagnação de posição
@@ -390,6 +397,7 @@ class PlayerStabilityManager {
     _isReconnecting = false;
     _lastRetryReason = null;
     _notPlayingStartTime = null;
+    _hasAttemptedJitterSoftPlay = false;
     _playbackStabilizedStartTime = null;
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -400,6 +408,7 @@ class PlayerStabilityManager {
     _isDisposed = true;
     _isReconnecting = false;
     _notPlayingStartTime = null;
+    _hasAttemptedJitterSoftPlay = false;
     _playbackStabilizedStartTime = null;
     _openTimeoutTimer?.cancel();
     _stallCheckTimer?.cancel();

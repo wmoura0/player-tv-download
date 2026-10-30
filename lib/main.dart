@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/xtream_account.dart';
@@ -15,6 +15,7 @@ import 'screens/xtream_catalog_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/xtream_login_screen.dart';
 import 'services/hidden_categories_service.dart';
+import 'services/ota_update_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
@@ -106,6 +107,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadHomeData();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        OtaUpdateService.instance.checkSilentlyOnStartup(context);
+      }
+    });
   }
 
   @override

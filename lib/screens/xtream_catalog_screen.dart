@@ -37,6 +37,83 @@ class XtreamCatalogScreen extends StatefulWidget {
     this.initialLiveStream,
   });
 
+  /// Identifica com precisão se o nome da categoria refere-se a conteúdo adulto (+18/XXX).
+  static bool isAdultCategory(String name) {
+    final lower = name.toLowerCase().trim();
+    const adultKeywords = [
+      'adulto',
+      'adultos',
+      'xxx',
+      '18+',
+      '+18',
+      'erotico',
+      'erótico',
+      'porn',
+      'porno',
+      'pornô',
+      'playboy',
+      'sexy',
+      'venus',
+      'privé',
+      'prive',
+      'sensual',
+      'hardcore',
+      'hentai',
+    ];
+    for (final kw in adultKeywords) {
+      if (lower == kw || lower.contains(kw)) {
+        return true;
+      }
+    }
+    final sexMatch = RegExp(r'\bsex(o)?\b', caseSensitive: false);
+    if (sexMatch.hasMatch(lower)) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Seleciona a categoria inicial para Filmes (VOD):
+  /// 1. Prioriza categorias de lançamentos/recentes/novidades reais do servidor.
+  /// 2. Se não houver categoria explícita de lançamentos, seleciona a primeira categoria segura.
+  /// 3. NUNCA seleciona 'all' (Todas) por padrão para não expor acidentalmente conteúdos variados/adultos.
+  /// 4. NUNCA seleciona categoria adulta.
+  static String determineInitialVodCategory(List<XtreamCategory> categories) {
+    final safeCats = categories.where((c) => !isAdultCategory(c.name)).toList();
+    if (safeCats.isEmpty) return 'favorites';
+
+    const releaseKeywords = [
+      'lançamento',
+      'lancamento',
+      'lançamentos',
+      'lancamentos',
+      'recém',
+      'recem',
+      'recém-adicionados',
+      'recem-adicionados',
+      'novidade',
+      'novidades',
+      'novos',
+      'cinema',
+      'destaque',
+      'destaques',
+      'premiere',
+      'estreia',
+      'estréia',
+      '2026',
+      '2025',
+    ];
+
+    for (final kw in releaseKeywords) {
+      for (final cat in safeCats) {
+        if (cat.name.toLowerCase().contains(kw)) {
+          return cat.id;
+        }
+      }
+    }
+
+    return safeCats.first.id;
+  }
+
   @override
   State<XtreamCatalogScreen> createState() => _XtreamCatalogScreenState();
 }
@@ -307,14 +384,25 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           break;
       }
 
-      // Adiciona categoria de Todas no início, seguida por Favoritos e as categorias do servidor
+      // Organização de categorias:
+      // - Categorias seguras no topo.
+      // - Categorias adultas protegidas e realocadas ao final da lista.
+      final safeServerCats = cats.where((c) => !XtreamCatalogScreen.isAdultCategory(c.name)).toList();
+      final adultServerCats = cats.where((c) => XtreamCatalogScreen.isAdultCategory(c.name)).toList();
+
       final list = <XtreamCategory>[
         const XtreamCategory(id: 'all', name: 'Todas'),
         const XtreamCategory(id: 'favorites', name: 'Favoritos'),
-        ...cats,
+        ...safeServerCats,
+        ...adultServerCats,
       ];
 
-      const initialId = 'all';
+      final String initialId;
+      if (_currentType == XtreamCatalogType.movies) {
+        initialId = XtreamCatalogScreen.determineInitialVodCategory(safeServerCats);
+      } else {
+        initialId = 'all';
+      }
 
       if (mounted) {
         setState(() {
@@ -420,6 +508,23 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
       if (mounted) {
         sw.stop();
+        // Em Filmes, quando o usuário seleciona 'all' (Todas) manualmente,
+        // filtra títulos de categorias adultas para proteção consistente contra exposição
+        if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
+          final adultCategoryIds = _categories
+              .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
+              .map((c) => c.id)
+              .toSet();
+          if (adultCategoryIds.isNotEmpty) {
+            items = items.where((it) {
+              if (it is XtreamVodStream) {
+                return !adultCategoryIds.contains(it.categoryId);
+              }
+              return true;
+            }).toList();
+          }
+        }
+
         debugPrint(
           '[PERF] [UI RENDER] Categoria "$categoryId" exibida com ${items.length} itens em ${sw.elapsedMilliseconds}ms',
         );
@@ -440,14 +545,12 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   List<XtreamCategory> get _visibleCategories {
     List<XtreamCategory> list = _categories;
-    if (_currentType == XtreamCatalogType.live) {
-      final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
-      if (hidden.isNotEmpty) {
-        list = _categories.where((cat) {
-          if (cat.id == 'all' || cat.id == 'favorites') return true;
-          return !hidden.contains(cat.id) && !hidden.contains(cat.name.trim());
-        }).toList();
-      }
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+    if (hidden.isNotEmpty) {
+      list = _categories.where((cat) {
+        if (cat.id == 'all' || cat.id == 'favorites') return true;
+        return !hidden.contains(cat.id) && !hidden.contains(cat.name.trim());
+      }).toList();
     }
 
     return list.map((cat) {
@@ -660,11 +763,15 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         catalogService: _service!,
       );
       if (!mounted || _activeLiveStream?.streamId != streamId) return;
-      setState(() {
-        _activeSchedule = schedule;
-        _currentProgram = schedule?.currentProgram?.title;
-        _nextProgram = schedule?.nextProgram?.title;
-      });
+      final newCurrent = schedule?.currentProgram?.title;
+      final newNext = schedule?.nextProgram?.title;
+      if (_currentProgram != newCurrent || _nextProgram != newNext || _activeSchedule != schedule) {
+        setState(() {
+          _activeSchedule = schedule;
+          _currentProgram = newCurrent;
+          _nextProgram = newNext;
+        });
+      }
     } catch (_) {}
   }
 

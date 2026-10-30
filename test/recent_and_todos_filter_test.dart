@@ -122,7 +122,7 @@ void main() {
   });
 
   group('Filtro TODOS no XtreamCatalogScreen', () {
-    testWidgets('Filmes exibe TODOS como primeiro chip e seleção padrão', (tester) async {
+    testWidgets('Filmes seleciona automaticamente categoria segura na abertura e permite navegar para Todas', (tester) async {
       final mockClient = MockClient((request) async {
         final action = request.url.queryParameters['action'];
         if (action == 'get_vod_categories') {
@@ -174,23 +174,25 @@ void main() {
       expect(find.text('Ação'), findsOneWidget);
       expect(find.text('Comédia'), findsOneWidget);
 
-      // No modo Todas, ambos os filmes devem estar visíveis
+      // Na abertura de Filmes, seleciona categoria segura ('Ação'), NÃO abrindo em Todas
       expect(find.text('Duro de Matar'), findsOneWidget);
-      expect(find.text('Se Beber Não Case'), findsOneWidget);
+      expect(find.text('Se Beber Não Case'), findsNothing);
 
-      // Ao filtrar por 'Ação', apenas 'Duro de Matar' deve permanecer
-      await tester.tap(find.text('Ação'));
+      // Ao filtrar por 'Comédia', apenas 'Se Beber Não Case' deve permanecer
+      await tester.tap(find.text('Comédia'));
+      await tester.pump();
       while (find.byType(CircularProgressIndicator).evaluate().isNotEmpty) {
         await tester.runAsync(() async => await Future.delayed(const Duration(milliseconds: 50)));
         await tester.pump();
       }
       await tester.pump();
 
-      expect(find.text('Duro de Matar'), findsOneWidget);
-      expect(find.text('Se Beber Não Case'), findsNothing);
+      expect(find.text('Duro de Matar'), findsNothing);
+      expect(find.text('Se Beber Não Case'), findsOneWidget);
 
       // Ao voltar para 'Todas', ambos os filmes retornam
       await tester.tap(find.text('Todas'));
+      await tester.pump();
       while (find.byType(CircularProgressIndicator).evaluate().isNotEmpty) {
         await tester.runAsync(() async => await Future.delayed(const Duration(milliseconds: 50)));
         await tester.pump();

@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import '../models/update_manifest.dart';
 import '../models/xtream_account.dart';
 import '../services/ota_update_service.dart';
@@ -9,6 +9,7 @@ import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
+import '../widgets/ota_update_dialog.dart';
 import 'hidden_categories_screen.dart';
 import 'playlists_screen.dart';
 import 'xtream_login_screen.dart';
@@ -72,6 +73,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     if (result.hasUpdate) {
       _showSnackbar('Nova versão ${result.manifest?.version} disponível para atualização!');
+      if (result.manifest != null) {
+        OtaUpdateDialog.show(context, result.manifest!);
+      }
     } else if (result.isUpToDate) {
       _showSnackbar('O aplicativo já está na versão mais recente publicada.');
     } else if (result.isChannelNotPublished) {

@@ -1,13 +1,14 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/update_manifest.dart';
 import '../utils/device_utils.dart';
+import '../widgets/ota_update_dialog.dart';
 
 enum UpdateStatus {
   idle,
@@ -85,6 +86,8 @@ class OtaUpdateService extends ChangeNotifier {
   static const String _defaultManifestUrl =
       'https://raw.githubusercontent.com/wmoura0/player-tv-download/main/updates/latest.json';
   static const String _prefManifestUrlKey = 'ota_manifest_url';
+  static const String _prefLastCheckTimeKey = 'ota_last_check_timestamp';
+  static const Duration _minCheckInterval = Duration(hours: 2);
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
   // Versão instalada corrente (1.0.2+3)
@@ -94,6 +97,8 @@ class OtaUpdateService extends ChangeNotifier {
   final http.Client _client;
   http.Client? _activeDownloadClient;
   bool _isCancelled = false;
+  bool _isDialogShowing = false;
+  bool get isDialogShowing => _isDialogShowing;
 
   UpdateStatus _status = UpdateStatus.idle;
   UpdateStatus get status => _status;
@@ -144,6 +149,40 @@ class OtaUpdateService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Executa verificação de atualização em segundo plano na inicialização do app.
+  /// Não bloqueia a interface inicial e respeita intervalo seguro (2 horas)
+  /// para evitar requisições excessivas e notificações duplicadas.
+  Future<UpdateCheckResult?> checkSilentlyOnStartup(
+    BuildContext context, {
+    bool force = false,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastCheckMs = prefs.getInt(_prefLastCheckTimeKey) ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      if (!force && (now - lastCheckMs) < _minCheckInterval.inMilliseconds) {
+        debugPrint('[OTA] Verificação silenciosa ignorada: última checagem recente.');
+        return null;
+      }
+
+      final result = await checkForUpdates();
+      await prefs.setInt(_prefLastCheckTimeKey, now);
+
+      if (result.hasUpdate && result.manifest != null && context.mounted) {
+        if (!_isDialogShowing) {
+          _isDialogShowing = true;
+          await OtaUpdateDialog.show(context, result.manifest!);
+          _isDialogShowing = false;
+        }
+      }
+      return result;
+    } catch (e) {
+      debugPrint('[OTA] Falha na verificação silenciosa na inicialização: $e');
+      return null;
+    }
+  }
+
   /// Consulta o manifesto de atualização remoto e compara com a versão atual.
   Future<UpdateCheckResult> checkForUpdates({String? customUrl}) async {
     _status = UpdateStatus.checking;
@@ -153,18 +192,25 @@ class OtaUpdateService extends ChangeNotifier {
     final manifestUrl = customUrl ?? await getManifestUrl();
 
     try {
-      final uri = Uri.tryParse(manifestUrl.trim());
-      if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      final baseUri = Uri.tryParse(manifestUrl.trim());
+      if (baseUri == null || baseUri.scheme.toLowerCase() != 'https') {
         throw const FormatException('A URL do manifesto deve utilizar protocolo seguro HTTPS.');
       }
+
+      // Adiciona parâmetro timestamp para evitar cache no CDN Fastly do raw.githubusercontent.com
+      final queryParams = Map<String, String>.from(baseUri.queryParameters);
+      queryParams['_t'] = DateTime.now().millisecondsSinceEpoch.toString();
+      final uri = baseUri.replace(queryParameters: queryParams);
 
       final response = await _client.get(
         uri,
         headers: {
           'Accept': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
           'User-Agent': 'PlayerTV-Updater/$currentVersionName ($currentVersionCode)',
         },
-      ).timeout(const Duration(seconds: 12));
+      ).timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 404) {
         const msg = 'Canal de atualização ainda não publicado ou configurado no servidor remoto.';

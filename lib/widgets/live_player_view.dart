@@ -113,17 +113,19 @@ class LivePlayerViewState extends State<LivePlayerView> {
   }
 
   late LiveVideoFitMode _currentFitMode;
+  bool _wasPlaying = false;
 
   @override
   void initState() {
     super.initState();
     _currentFitMode = widget.fitMode;
+    _wasPlaying = widget.controller?.value.isPlaying ?? false;
     _startControlsTimer();
     if (widget.isBuffering) {
       _startBufferingDebounce();
     }
     _attachControllerListener(widget.controller);
-    if (widget.controller?.value.isPlaying ?? false) {
+    if (_wasPlaying) {
       DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
     }
   }
@@ -141,8 +143,11 @@ class LivePlayerViewState extends State<LivePlayerView> {
     final val = widget.controller?.value;
     if (val == null) return;
 
-    if (val.isPlaying) {
-      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+    if (val.isPlaying != _wasPlaying) {
+      _wasPlaying = val.isPlaying;
+      if (val.isPlaying) {
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      }
     }
 
     final isBuff = val.isBuffering || widget.isBuffering;
