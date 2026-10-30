@@ -47,6 +47,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
   Timer? _initialBufferingWatchdog;
   int _connectionEpoch = 0;
 
+  Duration? _resumptionTarget;
+  bool _seekAttempted = false;
+
   Timer? _progressSaveTimer;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
 
@@ -55,6 +58,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     super.initState();
     DeviceUtils.setVideoOrientation();
     DeviceUtils.setKeepScreenOn(true);
+
+    _resumptionTarget = widget.initialPosition;
+    _seekAttempted = false;
 
     _metrics = PlaybackMetrics(
       mediaType: PlaybackMediaType.movie,
@@ -124,17 +130,22 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     if (_isLoading && !force) return;
-    if (_isSeekingToInitial && !force) return;
+    if (_isSeekingToInitial) return;
 
     final pos = c.value.position;
     final dur = c.value.duration;
 
-    // Proteção: não sobrescrever posição anterior válida se o player ainda não avançou na reprodução
-    if (pos.inSeconds < 5 && widget.initialPosition != null && widget.initialPosition!.inSeconds >= 10 && !force) {
+    // Proteção absoluta: NUNCA sobrescrever posição anterior válida se a reprodução atual não avançou (menos de 5s).
+    // Preserva o progresso salvo mesmo quando force == true (saída rápida ou falha de inicialização).
+    if (widget.initialPosition != null &&
+        widget.initialPosition!.inSeconds >= 10 &&
+        pos.inSeconds < 5) {
+      debugPrint('[VOD PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(widget.initialPosition!)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
       return;
     }
 
-    if (dur > Duration.zero) {
+    if (dur > Duration.zero && (pos.inSeconds >= 5 || force)) {
+      debugPrint('[VOD PLAYER] [PROGRESSO] Salvando progresso: streamId=${widget.movie.streamId}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveProgress(
         accountKey: widget.accountKey,
         streamId: widget.movie.streamId,
@@ -177,6 +188,12 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
   }
 
   Future<void> _initPlayer() async {
+    _resumptionTarget = widget.initialPosition;
+    _seekAttempted = false;
+
+    debugPrint('[VOD PLAYER] Início de fluxo: streamId=${widget.movie.streamId}, título="${widget.movie.name}"');
+    debugPrint('[VOD PLAYER] Posição de retomada solicitada: ${widget.initialPosition != null ? PlaybackProgressService.formatDuration(widget.initialPosition!) : 'Início (00:00)'}');
+
     if (widget.streamUrls.isEmpty) {
       setState(() {
         _isLoading = false;
@@ -224,19 +241,38 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
       _metrics.markConnectionEstablished();
       _metrics.markPlayerInitialized();
 
-      // Se houver posição inicial para continuar de onde parou
+      final detectedDur = controller.value.duration;
+      debugPrint('[VOD PLAYER] Player inicializado. Duração detectada: ${PlaybackProgressService.formatDuration(detectedDur)}');
+
+      // 1. Inicia watchdog de buffer inicial
+      _startInitialBufferingWatchdog(epoch);
+
+      // 2. Aciona play() para estabelecer o pipeline de decodificação ativo
+      await controller.play();
+      debugPrint('[VOD PLAYER] Pipeline de reprodução iniciado (playWhenReady=true).');
+
+      // 3. Aplica seekTo se houver posição inicial para continuar de onde parou
       if (widget.initialPosition != null && widget.initialPosition! > Duration.zero) {
-        final target = widget.initialPosition!;
-        if (target < controller.value.duration) {
+        Duration target = widget.initialPosition!;
+        if (detectedDur > Duration.zero && target >= detectedDur) {
+          final safeTarget = detectedDur - const Duration(seconds: 10);
+          target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
+        }
+
+        if (target > Duration.zero) {
           _isSeekingToInitial = true;
-          await controller.seekTo(target);
-          _isSeekingToInitial = false;
-          debugPrint('[VOD PLAYER] Retomando reprodução em ${PlaybackProgressService.formatDuration(target)}');
+          _seekAttempted = true;
+          debugPrint('[VOD PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(widget.initialPosition!)})...');
+          try {
+            await controller.seekTo(target);
+            debugPrint('[VOD PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
+          } catch (seekError) {
+            debugPrint('[VOD PLAYER] [SEEK] Aviso: erro no seek inicial ($seekError). Reproduzindo do início.');
+          } finally {
+            _isSeekingToInitial = false;
+          }
         }
       }
-
-      _startInitialBufferingWatchdog(epoch);
-      await controller.play();
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -318,8 +354,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
       final c = _controller;
       if (c != null &&
           !_metrics.hasFirstFrame &&
-          (_isLoading || _isBuffering || (c.value.position <= Duration.zero && !c.value.isPlaying))) {
-        debugPrint('[VOD PLAYER WATCHDOG] Tempo limite de buffer inicial excedido (25s sem reprodução).');
+          (_isLoading || _isBuffering || (c.value.position <= Duration.zero && !c.value.isPlaying) || (_seekAttempted && c.value.isBuffering))) {
+        debugPrint('[VOD PLAYER WATCHDOG] Tempo limite de buffer inicial excedido (25s sem reprodução). Pos: ${c.value.position}, isPlaying: ${c.value.isPlaying}, isBuffering: ${c.value.isBuffering}');
         _initialBufferingWatchdog?.cancel();
         _disposeCurrentController();
         if (mounted && epoch == _connectionEpoch) {
@@ -344,17 +380,34 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
         val.errorDescription ?? 'Erro durante a reprodução do filme.',
       );
       _metrics.markError(safeErr);
+      debugPrint('[VOD PLAYER] [ERRO] Controller reportou erro: $safeErr');
       setState(() {
         _errorMessage = safeErr;
         _isLoading = false;
         _isBuffering = false;
       });
     } else {
-      if (val.isPlaying || val.position > Duration.zero) {
+      // Confirmação segura de primeiro quadro / avanço real de reprodução
+      bool hasAdvanced = false;
+      if (_seekAttempted && _resumptionTarget != null && _resumptionTarget! > Duration.zero) {
+        hasAdvanced = val.isPlaying &&
+                      !val.isBuffering &&
+                      !_isSeekingToInitial &&
+                      val.position >= _resumptionTarget!;
+      } else {
+        hasAdvanced = val.isPlaying &&
+                      !val.isBuffering &&
+                      val.position > Duration.zero;
+      }
+
+      if (hasAdvanced && !_metrics.hasFirstFrame) {
         _metrics.markFirstFrame();
         _initialBufferingWatchdog?.cancel();
+        debugPrint('[VOD PLAYER] [FRAME] Primeiro quadro / avanço efetivo de reprodução confirmado em ${PlaybackProgressService.formatDuration(val.position)}.');
       }
+
       if (val.isBuffering != _isBuffering) {
+        debugPrint('[VOD PLAYER] [BUFFER] Estado de buffering alterado: ${val.isBuffering} (pos: ${PlaybackProgressService.formatDuration(val.position)})');
         if (val.isBuffering) {
           _metrics.markBufferingStart();
         } else {

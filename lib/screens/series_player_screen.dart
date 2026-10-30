@@ -54,6 +54,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   List<String> _streamUrls = [];
   int _currentUrlIndex = 0;
 
+  Duration? _resumptionTarget;
+  bool _seekAttempted = false;
+
   Timer? _progressSaveTimer;
   Timer? _initialBufferingWatchdog;
   int _connectionEpoch = 0;
@@ -146,17 +149,22 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     if (_isLoading && !force) return;
-    if (_isSeekingToInitial && !force) return;
+    if (_isSeekingToInitial) return;
 
     final pos = c.value.position;
     final dur = c.value.duration;
 
-    // Proteção: não sobrescrever posição anterior válida se o vídeo ainda não avançou
-    if (pos.inSeconds < 5 && widget.initialPosition != null && widget.initialPosition!.inSeconds >= 10 && !force) {
+    // Proteção absoluta: NUNCA sobrescrever posição anterior válida se a reprodução atual ainda não avançou (menos de 5s).
+    // Isso evita que um erro de buffer inicial ou encerramento rápido descarte o progresso salvo.
+    if (widget.initialPosition != null &&
+        widget.initialPosition!.inSeconds >= 10 &&
+        pos.inSeconds < 5) {
+      debugPrint('[SERIES PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(widget.initialPosition!)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
       return;
     }
 
-    if (dur > Duration.zero) {
+    if (dur > Duration.zero && (pos.inSeconds >= 5 || force)) {
+      debugPrint('[SERIES PLAYER] [PROGRESSO] Salvando progresso: ep=${_currentEpisode.id}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveEpisodeProgress(
         accountKey: widget.accountKey,
         seriesId: widget.series.seriesId,
@@ -212,10 +220,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   }
 
   Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
+    _resumptionTarget = initialPosition;
+    _seekAttempted = false;
     _streamUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
     _currentUrlIndex = 0;
     _hasTriggeredCompletion = false;
     _cancelCountdown();
+
+    debugPrint('[SERIES PLAYER] Início de fluxo: ID=${_currentEpisode.id}, T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} ("${_currentEpisode.title}"), Série="${widget.series.name}" (seriesId=${widget.series.seriesId})');
+    debugPrint('[SERIES PLAYER] Posição de retomada solicitada: ${initialPosition != null ? PlaybackProgressService.formatDuration(initialPosition) : 'Início (00:00)'}');
 
     if (_streamUrls.isEmpty) {
       setState(() {
@@ -264,17 +277,38 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       _metrics.markConnectionEstablished();
       _metrics.markPlayerInitialized();
 
+      final detectedDur = controller.value.duration;
+      debugPrint('[SERIES PLAYER] Player inicializado. Duração detectada: ${PlaybackProgressService.formatDuration(detectedDur)}, Duração do catálogo: ${_currentEpisode.duration ?? 'N/D'}');
+
+      // 1. Inicia o watchdog de buffer inicial
+      _startInitialBufferingWatchdog(epoch);
+
+      // 2. Aciona play() para estabelecer o pipeline ativo de decodificação no ExoPlayer
+      await controller.play();
+      debugPrint('[SERIES PLAYER] Pipeline de reprodução iniciado (playWhenReady=true).');
+
+      // 3. Aplica o seekTo se houver posição salva válida para retomar
       if (initialPosition != null && initialPosition > Duration.zero) {
-        if (initialPosition < controller.value.duration) {
+        Duration target = initialPosition;
+        if (detectedDur > Duration.zero && target >= detectedDur) {
+          final safeTarget = detectedDur - const Duration(seconds: 10);
+          target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
+        }
+
+        if (target > Duration.zero) {
           _isSeekingToInitial = true;
-          await controller.seekTo(initialPosition);
-          _isSeekingToInitial = false;
-          debugPrint('[SERIES PLAYER] Retomando reprodução em ${PlaybackProgressService.formatDuration(initialPosition)}');
+          _seekAttempted = true;
+          debugPrint('[SERIES PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(initialPosition)})...');
+          try {
+            await controller.seekTo(target);
+            debugPrint('[SERIES PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
+          } catch (seekError) {
+            debugPrint('[SERIES PLAYER] [SEEK] Aviso: falha ao buscar ponto salvo ($seekError). Reproduzindo do início.');
+          } finally {
+            _isSeekingToInitial = false;
+          }
         }
       }
-
-      _startInitialBufferingWatchdog(epoch);
-      await controller.play();
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -360,8 +394,8 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       final c = _controller;
       if (c != null &&
           !_metrics.hasFirstFrame &&
-          (_isLoading || _isBuffering || (c.value.position <= Duration.zero && !c.value.isPlaying))) {
-        debugPrint('[SERIES PLAYER WATCHDOG] Tempo limite de buffer inicial excedido (25s sem reprodução).');
+          (_isLoading || _isBuffering || (c.value.position <= Duration.zero && !c.value.isPlaying) || (_seekAttempted && c.value.isBuffering))) {
+        debugPrint('[SERIES PLAYER WATCHDOG] Tempo limite de buffer inicial excedido (25s sem reprodução). Pos: ${c.value.position}, isPlaying: ${c.value.isPlaying}, isBuffering: ${c.value.isBuffering}');
         _initialBufferingWatchdog?.cancel();
         _disposeCurrentController();
         if (mounted && epoch == _connectionEpoch) {
@@ -385,6 +419,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       _initialBufferingWatchdog?.cancel();
       final err = UrlSanitizer.sanitizeErrorMessage(c.value.errorDescription ?? 'Erro de mídia');
       _metrics.markError(err);
+      debugPrint('[SERIES PLAYER] [ERRO] Controller reportou erro: $err');
       if (_errorMessage == null) {
         setState(() {
           _errorMessage = err;
@@ -395,13 +430,30 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       return;
     }
 
-    if (c.value.isPlaying && c.value.position > Duration.zero) {
+    // Validação segura de avanço real de reprodução / primeiro quadro
+    bool hasAdvanced = false;
+    if (_seekAttempted && _resumptionTarget != null && _resumptionTarget! > Duration.zero) {
+      // Quando houve seek para posição salva, a confirmação exige que a reprodução
+      // esteja ativa, sem buffering, e que a posição alcance ou avance em relação ao alvo
+      hasAdvanced = c.value.isPlaying &&
+                    !c.value.isBuffering &&
+                    !_isSeekingToInitial &&
+                    c.value.position >= _resumptionTarget!;
+    } else {
+      hasAdvanced = c.value.isPlaying &&
+                    !c.value.isBuffering &&
+                    c.value.position > Duration.zero;
+    }
+
+    if (hasAdvanced && !_metrics.hasFirstFrame) {
       _metrics.markFirstFrame();
       _initialBufferingWatchdog?.cancel();
+      debugPrint('[SERIES PLAYER] [FRAME] Primeiro quadro / avanço efetivo de reprodução confirmado em ${PlaybackProgressService.formatDuration(c.value.position)}.');
     }
 
     final isBuff = c.value.isBuffering;
     if (isBuff != _isBuffering) {
+      debugPrint('[SERIES PLAYER] [BUFFER] Estado de buffering alterado: $isBuff (pos: ${PlaybackProgressService.formatDuration(c.value.position)})');
       if (isBuff) {
         _metrics.markBufferingStart();
       } else {

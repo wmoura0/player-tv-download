@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/xtream_account.dart';
 import 'models/xtream_catalog.dart';
+import 'models/xtream_series_info.dart';
 import 'screens/favorites_screen.dart';
 import 'screens/global_search_screen.dart';
 import 'screens/playlists_screen.dart';
@@ -102,6 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _accountKey = '';
 
   bool _isInitializingCatalog = false;
+  bool _isOpeningContinueWatching = false;
 
   @override
   void initState() {
@@ -281,78 +283,107 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _onSelectContinueWatching(ContinueWatchingItem item) async {
-    final service = await _getOrInitCatalogService();
-    if (service == null) {
-      _showNotice('Para continuar, conecte-se com sua conta Xtream Codes.');
-      return;
-    }
-    final accKey = _accountKey;
+    if (_isOpeningContinueWatching) return;
+    _isOpeningContinueWatching = true;
 
-    if (item.type == ContinueWatchingType.movie) {
-      final movie = XtreamVodStream(
-        streamId: item.streamId,
-        name: item.title,
-        streamIcon: item.coverUrl,
-        categoryId: item.categoryId ?? '0',
-        containerExtension: item.containerExtension,
-      );
-      final streamUrls = service.buildVodStreamUrls(movie);
-      if (!mounted) return;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => VodPlayerScreen(
-            movie: movie,
-            streamUrls: streamUrls,
-            accountKey: accKey,
-            initialPosition: item.position,
-          ),
-        ),
-      ).then((_) {
-        DeviceUtils.restoreOrientation();
-        _loadHomeData();
-      });
-    } else if (item.type == ContinueWatchingType.series && item.seriesId != null) {
-      final series = XtreamSeriesItem(
-        seriesId: item.seriesId!,
-        name: item.title,
-        cover: item.coverUrl,
-        categoryId: item.categoryId ?? '0',
-      );
+    try {
+      final service = await _getOrInitCatalogService();
+      if (service == null) {
+        _showNotice('Para continuar, conecte-se com sua conta Xtream Codes.');
+        return;
+      }
+      final accKey = _accountKey;
 
-      final info = await service.fetchSeriesInfo(item.seriesId!);
-      if (!mounted) return;
-
-      if (info != null) {
-        final ep = info.findEpisodeById(item.streamId);
-        if (ep != null) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => SeriesPlayerScreen(
-                series: series,
-                seriesInfo: info,
-                initialEpisode: ep,
-                catalogService: service,
-                accountKey: accKey,
-                initialPosition: item.position,
-              ),
+      if (item.type == ContinueWatchingType.movie) {
+        debugPrint('[HOME] Continuar assistindo filme: streamId=${item.streamId}, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
+        final movie = XtreamVodStream(
+          streamId: item.streamId,
+          name: item.title,
+          streamIcon: item.coverUrl,
+          categoryId: item.categoryId ?? '0',
+          containerExtension: item.containerExtension,
+        );
+        final streamUrls = service.buildVodStreamUrls(movie);
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => VodPlayerScreen(
+              movie: movie,
+              streamUrls: streamUrls,
+              accountKey: accKey,
+              initialPosition: item.position,
             ),
-          ).then((_) {
-            DeviceUtils.restoreOrientation();
-            _loadHomeData();
-          });
+          ),
+        ).then((_) {
+          DeviceUtils.restoreOrientation();
+          _loadHomeData();
+        });
+      } else if (item.type == ContinueWatchingType.series && item.seriesId != null) {
+        debugPrint('[HOME] Continuar assistindo série: seriesId=${item.seriesId}, epId=${item.streamId}, T${item.seasonNumber ?? '?'}:E${item.episodeNum ?? '?'}, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
+        final series = XtreamSeriesItem(
+          seriesId: item.seriesId!,
+          name: item.title,
+          cover: item.coverUrl,
+          categoryId: item.categoryId ?? '0',
+        );
+
+        final info = await service.fetchSeriesInfo(item.seriesId!);
+        if (!mounted) return;
+
+        if (info != null) {
+          XtreamSeriesEpisode? ep = info.findEpisodeById(item.streamId);
+          // Fallback caso o streamId/id tenha mudado no servidor, mas seasonNumber e episodeNum coincidam
+          if (ep == null && item.seasonNumber != null && item.episodeNum != null) {
+            final seasonEps = info.episodesBySeason[item.seasonNumber!];
+            if (seasonEps != null && seasonEps.isNotEmpty) {
+              for (final candidate in seasonEps) {
+                if (candidate.episodeNum == item.episodeNum) {
+                  ep = candidate;
+                  debugPrint('[HOME] Episódio recuperado por fallback de temporada/número: S${candidate.seasonNumber}E${candidate.episodeNum} (novo ID: ${candidate.id})');
+                  break;
+                }
+              }
+            }
+          }
+
+          if (ep != null) {
+            final targetEpisode = ep;
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => SeriesPlayerScreen(
+                  series: series,
+                  seriesInfo: info,
+                  initialEpisode: targetEpisode,
+                  catalogService: service,
+                  accountKey: accKey,
+                  initialPosition: item.position,
+                ),
+              ),
+            ).then((_) {
+              DeviceUtils.restoreOrientation();
+              _loadHomeData();
+            });
+            return;
+          }
+        } else {
+          _showNotice('Não foi possível obter detalhes da série no momento.');
           return;
         }
-      }
 
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => SeriesDetailScreen(
-            series: series,
-            catalogService: service,
-            accountKey: accKey,
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => SeriesDetailScreen(
+              series: series,
+              catalogService: service,
+              accountKey: accKey,
+            ),
           ),
-        ),
-      ).then((_) => _loadHomeData());
+        ).then((_) => _loadHomeData());
+      }
+    } finally {
+      if (mounted) {
+        _isOpeningContinueWatching = false;
+      }
     }
   }
 
