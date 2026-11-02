@@ -138,6 +138,30 @@ class XtreamVodStream {
     );
   }
 
+  XtreamVodStream copyWith({
+    int? streamId,
+    int? num,
+    String? name,
+    String? streamIcon,
+    String? rating,
+    double? rating5based,
+    String? categoryId,
+    String? containerExtension,
+    DateTime? addedDate,
+  }) {
+    return XtreamVodStream(
+      streamId: streamId ?? this.streamId,
+      num: num ?? this.num,
+      name: name ?? this.name,
+      streamIcon: streamIcon ?? this.streamIcon,
+      rating: rating ?? this.rating,
+      rating5based: rating5based ?? this.rating5based,
+      categoryId: categoryId ?? this.categoryId,
+      containerExtension: containerExtension ?? this.containerExtension,
+      addedDate: addedDate ?? this.addedDate,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'stream_id': streamId,
     if (num != null) 'num': num,
@@ -196,6 +220,30 @@ class XtreamSeriesItem {
       rating: json['rating']?.toString(),
       categoryId: json['category_id']?.toString() ?? '0',
       addedDate: addedDate,
+    );
+  }
+
+  XtreamSeriesItem copyWith({
+    int? seriesId,
+    int? num,
+    String? name,
+    String? cover,
+    String? plot,
+    String? genre,
+    String? rating,
+    String? categoryId,
+    DateTime? addedDate,
+  }) {
+    return XtreamSeriesItem(
+      seriesId: seriesId ?? this.seriesId,
+      num: num ?? this.num,
+      name: name ?? this.name,
+      cover: cover ?? this.cover,
+      plot: plot ?? this.plot,
+      genre: genre ?? this.genre,
+      rating: rating ?? this.rating,
+      categoryId: categoryId ?? this.categoryId,
+      addedDate: addedDate ?? this.addedDate,
     );
   }
 

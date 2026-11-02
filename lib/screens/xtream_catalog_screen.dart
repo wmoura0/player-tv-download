@@ -114,6 +114,54 @@ class XtreamCatalogScreen extends StatefulWidget {
     return safeCats.first.id;
   }
 
+  /// Seleciona a categoria inicial para Séries:
+  /// 1. Prioriza categorias de lançamentos/recentes/novidades/atualizadas reais do servidor.
+  /// 2. Se não houver categoria explícita de lançamentos, seleciona a primeira categoria segura.
+  /// 3. NUNCA seleciona 'all' (Todas) por padrão para evitar baixar catálogos gigantescos e OOM no Fire TV.
+  /// 4. NUNCA seleciona categoria adulta.
+  static String determineInitialSeriesCategory(List<XtreamCategory> categories) {
+    final safeCats = categories.where((c) => !isAdultCategory(c.name)).toList();
+    if (safeCats.isEmpty) return 'favorites';
+
+    const releaseKeywords = [
+      'lançamento',
+      'lancamento',
+      'lançamentos',
+      'lancamentos',
+      'atualizado',
+      'atualizada',
+      'atualizados',
+      'atualizadas',
+      'recém',
+      'recem',
+      'recém-adicionados',
+      'recem-adicionados',
+      'novidade',
+      'novidades',
+      'novas',
+      'novos',
+      'destaque',
+      'destaques',
+      'populares',
+      'em alta',
+      'premiere',
+      'estreia',
+      'estréia',
+      '2026',
+      '2025',
+    ];
+
+    for (final kw in releaseKeywords) {
+      for (final cat in safeCats) {
+        if (cat.name.toLowerCase().contains(kw)) {
+          return cat.id;
+        }
+      }
+    }
+
+    return safeCats.first.id;
+  }
+
   @override
   State<XtreamCatalogScreen> createState() => _XtreamCatalogScreenState();
 }
@@ -159,6 +207,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   bool _isEpgLoading = false;
   Timer? _epgDebounceTimer;
   int _epgRequestToken = 0;
+  int _itemRequestToken = 0;
   bool _isBackDebounced = false;
   bool _isExitingFullscreen = false;
   Timer? _backDebounceTimer;
@@ -400,9 +449,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       final String initialId;
       if (_currentType == XtreamCatalogType.movies) {
         initialId = XtreamCatalogScreen.determineInitialVodCategory(safeServerCats);
+      } else if (_currentType == XtreamCatalogType.series) {
+        initialId = XtreamCatalogScreen.determineInitialSeriesCategory(safeServerCats);
       } else {
         initialId = 'all';
       }
+
+      final typeTag = _currentType == XtreamCatalogType.movies
+          ? 'MOVIES'
+          : (_currentType == XtreamCatalogType.series ? 'SERIES' : 'LIVE');
+      debugPrint('[CATALOG][$typeTag] [SELECT_CAT] Categoria inicial selecionada: "$initialId"');
 
       if (mounted) {
         setState(() {
@@ -423,18 +479,21 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   Future<void> _loadItemsForCategory(String categoryId, {bool forceRefresh = false}) async {
+    final currentToken = ++_itemRequestToken;
     final sw = Stopwatch()..start();
-    setState(() {
-      _isItemsLoading = true;
-      _itemsError = null;
-    });
 
+    // 1. Favoritos (resolução local instantânea)
     if (categoryId == 'favorites') {
+      setState(() {
+        _isItemsLoading = true;
+        _itemsError = null;
+      });
       try {
         final favs = await FavoritesService.instance.getFavorites(
           scopeKey: _accountKey,
           type: _favoriteType,
         );
+        if (!mounted || _itemRequestToken != currentToken) return;
         List<dynamic> items;
         switch (_currentType) {
           case XtreamCatalogType.live:
@@ -447,20 +506,17 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             items = favs.map((f) => f.toSeriesItem()).toList();
             break;
         }
-        if (mounted) {
-          setState(() {
-            _currentItems = items;
-            _isItemsLoading = false;
-          });
-        }
+        setState(() {
+          _currentItems = items;
+          _isItemsLoading = false;
+        });
         return;
       } catch (e) {
-        if (mounted) {
-          setState(() {
-            _isItemsLoading = false;
-            _itemsError = 'Erro ao carregar favoritos: $e';
-          });
-        }
+        if (!mounted || _itemRequestToken != currentToken) return;
+        setState(() {
+          _isItemsLoading = false;
+          _itemsError = 'Erro ao carregar favoritos: $e';
+        });
         return;
       }
     }
@@ -468,19 +524,103 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final String typeKey = _currentType == XtreamCatalogType.live
         ? 'live'
         : (_currentType == XtreamCatalogType.movies ? 'movies' : 'series');
-    final hasCache = _service?.hasLoadedCacheFor(typeKey) ?? false;
 
-    if (categoryId == 'all' && !hasCache && forceRefresh && mounted) {
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Carregando catálogo completo de $_title... Isso pode levar alguns segundos.',
+    // 2. Notificação amigável na UI ao selecionar a categoria "Todas" para VOD (Filmes e Séries)
+    if (_currentType != XtreamCatalogType.live && categoryId == 'all' && mounted) {
+      final hasCache = _service?.hasLoadedCacheFor(typeKey) ?? false;
+      if (!hasCache) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Carregando todo o acervo de $_title em segundo plano. Para melhor fluidez, navegue pelas categorias.',
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF1E88E5),
+            duration: const Duration(seconds: 4),
           ),
-          backgroundColor: const Color(0xFF1E88E5),
-          duration: const Duration(seconds: 3),
-        ),
+        );
+      }
+    }
+
+    // 3. Verificação síncrona em memória (cache hit instantâneo sem nenhum frame de loading)
+    final memCache = _currentType == XtreamCatalogType.movies
+        ? _service?.getCachedVodStreamsSync(categoryId)
+        : (_currentType == XtreamCatalogType.series
+            ? _service?.getCachedSeriesSync(categoryId)
+            : _service?.getCachedLiveStreamsSync(categoryId));
+
+    if (!forceRefresh && memCache != null && memCache.isNotEmpty) {
+      List<dynamic> displayItems = memCache;
+      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
+        final adultCategoryIds = _categories
+            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
+            .map((c) => c.id)
+            .toSet();
+        if (adultCategoryIds.isNotEmpty) {
+          displayItems = displayItems.where((it) {
+            if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
+            return true;
+          }).toList();
+        }
+      }
+      setState(() {
+        _currentItems = displayItems;
+        _isItemsLoading = false;
+        _itemsError = null;
+      });
+      debugPrint(
+        '[CACHE] [MEM HIT] Categoria "$categoryId" exibida imediatamente da memória com ${displayItems.length} itens.',
       );
+      return;
+    }
+
+    // Sem hit síncrono em memória: ativa imediatamente o estado de carregamento
+    setState(() {
+      _isItemsLoading = true;
+      _itemsError = null;
+    });
+
+    // 4. Verificação em disco (Stale-While-Revalidate com carregamento local)
+    if (!forceRefresh && _service != null) {
+      final localItems = await _service!.getLocalItems(type: typeKey, categoryId: categoryId);
+      if (!mounted || _itemRequestToken != currentToken) return;
+      if (localItems != null && localItems.isNotEmpty) {
+        List<dynamic> displayItems = localItems;
+        if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
+          final adultCategoryIds = _categories
+              .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
+              .map((c) => c.id)
+              .toSet();
+          if (adultCategoryIds.isNotEmpty) {
+            displayItems = displayItems.where((it) {
+              if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
+              return true;
+            }).toList();
+          }
+        }
+        setState(() {
+          _currentItems = displayItems;
+          _isItemsLoading = false;
+          _itemsError = null;
+        });
+        debugPrint(
+          '[STALE-WHILE-REVALIDATE] Categoria "$categoryId" exibida imediatamente do disco com ${displayItems.length} itens.',
+        );
+        unawaited(_revalidateCategoryInBackground(categoryId, currentToken));
+        return;
+      }
     }
 
     try {
@@ -506,40 +646,77 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           break;
       }
 
-      if (mounted) {
-        sw.stop();
-        // Em Filmes, quando o usuário seleciona 'all' (Todas) manualmente,
-        // filtra títulos de categorias adultas para proteção consistente contra exposição
-        if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
-          final adultCategoryIds = _categories
-              .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
-              .map((c) => c.id)
-              .toSet();
-          if (adultCategoryIds.isNotEmpty) {
-            items = items.where((it) {
-              if (it is XtreamVodStream) {
-                return !adultCategoryIds.contains(it.categoryId);
-              }
-              return true;
-            }).toList();
-          }
-        }
+      if (!mounted || _itemRequestToken != currentToken) return;
+      sw.stop();
 
-        debugPrint(
-          '[PERF] [UI RENDER] Categoria "$categoryId" exibida com ${items.length} itens em ${sw.elapsedMilliseconds}ms',
-        );
+      // Em Filmes, quando o usuário seleciona 'all' (Todas) manualmente,
+      // filtra títulos de categorias adultas para proteção consistente contra exposição
+      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
+        final adultCategoryIds = _categories
+            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
+            .map((c) => c.id)
+            .toSet();
+        if (adultCategoryIds.isNotEmpty) {
+          items = items.where((it) {
+            if (it is XtreamVodStream) {
+              return !adultCategoryIds.contains(it.categoryId);
+            }
+            return true;
+          }).toList();
+        }
+      }
+
+      debugPrint(
+        '[PERF] [UI RENDER] Categoria "$categoryId" exibida com ${items.length} itens em ${sw.elapsedMilliseconds}ms',
+      );
+      setState(() {
+        _currentItems = items;
+        _isItemsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted || _itemRequestToken != currentToken) return;
+      setState(() {
+        _isItemsLoading = false;
+        _itemsError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _revalidateCategoryInBackground(String categoryId, int token) async {
+    try {
+      List<dynamic> fresh;
+      switch (_currentType) {
+        case XtreamCatalogType.live:
+          fresh = await _service!.fetchLiveStreams(categoryId: categoryId, forceRefresh: true);
+          break;
+        case XtreamCatalogType.movies:
+          fresh = await _service!.fetchVodStreams(categoryId: categoryId, forceRefresh: true);
+          break;
+        case XtreamCatalogType.series:
+          fresh = await _service!.fetchSeries(categoryId: categoryId, forceRefresh: true);
+          break;
+      }
+      if (!mounted || _itemRequestToken != token || fresh.isEmpty) return;
+
+      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
+        final adultCategoryIds = _categories
+            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
+            .map((c) => c.id)
+            .toSet();
+        if (adultCategoryIds.isNotEmpty) {
+          fresh = fresh.where((it) {
+            if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
+            return true;
+          }).toList();
+        }
+      }
+      if (mounted && _itemRequestToken == token) {
         setState(() {
-          _currentItems = items;
-          _isItemsLoading = false;
+          _currentItems = fresh;
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isItemsLoading = false;
-          _itemsError = e.toString();
-        });
-      }
+      debugPrint('[STALE-WHILE-REVALIDATE] Revalidação silenciosa para "$categoryId" preservou cache existente: $e');
     }
   }
 
