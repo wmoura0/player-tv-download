@@ -5,6 +5,7 @@ import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
+import '../services/player_diagnostics.dart';
 import '../services/settings_service.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
@@ -253,7 +254,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     });
 
     final sanitizedUrl = UrlSanitizer.sanitize(url);
-    debugPrint('[SERIES PLAYER] Conectando ao episódio: $sanitizedUrl');
+    PlayerDiagnostics.log('REQUEST', 'Tipo=SERIE, ID=${_currentEpisode.id}, T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} ("${_currentEpisode.title}"), Série="${widget.series.name}", Extensão="${_currentEpisode.containerExtension}", Rota=${_currentUrlIndex + 1}/${_streamUrls.length}');
+    PlayerDiagnostics.log('MEDIA_ITEM', 'URL: $sanitizedUrl');
+    PlayerDiagnostics.log('PREPARE', 'Iniciando controller.initialize() [timeout=25s]');
 
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
@@ -278,14 +281,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       _metrics.markPlayerInitialized();
 
       final detectedDur = controller.value.duration;
-      debugPrint('[SERIES PLAYER] Player inicializado. Duração detectada: ${PlaybackProgressService.formatDuration(detectedDur)}, Duração do catálogo: ${_currentEpisode.duration ?? 'N/D'}');
+      PlayerDiagnostics.log('STATE', 'STATE_READY | Duração: ${PlaybackProgressService.formatDuration(detectedDur)} | Resolução: ${controller.value.size.width.toInt()}x${controller.value.size.height.toInt()}');
 
       // 1. Inicia o watchdog de buffer inicial
       _startInitialBufferingWatchdog(epoch);
 
       // 2. Aciona play() para estabelecer o pipeline ativo de decodificação no ExoPlayer
       await controller.play();
-      debugPrint('[SERIES PLAYER] Pipeline de reprodução iniciado (playWhenReady=true).');
+      PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
 
       // 3. Aplica o seekTo se houver posição salva válida para retomar
       if (initialPosition != null && initialPosition > Duration.zero) {
@@ -327,56 +330,33 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     required int epoch,
     Duration? initialPosition,
   }) async {
-    final errLower = e.toString().toLowerCase();
-    final isTimeout = e is TimeoutException || errLower.contains('timeoutexception');
+    // Sondagem HTTP diagnóstica imediata para identificar com precisão o status do servidor
+    final probe = await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex]);
+    final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
-    String userMessage;
-    bool isResourceNotFound = false;
-
-    if (isTimeout) {
-      userMessage = 'O servidor demorou muito para responder (tempo limite de 25s excedido). Verifique sua conexão ou tente novamente.';
-    } else if (errLower.contains('response code: 404') ||
-               errLower.contains('code: 404') ||
-               errLower.contains('404 not found')) {
-      userMessage = 'Episódio não encontrado no servidor remoto (HTTP 404).';
-      isResourceNotFound = true;
-    } else if (errLower.contains('response code: 401') ||
-               errLower.contains('response code: 403') ||
-               errLower.contains('code: 401') ||
-               errLower.contains('code: 403')) {
-      userMessage = 'Acesso não autorizado pelo servidor ou limite de conexões simultâneas atingido (HTTP 401/403).';
-    } else if (errLower.contains('response code: 5') ||
-               errLower.contains('code: 500') ||
-               errLower.contains('code: 502') ||
-               errLower.contains('code: 503')) {
-      userMessage = 'O servidor de transmissão apresentou instabilidade interna (HTTP 5xx). Tente novamente mais tarde.';
-    } else if (errLower.contains('decoderinitializationexception') ||
-               errLower.contains('mediacodec') ||
-               errLower.contains('unrecognizedinputformat') ||
-               errLower.contains('parserexception')) {
-      userMessage = 'Formato de vídeo ou áudio do episódio não suportado pelo decodificador deste aparelho.';
-      isResourceNotFound = true;
-    } else if (errLower.contains('unknownhostexception') ||
-               errLower.contains('connectexception') ||
-               errLower.contains('socketexception') ||
-               errLower.contains('network is unreachable') ||
-               errLower.contains('httpdatasourceexception')) {
-      userMessage = 'Falha de conexão com o servidor de streaming. Verifique sua conexão com a internet.';
-    } else {
-      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
-      userMessage = 'Não foi possível reproduzir o episódio. $safeErr';
+    PlayerDiagnostics.log('ERROR', 'Falha na reprodução do episódio: ${details.technicalSummary}');
+    PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
+    PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
+    PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
+    if (probe.statusCode != null) {
+      PlayerDiagnostics.log('HTTP_STATUS', '${probe.statusCode} | Content-Type: ${probe.contentType ?? 'N/D'}');
     }
 
+    final userMessage = details.shortUiMessage;
     _metrics.markError(userMessage);
 
     // REGRA 3: Não tentar outra extensão ou rota apenas porque houve timeout.
     // Tenta alternativa somente quando for falha comprovada de rota/recurso (ex: 404 ou formato não reconhecido)
     // e houver URL alternativa válida na lista.
+    final isResourceNotFound = probe.isNotFound ||
+        (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
+         details.causeClass?.contains('Decoder') == true);
+
     final canTryAlternative = isResourceNotFound && (_currentUrlIndex + 1 < _streamUrls.length);
 
     if (canTryAlternative) {
       _currentUrlIndex++;
-      debugPrint('[SERIES PLAYER] Tentando URL de contingência $_currentUrlIndex devido a erro de recurso.');
+      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando URL de contingência $_currentUrlIndex devido a erro de recurso.');
       await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
     } else {
       setState(() {
@@ -417,12 +397,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     if (c.value.hasError) {
       _cancelCountdown();
       _initialBufferingWatchdog?.cancel();
-      final err = UrlSanitizer.sanitizeErrorMessage(c.value.errorDescription ?? 'Erro de mídia');
-      _metrics.markError(err);
-      debugPrint('[SERIES PLAYER] [ERRO] Controller reportou erro: $err');
+      final details = PlayerDiagnostics.analyzeError(c.value.errorDescription ?? 'Erro interno de reprodução');
+      PlayerDiagnostics.log('ERROR', 'Controller disparou erro durante reprodução do episódio: ${details.technicalSummary}');
+      PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
+      PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
+      PlayerDiagnostics.log('STATE', 'hasError=true, pos=${c.value.position}, isPlaying=${c.value.isPlaying}, isBuffering=${c.value.isBuffering}');
+      _metrics.markError(details.shortUiMessage);
       if (_errorMessage == null) {
         setState(() {
-          _errorMessage = err;
+          _errorMessage = details.shortUiMessage;
           _isLoading = false;
           _isBuffering = false;
         });

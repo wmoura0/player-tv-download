@@ -10,6 +10,7 @@ import '../services/favorites_service.dart';
 import '../services/hidden_categories_service.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
+import '../services/player_diagnostics.dart';
 import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
 import '../services/url_sanitizer.dart';
@@ -834,17 +835,19 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
 
     if (val.hasError && _playerError == null) {
-      final safeErr = UrlSanitizer.sanitizeErrorMessage(
-        val.errorDescription ?? 'Falha na transmissão do canal.',
-      );
+      final details = PlayerDiagnostics.analyzeError(val.errorDescription ?? 'Falha na transmissão do canal.');
+      PlayerDiagnostics.log('ERROR', 'Controller disparou erro em canal ao vivo: ${details.technicalSummary}');
+      PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
+      PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
+      PlayerDiagnostics.log('STATE', 'hasError=true, isPlaying=${val.isPlaying}, isBuffering=${val.isBuffering}');
       _stabilityManager.clearOpenWatchdog();
-      _stabilityManager.metrics?.markError(safeErr);
+      _stabilityManager.metrics?.markError(details.shortUiMessage);
       setState(() {
-        _playerError = safeErr;
+        _playerError = details.shortUiMessage;
         _isPlayerLoading = false;
         _isPlayerBuffering = false;
       });
-      _stabilityManager.scheduleRetry(safeErr);
+      _stabilityManager.scheduleRetry(details.shortUiMessage);
     } else if (val.isBuffering != _isPlayerBuffering) {
       if (val.isBuffering) {
         _stabilityManager.metrics?.markBufferingStart();
@@ -970,10 +973,12 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
 
     final sanitizedDisplay = UrlSanitizer.sanitize(url);
-    debugPrint('[PLAYER] Conectando ao canal: $sanitizedDisplay');
-
     final isMpegTs = PlayerStabilityManager.isMpegTsUrl(url);
     _stabilityManager.isMpegTsStream = isMpegTs;
+
+    PlayerDiagnostics.log('REQUEST', 'Tipo=AO VIVO, ID=${_activeLiveStream?.streamId}, Nome="${_activeLiveStream?.name}", Formato=${isMpegTs ? "TS" : "HLS/Outro"}, Rota=${_currentCandidateIndex + 1}/${_candidateUrls.length}');
+    PlayerDiagnostics.log('MEDIA_ITEM', 'URL: $sanitizedDisplay');
+    PlayerDiagnostics.log('PREPARE', 'Iniciando controller.initialize() [timeout=15s]');
 
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
@@ -988,6 +993,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     _stabilityManager.startOpenWatchdog(() {
       if (mounted && _playerController == controller && _isPlayerLoading) {
+        PlayerDiagnostics.log('TIMEOUT', 'Watchdog de 15s expirou antes do STATE_READY para canal ao vivo');
         setState(() {
           _isPlayerLoading = false;
           _playerError = 'Tempo limite de conexão excedido. Tentando reconectar...';
@@ -1004,7 +1010,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         _stabilityManager.metrics?.markPlayerInitialized();
         _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
 
+        PlayerDiagnostics.log('STATE', 'STATE_READY | Resolução: ${controller.value.size.width.toInt()}x${controller.value.size.height.toInt()}');
         await controller.play();
+        PlayerDiagnostics.log('PLAY', 'controller.play() acionado com sucesso (Live TV)');
+
         DeviceUtils.setPipState(enabled: true);
         DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
         setState(() {
@@ -1017,20 +1026,31 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         DeviceUtils.setPipState(enabled: false);
         _stabilityManager.clearOpenWatchdog();
         _isConnecting = false;
+
+        final probe = await PlayerDiagnostics.probeStreamUrl(url);
+        final details = PlayerDiagnostics.analyzeError(e, probe: probe);
+
+        PlayerDiagnostics.log('ERROR', 'Falha ao inicializar canal ao vivo: ${details.technicalSummary}');
+        PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
+        PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
+        PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
+        if (probe.statusCode != null) {
+          PlayerDiagnostics.log('HTTP_STATUS', '${probe.statusCode} | Content-Type: ${probe.contentType ?? 'N/D'}');
+        }
+
         // Tentativa de rota/extensão alternativa caso exista
         if (_currentCandidateIndex + 1 < _candidateUrls.length) {
           _currentCandidateIndex++;
-          debugPrint('[PLAYER] Tentando formato alternativo de transmissão...');
+          PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando formato alternativo index $_currentCandidateIndex...');
           await _initControllerWithUrl(_candidateUrls[_currentCandidateIndex]);
           return;
         }
 
-        final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
         setState(() {
           _isPlayerLoading = false;
-          _playerError = 'Erro ao conectar à transmissão: $safeErr';
+          _playerError = details.shortUiMessage;
         });
-        _stabilityManager.scheduleRetry(safeErr);
+        _stabilityManager.scheduleRetry(details.shortUiMessage);
       }
     } finally {
       _isConnecting = false;

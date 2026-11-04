@@ -1,11 +1,11 @@
 {
-  "version": "1.2.3",
-  "versionCode": 6,
+  "version": "1.2.4",
+  "versionCode": 7,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.3/JessFlix-v1.2.3.apk",
-  "fileSize": 57366302,
-  "sha256": "97b050535dd049d6ffdfb038cd597f5d7486c3caf23666890377ef4a01fa1836",
-  "releaseNotes": "• Correção definitiva no carregamento de Filmes e Séries no Fire TV e Android.\n• Eliminação de travamentos e timeouts por download de catálogos globais gigantescos.\n• Seleção determinística de categorias seguras na inicialização e proteção contra categorias adultas.\n• Cache granular por categoria com navegação instantânea via Stale-While-Revalidate.",
-  "publishedAt": "2026-11-02T19:43:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.4/JessFlix-v1.2.4.apk",
+  "fileSize": 57382718,
+  "sha256": "02ec4531cf38e1d497bc7fd0b68455842395008fa1f2c7fff01d0ea843cba70d",
+  "releaseNotes": "• Diagnóstico instrumental de reprodução no Media3/ExoPlayer com identificação de erros ocultos.\n• Permissão explícita de tráfego Cleartext HTTP para reprodução em redes sem SSL no Fire OS e Android.\n• Destaque visual na tela do televisor com código de status e detalhe técnico de erro de conexão.\n• Captura nativa de logs de streaming sob a tag JESSFLIX_PLAYER no Logcat.",
+  "publishedAt": "2026-11-04T13:10:00.000Z",
   "mandatory": false
 }

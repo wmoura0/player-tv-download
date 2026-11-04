@@ -111,6 +111,11 @@ class MainActivity : FlutterActivity() {
                     "isTvDevice" -> {
                         result.success(isTvDevice())
                     }
+                    "logPlayer" -> {
+                        val message = call.argument<String>("message") ?: ""
+                        android.util.Log.i("JESSFLIX_PLAYER", message)
+                        result.success(true)
+                    }
                     "keepScreenOn" -> {
                         val enable = call.argument<Boolean>("enable") ?: true
                         isKeepScreenOnEnabled = enable

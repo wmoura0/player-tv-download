@@ -777,15 +777,27 @@ class LivePlayerViewState extends State<LivePlayerView> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  sanitizedError,
-                  textAlign: TextAlign.center,
-                  maxLines: widget.isFullscreen ? 3 : 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFB0BEC5),
-                    fontSize: 11,
+                const SizedBox(height: 6),
+                Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: widget.isFullscreen ? 12 : 8,
+                    vertical: widget.isFullscreen ? 6 : 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0x33EF5350),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0x66EF5350)),
+                  ),
+                  child: Text(
+                    sanitizedError,
+                    textAlign: TextAlign.center,
+                    maxLines: widget.isFullscreen ? 3 : 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: const Color(0xFFFFCDD2),
+                      fontSize: widget.isFullscreen ? 13 : 11,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
