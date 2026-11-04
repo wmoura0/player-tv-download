@@ -64,7 +64,7 @@ void main() {
 
         final manifestData = {
           'version': '1.3.0',
-          'versionCode': 5,
+          'versionCode': 10,
           'apkUrl': 'https://github.com/wmoura0/player-tv-download/releases/download/v1.3.0/app.apk',
           'fileSize': 50000000,
           'sha256': 'a' * 64,
@@ -113,7 +113,7 @@ void main() {
         requestCount++;
         final manifestData = {
           'version': '1.3.0',
-          'versionCode': 5,
+          'versionCode': 10,
           'apkUrl': 'https://github.com/wmoura0/player-tv-download/releases/download/v1.3.0/app.apk',
           'fileSize': 45000000,
           'sha256': 'a' * 64,

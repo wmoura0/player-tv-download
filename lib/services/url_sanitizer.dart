@@ -52,14 +52,14 @@ class UrlSanitizer {
   }
 
   static String _maskXtreamPath(String url) {
-    // Formato com prefixo: /live/user/pass/123.ts
+    // Formato com prefixo: /live/user/pass/123.ts ou /series/user/pass/64.mp4
     var res = url.replaceAllMapped(
-      RegExp(r'(/(?:live|movie|series)/)([^/]+)/([^/]+)/([0-9]+(?:\.[a-zA-Z0-9]+)?)', caseSensitive: false),
+      RegExp(r'(/(?:live|movie|series)/)([^/]+)/([^/]+)/([^/\s?#]+)', caseSensitive: false),
       (m) => '${m.group(1)}***/***/${m.group(4)}',
     );
     // Formato direto: :port/user/pass/123.ts
     res = res.replaceAllMapped(
-      RegExp(r'(https?://[^/]+/)(?!live/|movie/|series/|player_api)([^/]+)/([^/]+)/([0-9]+(?:\.[a-zA-Z0-9]+)?)', caseSensitive: false),
+      RegExp(r'(https?://[^/]+/)(?!live/|movie/|series/|player_api)([^/]+)/([^/]+)/([^/\s?#]+)', caseSensitive: false),
       (m) => '${m.group(1)}***/***/${m.group(4)}',
     );
     return res;

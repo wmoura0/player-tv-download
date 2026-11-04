@@ -3,6 +3,7 @@
 
 class XtreamSeriesEpisode {
   final int id;
+  final int? streamId;
   final int episodeNum;
   final String title;
   final String? containerExtension;
@@ -16,6 +17,7 @@ class XtreamSeriesEpisode {
 
   const XtreamSeriesEpisode({
     required this.id,
+    this.streamId,
     required this.episodeNum,
     required this.title,
     this.containerExtension,
@@ -39,14 +41,38 @@ class XtreamSeriesEpisode {
             ? Map<String, dynamic>.from(json['info'] as Map)
             : <String, dynamic>{};
 
-    final rawId = json['id'] ?? json['stream_id'] ?? info['id'] ?? info['stream_id'];
-    final id = int.tryParse(rawId?.toString() ?? '') ?? 0;
-
     final rawEpNum = json['episode_num'] ?? json['episode_number'] ?? info['episode_num'] ?? fallbackEpisodeNum;
     final episodeNum = int.tryParse(rawEpNum?.toString() ?? '') ?? fallbackEpisodeNum ?? 1;
 
     final rawSeason = json['season'] ?? json['season_number'] ?? info['season'] ?? fallbackSeasonNumber;
     final seasonNumber = int.tryParse(rawSeason?.toString() ?? '') ?? fallbackSeasonNumber;
+
+    // Resolução inteligente e robusta do ID real de reprodução:
+    final rawStreamId = json['stream_id'] ?? info['stream_id'];
+    final parsedStreamId = int.tryParse(rawStreamId?.toString() ?? '');
+
+    final rawId = json['id'] ?? info['id'];
+    final parsedId = int.tryParse(rawId?.toString() ?? '');
+
+    int resolvedId;
+    int? altId;
+
+    if (parsedStreamId != null && parsedStreamId > 0) {
+      if (parsedId == episodeNum && parsedStreamId != episodeNum) {
+        // "id" era apenas o número do episódio na temporada (ex: 64) e "stream_id" é o identificador real
+        resolvedId = parsedStreamId;
+        altId = parsedId;
+      } else if (parsedId != null && parsedId > 0 && parsedId != parsedStreamId) {
+        resolvedId = parsedStreamId;
+        altId = parsedId;
+      } else {
+        resolvedId = parsedStreamId;
+      }
+    } else if (parsedId != null && parsedId > 0) {
+      resolvedId = parsedId;
+    } else {
+      resolvedId = 0;
+    }
 
     final rawTitle = json['title']?.toString() ?? info['title']?.toString() ?? json['name']?.toString() ?? 'Episódio $episodeNum';
     final title = rawTitle.trim().isNotEmpty ? rawTitle.trim() : 'Episódio $episodeNum';
@@ -83,7 +109,8 @@ class XtreamSeriesEpisode {
     final directSource = (rawDirect != null && rawDirect.trim().isNotEmpty) ? rawDirect.trim() : null;
 
     return XtreamSeriesEpisode(
-      id: id,
+      id: resolvedId,
+      streamId: altId,
       episodeNum: episodeNum,
       title: title,
       containerExtension: containerExtension,

@@ -335,6 +335,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
     PlayerDiagnostics.log('ERROR', 'Falha na reprodução do episódio: ${details.technicalSummary}');
+    PlayerDiagnostics.logDiagnosticDetails(details);
     PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
     PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
     PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
@@ -349,6 +350,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     // Tenta alternativa somente quando for falha comprovada de rota/recurso (ex: 404 ou formato não reconhecido)
     // e houver URL alternativa válida na lista.
     final isResourceNotFound = probe.isNotFound ||
+        details.exoPlayerHttpStatus == 404 ||
         (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
          details.causeClass?.contains('Decoder') == true);
 
@@ -399,6 +401,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       _initialBufferingWatchdog?.cancel();
       final details = PlayerDiagnostics.analyzeError(c.value.errorDescription ?? 'Erro interno de reprodução');
       PlayerDiagnostics.log('ERROR', 'Controller disparou erro durante reprodução do episódio: ${details.technicalSummary}');
+      PlayerDiagnostics.logDiagnosticDetails(details);
       PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
       PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${c.value.position}, isPlaying=${c.value.isPlaying}, isBuffering=${c.value.isBuffering}');

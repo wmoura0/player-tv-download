@@ -837,6 +837,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     if (val.hasError && _playerError == null) {
       final details = PlayerDiagnostics.analyzeError(val.errorDescription ?? 'Falha na transmissão do canal.');
       PlayerDiagnostics.log('ERROR', 'Controller disparou erro em canal ao vivo: ${details.technicalSummary}');
+      PlayerDiagnostics.logDiagnosticDetails(details);
       PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
       PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
       PlayerDiagnostics.log('STATE', 'hasError=true, isPlaying=${val.isPlaying}, isBuffering=${val.isBuffering}');
@@ -1031,6 +1032,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
         PlayerDiagnostics.log('ERROR', 'Falha ao inicializar canal ao vivo: ${details.technicalSummary}');
+        PlayerDiagnostics.logDiagnosticDetails(details);
         PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
         PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
         PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');

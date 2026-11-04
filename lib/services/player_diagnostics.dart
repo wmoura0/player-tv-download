@@ -34,6 +34,8 @@ class HttpProbeResult {
 class DiagnosticErrorDetails {
   final String? errorCodeName;
   final int? errorCode;
+  final int? exoPlayerHttpStatus;
+  final int? probeHttpStatus;
   final String? causeClass;
   final String? causeMessage;
   final String shortUiMessage;
@@ -42,6 +44,8 @@ class DiagnosticErrorDetails {
   const DiagnosticErrorDetails({
     this.errorCodeName,
     this.errorCode,
+    this.exoPlayerHttpStatus,
+    this.probeHttpStatus,
     this.causeClass,
     this.causeMessage,
     required this.shortUiMessage,
@@ -62,6 +66,14 @@ class PlayerDiagnostics {
     try {
       _channel.invokeMethod('logPlayer', {'message': formatted}).catchError((_) {});
     } catch (_) {}
+  }
+
+  /// Emite em conjunto as tags obrigatórias de status do ExoPlayer e probe
+  static void logDiagnosticDetails(DiagnosticErrorDetails details) {
+    log('PLAYER][EXOPLAYER_HTTP_STATUS', details.exoPlayerHttpStatus != null ? '${details.exoPlayerHttpStatus}' : 'N/D');
+    log('PLAYER][PROBE_HTTP_STATUS', details.probeHttpStatus != null ? '${details.probeHttpStatus}' : 'N/D');
+    log('PLAYER][ERROR_CODE', details.errorCode != null ? '${details.errorCode}' : 'N/D');
+    log('PLAYER][CAUSE_CLASS', details.causeClass ?? 'N/D');
   }
 
   /// Realiza uma sondagem HTTP leve e rápida ao endpoint do stream antes ou durante o erro
@@ -86,7 +98,26 @@ class PlayerDiagnostics {
       };
 
       final request = http.Request('GET', uri)..headers.addAll(reqHeaders);
-      final streamedResponse = await client.send(request).timeout(timeout);
+      var streamedResponse = await client.send(request).timeout(timeout);
+
+      // Se retornou 404, 405 ou 416 com Range header, tentar HEAD sem Range
+      // para evitar falsos 404/416 causados por proxies ou servidores que não suportam Range
+      if (streamedResponse.statusCode == 404 ||
+          streamedResponse.statusCode == 416 ||
+          streamedResponse.statusCode == 405) {
+        try {
+          final fallbackHeaders = <String, String>{
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
+            ...?headers,
+          };
+          final headReq = http.Request('HEAD', uri)..headers.addAll(fallbackHeaders);
+          final headRes = await client.send(headReq).timeout(const Duration(seconds: 3));
+          if (headRes.statusCode >= 200 && headRes.statusCode < 400) {
+            streamedResponse = headRes;
+          }
+        } catch (_) {}
+      }
+
       sw.stop();
 
       final statusCode = streamedResponse.statusCode;
@@ -131,6 +162,8 @@ class PlayerDiagnostics {
 
     String? codeName;
     int? code;
+    int? exoPlayerHttpStatus;
+    final int? probeHttpStatus = probe?.statusCode;
     String? causeClass;
     String? causeMsg;
     String shortUi;
@@ -147,12 +180,19 @@ class PlayerDiagnostics {
       codeName = nameMatch.group(0);
     }
 
-    // 3. Extração de classe de causa e códigos específicos
+    // 3. Extração explícita de HTTP Status vindo diretamente do ExoPlayer
+    final exoStatusMatch = RegExp(r'(?:response\s*code|status\s*code)\s*[:=]\s*(\d+)', caseSensitive: false).firstMatch(rawText);
+    if (exoStatusMatch != null) {
+      exoPlayerHttpStatus = int.tryParse(exoStatusMatch.group(1)!);
+    }
+
+    // 4. Extração de classe de causa e códigos específicos
     if (lower.contains('cleartext http traffic') || lower.contains('cleartext not permitted')) {
       causeClass = 'CleartextNotPermittedException';
       causeMsg = 'O sistema operacional bloqueou tráfego HTTP sem criptografia';
       shortUi = 'Bloqueio de rede Cleartext (HTTP)';
-    } else if (probe?.isForbidden == true ||
+    } else if (exoPlayerHttpStatus == 401 ||
+        exoPlayerHttpStatus == 403 ||
         lower.contains('response code: 403') ||
         lower.contains('response code: 401') ||
         lower.contains('code: 403') ||
@@ -160,23 +200,29 @@ class PlayerDiagnostics {
         lower.contains('403 forbidden') ||
         lower.contains('401 unauthorized')) {
       causeClass = 'HttpDataSource\$InvalidResponseCodeException';
-      final status = probe?.statusCode ?? (lower.contains('401') ? 401 : 403);
-      causeMsg = 'Servidor rejeitou acesso com HTTP $status (Token expirado ou limite de conexões simultâneas)';
-      shortUi = 'HTTP $status (Acesso Negado / Limite de Telas)';
-    } else if (probe?.isNotFound == true ||
+      exoPlayerHttpStatus ??= (lower.contains('401') ? 401 : 403);
+      causeMsg = 'Servidor rejeitou acesso com HTTP $exoPlayerHttpStatus (Token expirado ou limite de conexões simultâneas)';
+      shortUi = 'HTTP $exoPlayerHttpStatus (Acesso Negado / Limite de Telas)';
+    } else if (exoPlayerHttpStatus == 404 ||
         lower.contains('response code: 404') ||
         lower.contains('code: 404') ||
         lower.contains('404 not found')) {
       causeClass = 'HttpDataSource\$InvalidResponseCodeException';
-      causeMsg = 'Arquivo de mídia não encontrado no servidor remoto (HTTP 404)';
-      shortUi = 'HTTP 404 (Arquivo não encontrado no servidor)';
-    } else if (probe?.isServerError == true ||
-        lower.contains('response code: 5') ||
-        lower.contains('code: 500') ||
-        lower.contains('code: 502') ||
-        lower.contains('code: 503')) {
+      exoPlayerHttpStatus = 404;
+      causeMsg = 'ExoPlayer recebeu HTTP 404: Arquivo de mídia não encontrado no servidor remoto';
+      shortUi = 'HTTP 404 — Arquivo não encontrado no servidor';
+    } else if (probe?.isNotFound == true) {
+      // O ExoPlayer falhou por outra razão, mas o probe HTTP detectou 404 na URL
+      causeClass = lower.contains('httpdatasource') ? 'HttpDataSource\$InvalidResponseCodeException' : 'HttpProbeNotFound';
+      causeMsg = 'Sondagem HTTP retornou 404: Arquivo inexistente ou URL inválida';
+      shortUi = 'Sondagem HTTP 404 (Arquivo inexistente)';
+    } else if (exoPlayerHttpStatus != null && exoPlayerHttpStatus >= 500) {
       causeClass = 'HttpDataSource\$InvalidResponseCodeException';
-      causeMsg = 'Servidor de streaming com erro interno (HTTP 5xx)';
+      causeMsg = 'Servidor de streaming com erro interno (HTTP $exoPlayerHttpStatus)';
+      shortUi = 'HTTP $exoPlayerHttpStatus (Erro interno no servidor)';
+    } else if (probe?.isServerError == true) {
+      causeClass = 'HttpDataSource\$InvalidResponseCodeException';
+      causeMsg = 'Servidor de streaming com erro interno (HTTP ${probe?.statusCode})';
       shortUi = 'HTTP ${probe?.statusCode ?? '5xx'} (Erro interno no servidor)';
     } else if (error is TimeoutException || lower.contains('timeoutexception') || lower.contains('tempo limite')) {
       causeClass = 'TimeoutException';
@@ -208,13 +254,16 @@ class PlayerDiagnostics {
     summary.write('Causa: $causeClass');
     if (codeName != null) summary.write(' | Código: $codeName');
     if (code != null) summary.write(' ($code)');
-    if (probe?.statusCode != null) summary.write(' | HTTP: ${probe!.statusCode}');
+    if (exoPlayerHttpStatus != null) summary.write(' | ExoPlayer HTTP: $exoPlayerHttpStatus');
+    if (probeHttpStatus != null) summary.write(' | Probe HTTP: $probeHttpStatus');
     if (probe?.contentType != null) summary.write(' | Tipo: ${probe!.contentType}');
     summary.write(' | Detalhe: $causeMsg');
 
     return DiagnosticErrorDetails(
       errorCodeName: codeName,
       errorCode: code,
+      exoPlayerHttpStatus: exoPlayerHttpStatus,
+      probeHttpStatus: probeHttpStatus,
       causeClass: causeClass,
       causeMessage: causeMsg,
       shortUiMessage: shortUi,

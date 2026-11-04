@@ -210,8 +210,10 @@ class XtreamSeriesItem {
       }
     }
 
+    final rawSeriesId = json['series_id'] ?? json['id'] ?? json['stream_id'];
+
     return XtreamSeriesItem(
-      seriesId: int.tryParse(json['series_id']?.toString() ?? '') ?? 0,
+      seriesId: int.tryParse(rawSeriesId?.toString() ?? '') ?? 0,
       num: int.tryParse(json['num']?.toString() ?? ''),
       name: json['name']?.toString() ?? 'Série sem título',
       cover: json['cover']?.toString(),

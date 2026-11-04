@@ -295,6 +295,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
     PlayerDiagnostics.log('ERROR', 'Falha na reprodução do filme: ${details.technicalSummary}');
+    PlayerDiagnostics.logDiagnosticDetails(details);
     PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
     PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
     PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
@@ -306,6 +307,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     _metrics.markError(userMessage);
 
     final isResourceNotFound = probe.isNotFound ||
+        details.exoPlayerHttpStatus == 404 ||
         (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
          details.causeClass?.contains('Decoder') == true);
 
@@ -355,6 +357,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
       _initialBufferingWatchdog?.cancel();
       final details = PlayerDiagnostics.analyzeError(val.errorDescription ?? 'Erro interno de reprodução');
       PlayerDiagnostics.log('ERROR', 'Controller disparou erro durante reprodução: ${details.technicalSummary}');
+      PlayerDiagnostics.logDiagnosticDetails(details);
       PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
       PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${val.position}, isPlaying=${val.isPlaying}, isBuffering=${val.isBuffering}');

@@ -1,11 +1,11 @@
 {
-  "version": "1.2.4",
-  "versionCode": 7,
+  "version": "1.2.5",
+  "versionCode": 8,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.4/JessFlix-v1.2.4.apk",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.5/JessFlix-v1.2.5.apk",
   "fileSize": 57382718,
-  "sha256": "02ec4531cf38e1d497bc7fd0b68455842395008fa1f2c7fff01d0ea843cba70d",
-  "releaseNotes": "• Diagnóstico instrumental de reprodução no Media3/ExoPlayer com identificação de erros ocultos.\n• Permissão explícita de tráfego Cleartext HTTP para reprodução em redes sem SSL no Fire OS e Android.\n• Destaque visual na tela do televisor com código de status e detalhe técnico de erro de conexão.\n• Captura nativa de logs de streaming sob a tag JESSFLIX_PLAYER no Logcat.",
-  "publishedAt": "2026-11-04T13:10:00.000Z",
+  "sha256": "f30c052316237c00c975f5839a5499c404d4dca4b7e924a410c79a6c34ffd36b",
+  "releaseNotes": "• Correção definitiva de erro HTTP 404 em episódios de séries com nomes duplicados e resolução de stream_id.\n• Contingência automática de extensões (.ts, .mkv, .mp4) para séries e animes Xtream.\n• Diferenciação precisa de status HTTP (ExoPlayer vs Probe) com logs unificados [JESSFLIX_PLAYER].\n• Sanitização completa de URLs e credenciais sem vazamento em logs ou mensagens de erro.",
+  "publishedAt": "2026-11-04T14:25:00.000Z",
   "mandatory": false
 }
