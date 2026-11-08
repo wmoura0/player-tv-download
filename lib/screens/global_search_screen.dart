@@ -1,10 +1,12 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/playlist.dart';
 import '../models/xtream_catalog.dart';
+import '../services/playlist_storage.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
+import 'playlist_channels_screen.dart';
 import 'series_detail_screen.dart';
 import 'vod_detail_screen.dart';
 import 'xtream_catalog_screen.dart';
@@ -82,18 +84,59 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
 
     try {
       if (widget.catalogService != null) {
-        // Carrega streams de TV, VOD e Séries (instantâneo do cache de memória/disco)
-        final results = await Future.wait([
-          widget.catalogService!.fetchLiveStreams(categoryId: 'all'),
-          widget.catalogService!.fetchVodStreams(categoryId: 'all'),
-          widget.catalogService!.fetchSeries(categoryId: 'all'),
-        ]);
+        final service = widget.catalogService!;
+
+        // 1. Prioridade imediata: se já existem dados em memória, hidrata instantaneamente sem qualquer delay de rede/disco
+        if (service.cachedAllLiveStreams != null && service.cachedAllLiveStreams!.isNotEmpty) {
+          _allLiveStreams = service.cachedAllLiveStreams!;
+        }
+        if (service.cachedAllVodStreams != null && service.cachedAllVodStreams!.isNotEmpty) {
+          _allVodStreams = service.cachedAllVodStreams!;
+        }
+        if (service.cachedAllSeries != null && service.cachedAllSeries!.isNotEmpty) {
+          _allSeries = service.cachedAllSeries!;
+        }
+
+        if (mounted && (_allLiveStreams.isNotEmpty || _allVodStreams.isNotEmpty || _allSeries.isNotEmpty)) {
+          setState(() {
+            _isLoadingAll = false;
+            if (_currentQuery.isNotEmpty) _applyFilter();
+          });
+        }
+
+        // 2. Carregamento progressivo e sequencial (Live -> VOD -> Séries) evitando picos de RAM concorrentes
+        if (_allLiveStreams.isEmpty) {
+          final live = await service.fetchLiveStreams(categoryId: 'all');
+          if (mounted) {
+            setState(() {
+              _allLiveStreams = live;
+              if (_currentQuery.isNotEmpty) _applyFilter();
+            });
+          }
+        }
+
+        if (_allVodStreams.isEmpty) {
+          final vod = await service.fetchVodStreams(categoryId: 'all');
+          if (mounted) {
+            setState(() {
+              _allVodStreams = vod;
+              if (_currentQuery.isNotEmpty) _applyFilter();
+            });
+          }
+        }
+
+        if (_allSeries.isEmpty) {
+          final series = await service.fetchSeries(categoryId: 'all');
+          if (mounted) {
+            setState(() {
+              _allSeries = series;
+              if (_currentQuery.isNotEmpty) _applyFilter();
+            });
+          }
+        }
 
         if (mounted) {
           setState(() {
-            _allLiveStreams = results[0] as List<XtreamLiveStream>;
-            _allVodStreams = results[1] as List<XtreamVodStream>;
-            _allSeries = results[2] as List<XtreamSeriesItem>;
             _isLoadingAll = false;
             if (_currentQuery.isNotEmpty) {
               _applyFilter();
@@ -210,6 +253,28 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
           series: series,
           catalogService: widget.catalogService!,
           accountKey: widget.accountKey,
+        ),
+      ),
+    );
+  }
+
+  void _openM3uChannel(M3uChannel channel) {
+    final playlist = widget.activeM3uPlaylist ??
+        M3uPlaylist(
+          id: 'search_m3u',
+          name: channel.groupTitle.isNotEmpty ? channel.groupTitle : 'Lista M3U',
+          url: channel.streamUrl,
+          channelCount: 1,
+          lastUpdated: DateTime.now(),
+          channels: [channel],
+        );
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlaylistChannelsScreen(
+          playlist: playlist,
+          storageService: PlaylistStorageService(),
+          initialChannel: channel,
         ),
       ),
     );
@@ -518,7 +583,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
       badgeColor: accent,
       imageUrl: channel.logoUrl,
       fallbackIcon: Icons.live_tv_rounded,
-      onTap: () {},
+      onTap: () => _openM3uChannel(channel),
     );
   }
 

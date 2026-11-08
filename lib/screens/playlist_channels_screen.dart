@@ -21,11 +21,13 @@ import '../widgets/live_player_view.dart';
 class PlaylistChannelsScreen extends StatefulWidget {
   final M3uPlaylist playlist;
   final PlaylistStorageService storageService;
+  final M3uChannel? initialChannel;
 
   const PlaylistChannelsScreen({
     super.key,
     required this.playlist,
     required this.storageService,
+    this.initialChannel,
   });
 
   @override
@@ -183,6 +185,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
             _allChannels = _currentPlaylist.channels!;
             _isLoading = false;
           });
+          _checkInitialChannel();
         }
         return;
       }
@@ -193,6 +196,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           _allChannels = channels;
           _isLoading = false;
         });
+        _checkInitialChannel();
       }
     } catch (e) {
       if (mounted) {
@@ -203,6 +207,16 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
           _isLoading = false;
         });
       }
+    }
+  }
+
+  void _checkInitialChannel() {
+    if (widget.initialChannel != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _playM3uChannel(widget.initialChannel!, keepFullscreen: true);
+        }
+      });
     }
   }
 

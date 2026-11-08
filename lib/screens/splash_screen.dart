@@ -1,5 +1,6 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/xtream_account.dart';
 import '../services/secure_storage_service.dart';
 import '../services/xtream_auth_service.dart';
 import '../theme/app_colors.dart';
@@ -160,9 +161,34 @@ class _SplashScreenState extends State<SplashScreen>
     final Widget targetScreen;
     if (result != null && result.isSuccess && result.account != null) {
       targetScreen = HomeScreen(xtreamAccount: result.account);
-    } else {
+    } else if (result != null && result.isAuthFailure) {
+      // Credenciais comprovadamente inválidas (401/403 ou auth == 0): redireciona para login
       targetScreen = const XtreamLoginScreen();
+    } else {
+      // Falha transitória de rede, timeout ou erro de data/hora TLS:
+      // Se houver credenciais salvas, entra offline com cache para não deslogar o usuário
+      final storage = widget.secureStorage ?? SecureStorageService();
+      final savedUser = await storage.getUsername();
+      final savedPass = await storage.getPassword();
+      final savedServer = await storage.getServerUrl();
+
+      if (savedUser != null && savedUser.isNotEmpty && savedPass != null && savedPass.isNotEmpty) {
+        final server = (savedServer != null && savedServer.isNotEmpty)
+            ? savedServer
+            : 'http://default-server';
+        final offlineAccount = XtreamAccount(
+          serverUrl: server,
+          username: savedUser,
+          isAuthorized: true,
+          status: 'Offline (Cache)',
+        );
+        targetScreen = HomeScreen(xtreamAccount: offlineAccount);
+      } else {
+        targetScreen = const XtreamLoginScreen();
+      }
     }
+
+    if (!mounted) return;
 
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(

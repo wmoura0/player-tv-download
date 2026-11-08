@@ -60,6 +60,10 @@ class XtreamCatalogService extends ChangeNotifier {
   int? get totalVodCount => _vodStreamsCache['all']?.length;
   int? get totalSeriesCount => _seriesCache['all']?.length;
 
+  List<XtreamLiveStream>? get cachedAllLiveStreams => _liveStreamsCache['all'];
+  List<XtreamVodStream>? get cachedAllVodStreams => _vodStreamsCache['all'];
+  List<XtreamSeriesItem>? get cachedAllSeries => _seriesCache['all'];
+
   int? getCategoryLiveCount(String catId) {
     if (catId == 'all') return totalLiveCount;
     return _liveStreamsCache['all']?.where((s) => s.categoryId == catId).length;

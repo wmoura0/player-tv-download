@@ -12,6 +12,7 @@ enum XtreamAuthStatus {
   unauthorized,
   incompatibleResponse,
   networkError,
+  tlsClockMismatch,
 }
 
 /// Resultado detalhado da tentativa de autenticação com a API Xtream Codes.
@@ -29,6 +30,13 @@ class XtreamAuthResult {
   });
 
   bool get isSuccess => status == XtreamAuthStatus.success;
+  bool get isTlsClockMismatch => status == XtreamAuthStatus.tlsClockMismatch;
+  bool get isNetworkOrTimeout =>
+      status == XtreamAuthStatus.networkError ||
+      status == XtreamAuthStatus.tlsClockMismatch;
+  bool get isAuthFailure =>
+      status == XtreamAuthStatus.invalidCredentials ||
+      status == XtreamAuthStatus.unauthorized;
 
   factory XtreamAuthResult.success(XtreamAccount account) {
     return XtreamAuthResult(
@@ -74,6 +82,13 @@ class XtreamAuthResult {
   factory XtreamAuthResult.networkError(String message) {
     return XtreamAuthResult(
       status: XtreamAuthStatus.networkError,
+      message: message,
+    );
+  }
+
+  factory XtreamAuthResult.tlsClockMismatch(String message) {
+    return XtreamAuthResult(
+      status: XtreamAuthStatus.tlsClockMismatch,
       message: message,
     );
   }
@@ -202,6 +217,22 @@ class XtreamAuthService {
       );
 
       return XtreamAuthResult.success(account);
+    } on HandshakeException catch (e) {
+      final raw = e.toString().toLowerCase();
+      final isClockIssue = raw.contains('not yet valid') ||
+          raw.contains('expired') ||
+          raw.contains('current time') ||
+          raw.contains('date');
+      if (isClockIssue) {
+        return XtreamAuthResult.tlsClockMismatch(
+          'Erro de Data/Hora no Fire TV: o certificado de segurança SSL não pôde ser validado '
+          'porque a data e hora do dispositivo estão incorretas. '
+          'Ajuste o relógio nas Configurações do Fire TV para restabelecer a conexão.',
+        );
+      }
+      return XtreamAuthResult.networkError(
+        'Falha no aperto de mão TLS/SSL ao acessar $sanitizedBase: verifique se o servidor suporta HTTPS.',
+      );
     } on TimeoutException {
       return XtreamAuthResult.networkError(
         'Tempo limite de conexão esgotado ao acessar $sanitizedBase. Verifique sua conexão ou se o servidor está online.',
@@ -212,6 +243,17 @@ class XtreamAuthService {
         'Falha de rede ao conectar em $sanitizedBase: $safeErr',
       );
     } catch (e) {
+      final raw = e.toString().toLowerCase();
+      if (raw.contains('not yet valid') ||
+          raw.contains('expired') ||
+          raw.contains('current time') ||
+          (raw.contains('handshake') && raw.contains('certificate'))) {
+        return XtreamAuthResult.tlsClockMismatch(
+          'Erro de Data/Hora no Fire TV: o certificado de segurança SSL não pôde ser validado '
+          'porque a data e hora do dispositivo estão incorretas. '
+          'Ajuste o relógio nas Configurações do Fire TV para restabelecer a conexão.',
+        );
+      }
       final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
       return XtreamAuthResult.networkError(
         'Erro inesperado na comunicação com o servidor: $safeErr',
