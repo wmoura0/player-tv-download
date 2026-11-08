@@ -272,6 +272,7 @@ class LivePlayerViewState extends State<LivePlayerView> {
   static DateTime Function() clock = DateTime.now;
 
   DateTime _lastBackPressTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastChannelZappingTime = DateTime.fromMillisecondsSinceEpoch(0);
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -316,25 +317,37 @@ class LivePlayerViewState extends State<LivePlayerView> {
         return KeyEventResult.handled;
       }
 
-      // Troca física de canal (Channel Up/Down)
+      // Troca física de canal (Channel Up/Down e D-Pad ArrowUp / ArrowDown em tela cheia)
       if (widget.isFullscreen) {
-        if (event.logicalKey == LogicalKeyboardKey.channelUp ||
-            event.logicalKey == LogicalKeyboardKey.pageUp ||
-            event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
-          widget.onNextChannel?.call();
+        if (event.logicalKey == LogicalKeyboardKey.arrowUp ||
+            event.logicalKey == LogicalKeyboardKey.channelDown ||
+            event.logicalKey == LogicalKeyboardKey.pageDown ||
+            event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
+          final now = clock();
+          if (now.difference(_lastChannelZappingTime) < const Duration(milliseconds: 300)) {
+            return KeyEventResult.handled;
+          }
+          _lastChannelZappingTime = now;
+          widget.onPreviousChannel?.call();
           _revealControls();
           return KeyEventResult.handled;
         }
-        if (event.logicalKey == LogicalKeyboardKey.channelDown ||
-            event.logicalKey == LogicalKeyboardKey.pageDown ||
-            event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
-          widget.onPreviousChannel?.call();
+        if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+            event.logicalKey == LogicalKeyboardKey.channelUp ||
+            event.logicalKey == LogicalKeyboardKey.pageUp ||
+            event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
+          final now = clock();
+          if (now.difference(_lastChannelZappingTime) < const Duration(milliseconds: 300)) {
+            return KeyEventResult.handled;
+          }
+          _lastChannelZappingTime = now;
+          widget.onNextChannel?.call();
           _revealControls();
           return KeyEventResult.handled;
         }
       }
 
-      // Qualquer outra tecla (Enter, Select, Espaço, Setas D-Pad): APENAS revela os controles e foca o botão central
+      // Qualquer outra tecla (Enter, Select, Espaço, Setas Left/Right): APENAS revela os controles e foca o botão central
       // Requisito estrito: OK com controles ocultos NÃO pausa nem executa ações inesperadas!
       _revealControls();
       return KeyEventResult.handled;

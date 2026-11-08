@@ -53,7 +53,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
   String? _playerError;
   LiveVideoFitMode _fitMode = LiveVideoFitMode.contain;
   late final PlayerStabilityManager _stabilityManager;
-  bool _isConnecting = false;
+  int _connectionGeneration = 0;
   bool _isBackDebounced = false;
   bool _isExitingFullscreen = false;
   Timer? _backDebounceTimer;
@@ -131,6 +131,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
   @override
   void dispose() {
+    _connectionGeneration++;
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
@@ -383,8 +384,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       _stabilityManager.resetRetries();
     }
 
-    if (_isConnecting) return;
-    _isConnecting = true;
+    final generation = ++_connectionGeneration;
 
     setState(() {
       _activeChannel = channel;
@@ -399,29 +399,29 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
     final oldController = _playerController;
     _playerController = null;
     oldController?.removeListener(_onPlayerStateChanged);
-    try {
-      await oldController?.pause();
-      await oldController?.dispose();
-    } catch (_) {}
+    if (oldController != null) {
+      oldController.pause().catchError((_) {});
+      oldController.dispose().catchError((_) {});
+    }
 
-    if (!mounted) {
-      _isConnecting = false;
+    if (!mounted || generation != _connectionGeneration) {
       return;
     }
 
     final sanitizedDisplay = UrlSanitizer.sanitize(channel.streamUrl);
-    debugPrint('[PLAYER] Conectando ao canal M3U: $sanitizedDisplay');
+    debugPrint('[PLAYER] Conectando ao canal M3U [gen=$generation]: $sanitizedDisplay');
 
     final isMpegTs = PlayerStabilityManager.isMpegTsUrl(channel.streamUrl);
     _stabilityManager.isMpegTsStream = isMpegTs;
 
     final uri = Uri.tryParse(channel.streamUrl);
     if (uri == null) {
-      _isConnecting = false;
-      setState(() {
-        _isPlayerLoading = false;
-        _playerError = 'Endereço de canal inválido.';
-      });
+      if (generation == _connectionGeneration) {
+        setState(() {
+          _isPlayerLoading = false;
+          _playerError = 'Endereço de canal inválido.';
+        });
+      }
       return;
     }
 
@@ -432,11 +432,16 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
       },
     );
 
+    if (!mounted || generation != _connectionGeneration) {
+      controller.dispose().catchError((_) {});
+      return;
+    }
+
     _playerController = controller;
     controller.addListener(_onPlayerStateChanged);
 
     _stabilityManager.startOpenWatchdog(() {
-      if (mounted && _playerController == controller && _isPlayerLoading) {
+      if (mounted && generation == _connectionGeneration && _playerController == controller && _isPlayerLoading) {
         setState(() {
           _isPlayerLoading = false;
           _playerError = 'Tempo limite de conexão excedido. Tentando reconectar...';
@@ -447,25 +452,35 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
     try {
       await controller.initialize().timeout(const Duration(seconds: 15));
-      if (mounted && _playerController == controller) {
-        _stabilityManager.clearOpenWatchdog();
-        _stabilityManager.metrics?.markConnectionEstablished();
-        _stabilityManager.metrics?.markPlayerInitialized();
-        if (!isRetry) {
-          _stabilityManager.resetRetries();
-        }
-        _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
-
-        await controller.play();
-        DeviceUtils.setPipState(enabled: true);
-        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
-        setState(() {
-          _isPlayerLoading = false;
-          _playerError = null;
-        });
+      if (!mounted || generation != _connectionGeneration || _playerController != controller) {
+        controller.pause().catchError((_) {});
+        controller.dispose().catchError((_) {});
+        return;
       }
+
+      _stabilityManager.clearOpenWatchdog();
+      _stabilityManager.metrics?.markConnectionEstablished();
+      _stabilityManager.metrics?.markPlayerInitialized();
+      if (!isRetry) {
+        _stabilityManager.resetRetries();
+      }
+      _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
+
+      await controller.play();
+      if (!mounted || generation != _connectionGeneration || _playerController != controller) {
+        controller.pause().catchError((_) {});
+        controller.dispose().catchError((_) {});
+        return;
+      }
+
+      DeviceUtils.setPipState(enabled: true);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      setState(() {
+        _isPlayerLoading = false;
+        _playerError = null;
+      });
     } catch (e) {
-      if (mounted && _playerController == controller) {
+      if (mounted && generation == _connectionGeneration && _playerController == controller) {
         DeviceUtils.setPipState(enabled: false);
         _stabilityManager.clearOpenWatchdog();
         final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
@@ -475,8 +490,6 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
         });
         _stabilityManager.scheduleRetry(safeErr);
       }
-    } finally {
-      _isConnecting = false;
     }
   }
 
@@ -590,13 +603,13 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
   Future<void> _retryPlayback() async {
     if (_activeChannel == null || !mounted) return;
-    if (_isConnecting) {
-      debugPrint('[PLAYER] Reconexão já em andamento, ignorando chamada redundante.');
+    final c = _playerController;
+    if (c != null && c.value.isInitialized && c.value.isPlaying && _playerError == null) {
+      debugPrint('[PLAYER] Reconexão redundante ignorada: canal saudável.');
       return;
     }
     _stabilityManager.clearOpenWatchdog();
 
-    final c = _playerController;
     if (!_stabilityManager.isMpegTsStream &&
         c != null &&
         c.value.isInitialized &&

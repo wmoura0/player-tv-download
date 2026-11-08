@@ -200,7 +200,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   late final PlayerStabilityManager _stabilityManager;
   late XtreamCatalogType _currentType;
   bool _isSidebarVisible = true;
-  bool _isConnecting = false;
+  int _connectionGeneration = 0;
 
   // Estado do canal e EPG em FOCO (navegação D-pad independente da reprodução)
   XtreamLiveStream? _focusedLiveStream;
@@ -290,6 +290,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   @override
   void dispose() {
+    _connectionGeneration++;
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
@@ -957,21 +958,18 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   Future<void> _initControllerWithUrl(String url) async {
-    if (_isConnecting) return;
-    _isConnecting = true;
+    final generation = ++_connectionGeneration;
 
+    // Desconecta o controlador antigo imediatamente sem bloquear com await
     final oldController = _playerController;
     _playerController = null;
     oldController?.removeListener(_onPlayerStateChanged);
-    try {
-      await oldController?.pause();
-      await oldController?.dispose();
-    } catch (_) {}
-
-    if (!mounted) {
-      _isConnecting = false;
-      return;
+    if (oldController != null) {
+      oldController.pause().catchError((_) {});
+      oldController.dispose().catchError((_) {});
     }
+
+    if (!mounted || generation != _connectionGeneration) return;
 
     final sanitizedDisplay = UrlSanitizer.sanitize(url);
     final isMpegTs = PlayerStabilityManager.isMpegTsUrl(url);
@@ -979,7 +977,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     PlayerDiagnostics.log('REQUEST', 'Tipo=AO VIVO, ID=${_activeLiveStream?.streamId}, Nome="${_activeLiveStream?.name}", Formato=${isMpegTs ? "TS" : "HLS/Outro"}, Rota=${_currentCandidateIndex + 1}/${_candidateUrls.length}');
     PlayerDiagnostics.log('MEDIA_ITEM', 'URL: $sanitizedDisplay');
-    PlayerDiagnostics.log('PREPARE', 'Iniciando controller.initialize() [timeout=15s]');
+    PlayerDiagnostics.log('PREPARE', 'Iniciando controller.initialize() [gen=$generation, timeout=15s]');
 
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
@@ -989,11 +987,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       },
     );
 
+    if (!mounted || generation != _connectionGeneration) {
+      controller.dispose().catchError((_) {});
+      return;
+    }
+
     _playerController = controller;
     controller.addListener(_onPlayerStateChanged);
 
     _stabilityManager.startOpenWatchdog(() {
-      if (mounted && _playerController == controller && _isPlayerLoading) {
+      if (mounted && generation == _connectionGeneration && _playerController == controller && _isPlayerLoading) {
         PlayerDiagnostics.log('TIMEOUT', 'Watchdog de 15s expirou antes do STATE_READY para canal ao vivo');
         setState(() {
           _isPlayerLoading = false;
@@ -1005,30 +1008,40 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
     try {
       await controller.initialize().timeout(const Duration(seconds: 15));
-      if (mounted && _playerController == controller) {
-        _stabilityManager.clearOpenWatchdog();
-        _stabilityManager.metrics?.markConnectionEstablished();
-        _stabilityManager.metrics?.markPlayerInitialized();
-        _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
-
-        PlayerDiagnostics.log('STATE', 'STATE_READY | Resolução: ${controller.value.size.width.toInt()}x${controller.value.size.height.toInt()}');
-        await controller.play();
-        PlayerDiagnostics.log('PLAY', 'controller.play() acionado com sucesso (Live TV)');
-
-        DeviceUtils.setPipState(enabled: true);
-        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
-        setState(() {
-          _isPlayerLoading = false;
-          _playerError = null;
-        });
+      if (!mounted || generation != _connectionGeneration || _playerController != controller) {
+        // Canal foi trocado enquanto este inicializava: descarta silenciosamente
+        controller.pause().catchError((_) {});
+        controller.dispose().catchError((_) {});
+        return;
       }
+
+      _stabilityManager.clearOpenWatchdog();
+      _stabilityManager.metrics?.markConnectionEstablished();
+      _stabilityManager.metrics?.markPlayerInitialized();
+      _stabilityManager.startStallMonitoring(controller, isMpegTs: isMpegTs);
+
+      PlayerDiagnostics.log('STATE', 'STATE_READY | Resolução: ${controller.value.size.width.toInt()}x${controller.value.size.height.toInt()}');
+      await controller.play();
+      if (!mounted || generation != _connectionGeneration || _playerController != controller) {
+        controller.pause().catchError((_) {});
+        controller.dispose().catchError((_) {});
+        return;
+      }
+      PlayerDiagnostics.log('PLAY', 'controller.play() acionado com sucesso (Live TV)');
+
+      DeviceUtils.setPipState(enabled: true);
+      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+      setState(() {
+        _isPlayerLoading = false;
+        _playerError = null;
+      });
     } catch (e) {
-      if (mounted && _playerController == controller) {
+      if (mounted && generation == _connectionGeneration && _playerController == controller) {
         DeviceUtils.setPipState(enabled: false);
         _stabilityManager.clearOpenWatchdog();
-        _isConnecting = false;
 
         final probe = await PlayerDiagnostics.probeStreamUrl(url);
+        if (generation != _connectionGeneration) return;
         final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
         PlayerDiagnostics.log('ERROR', 'Falha ao inicializar canal ao vivo: ${details.technicalSummary}');
@@ -1054,8 +1067,6 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         });
         _stabilityManager.scheduleRetry(details.shortUiMessage);
       }
-    } finally {
-      _isConnecting = false;
     }
   }
 
@@ -1198,15 +1209,15 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   Future<void> _retryPlayback() async {
     if (_activeLiveStream == null || !mounted) return;
-    if (_isConnecting) {
-      debugPrint('[PLAYER] Reconexão já em andamento, ignorando chamada redundante.');
+    final c = _playerController;
+    if (c != null && c.value.isInitialized && c.value.isPlaying && _playerError == null) {
+      debugPrint('[PLAYER] Reprodução ativa e saudável, ignorando reconexão redundante.');
       return;
     }
     _stabilityManager.clearOpenWatchdog();
 
     // Tenta soft recovery antes de descartar o controlador apenas se o fluxo NÃO for MPEG-TS,
     // se o controlador ainda estiver vivo e se ainda não estivermos no meio de um ciclo de retries ativo
-    final c = _playerController;
     if (!_stabilityManager.isMpegTsStream &&
         c != null &&
         c.value.isInitialized &&

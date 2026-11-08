@@ -154,6 +154,8 @@ class SettingsService extends ChangeNotifier {
     final fitId = sp.getString(_keyDefaultAspectRatio);
     if (fitId == 'cover') {
       _defaultAspectRatio = LiveVideoFitMode.cover;
+    } else if (fitId == 'fill') {
+      _defaultAspectRatio = LiveVideoFitMode.fill;
     } else {
       _defaultAspectRatio = LiveVideoFitMode.contain;
     }
@@ -198,7 +200,19 @@ class SettingsService extends ChangeNotifier {
     _defaultAspectRatio = mode;
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(_keyDefaultAspectRatio, mode == LiveVideoFitMode.cover ? 'cover' : 'contain');
+    final String fitValue;
+    switch (mode) {
+      case LiveVideoFitMode.cover:
+        fitValue = 'cover';
+        break;
+      case LiveVideoFitMode.fill:
+        fitValue = 'fill';
+        break;
+      case LiveVideoFitMode.contain:
+        fitValue = 'contain';
+        break;
+    }
+    await sp.setString(_keyDefaultAspectRatio, fitValue);
   }
 
   /// Define e persiste a retomada automática de reprodução
