@@ -3,8 +3,9 @@
 **Data:** 07 de Novembro de 2026  
 **Projeto:** JessFlix Fire TV (`C:\Users\Wendell\Desktop\Projeto TV`)  
 **Versão Base:** `1.2.6+9`  
+**Versão Atualizada / Release OTT:** `1.2.7+10`  
 **Commit-Base:** `fcdd8fc85f691a5a307e0902ff50aaa1d6201819`  
-**Branch Dedicada:** `feat/jessflix-rea-3-fases`  
+**Branch Dedicada:** `feat/jessflix-rea-3-fases` (incorporada à `main`)  
 
 ---
 
@@ -12,7 +13,7 @@
 
 A presente missão teve como objetivo implementar integralmente o plano de evolução técnica em 3 fases no aplicativo **JessFlix Fire TV**, preservando a arquitetura nativa Flutter/Media3, eliminando fragilidades identificadas durante a auditoria REA e alinhando o comportamento de reprodução, navegação D-Pad, resiliência de rede e gestão de catálogo aos padrões de estabilidade exigidos para dispositivos Amazon Fire TV e Android TV.
 
-Todas as três fases foram concluídas com sucesso e validadas por testes automatizados e análise estática rigorosa:
+Todas as três fases foram concluídas com sucesso, validadas por testes automatizados e análise estática rigorosa, compiladas e publicadas para atualização direta OTA/OTT na versão **1.2.7 (build 10)**.
 
 - **Fase 1 (Correções Críticas):** Navegação D-Pad 2D no player VOD, desambiguação simétrica de IDs de episódios (eliminando erro 404), preservação de `directSource` em favoritos, ciclo de vida `WidgetsBindingObserver` em players e proteção concorrente de timestamps no "Continuar Assistindo".
 - **Fase 2 (TV ao Vivo e Player):** Teardown assíncrono não-bloqueante com contador de geração (`epoch`), zapping D-Pad fullscreen (ArrowUp / ArrowDown com debounce anti-repique) e ciclo unificado de 3 modos de aspecto (`contain`, `cover`, `fill`).
@@ -41,83 +42,16 @@ Todas as três fases foram concluídas com sucesso e validadas por testes automa
 
 ---
 
-## 3. Detalhamento Técnico das Fases
+## 3. Registro Completo da Verificação de Qualidade
 
-### Fase 1: Correções Críticas
-
-1. **Navegação D-Pad em Filmes e Séries (`VodPlayerView`):**
-   - Implementado sistema de foco bidimensional no overlay de controles com `FocusTraversalGroup` e `FocusScope`.
-   - Adicionada borda ativa `#00E5FF` (ciano vibrante de 2.5px com `BoxShadow`) no item em foco, garantindo visibilidade a 3 metros de distância na TV.
-   - Teclas direcionais `ArrowLeft` e `ArrowRight` do controle remoto foram harmonizadas: em reprodução com OSD oculto, realizam seek de ±10s (e contínuo acelerado ao manter pressionado); com controles visíveis, navegam entre os botões da barra e realizam seek conforme a linha de foco ativa.
-
-2. **Resolução de Episódios com HTTP 404 (`XtreamSeriesInfo`):**
-   - Removido o limite artificial `parsedStreamId <= 100`, que falhava para episódios de séries com mais de 100 capítulos (como animes longos).
-   - Implementada função `_resolveEpisodeIds` com heurística simétrica:
-     - Identifica quando `id` é o número sequencial do episódio (ex.: `64`) e `stream_id` é o identificador real da base de dados (ex.: `184920`).
-     - Detecta painéis Xtream invertidos onde `stream_id` recebe o número sequencial e `id` armazena a chave primária.
-     - Preserva extensões reais (`containerExtension`), com fallback inteligente e não destrutivo.
-
-3. **Diagnóstico Semântico Media3 (`PlayerDiagnostics`):**
-   - Criados métodos de interpretação granular de códigos de erro:
-     - `3001` e `3003`: Identificação de timeout de leitura e recusa de socket.
-     - `401` e `403`: Limite de conexões ativas ou credenciais revogadas no servidor.
-     - `404`: Arquivo de mídia inexistente ou transcodificação ausente na fonte.
-     - Exceções TLS: Destaque imediato para expiração de certificado ou relógio dessincronizado.
-
-4. **Preservação de `directSource` e Reidratação de Favoritos:**
-   - Adicionado campo `directSource` serializado no `FavoriteItem` e integrado ao `XtreamCatalogItem`.
-   - Quando um favorito de série ou filme é aberto, o app utiliza diretamente os metadados persistidos sem forçar varreduras completas no catálogo remoto, prevenindo perda de contexto caso a categoria do item tenha sido renomeada.
-
-5. **Concorrência e Promoção de Próximo Episódio (`PlaybackProgressService`):**
-   - Adicionada proteção contra concorrência via `updatedAt`: eventos atrasados de streaming não sobrescrevem posições mais recentes já salvas.
-   - Quando um episódio atinge mais de 90% de conclusão, o próximo episódio é promovido no "Continuar Assistindo" com posição `00:00` e `canResume = true`.
-
----
-
-### Fase 2: TV ao Vivo e Player
-
-1. **Troca de Canais por Geração (`epoch`) e Teardown Assíncrono:**
-   - O lock booleano `if (_isConnecting) return;` causava o descarte de comandos rápidos do usuário no controle remoto e levava a descompassos entre o canal selecionado e o áudio em execução.
-   - Substituído pelo contador `_connectionGeneration`: cada tentativa de conexão incrementa a geração. Se uma resposta assíncrona pertencer a uma geração anterior, o controller resultante é descartado imediatamente (`dispose()`) sem afetar o canal corrente.
-   - O teardown do player anterior foi desacoplado do fluxo principal, tornando as trocas ágeis e sem engasgos na renderização.
-
-2. **Zapping em Tela Cheia:**
-   - `LivePlayerView` agora responde a `LogicalKeyboardKey.arrowUp` (canal anterior) e `LogicalKeyboardKey.arrowDown` (próximo canal) mesmo quando o OSD está oculto.
-   - Mecanismo de debounce de 300ms protege contra repique de teclas nos controles físicos de Fire TV Stick e TV Box.
-
-3. **Ciclo Unificado de Proporções de Tela:**
-   - Implementado ciclo contínuo em 3 modos: `contain` (original mantendo proporções) $\rightarrow$ `cover` (preenchimento cortando bordas) $\rightarrow$ `fill` (esticamento total da tela) $\rightarrow$ `contain`.
-   - Estado salvo via `SettingsService` e sincronizado tanto na TV ao vivo quanto na reprodução de filmes e séries.
-
----
-
-### Fase 3: Rede, Inicialização e Busca
-
-1. **Diagnóstico Semântico de TLS e Relógio (`XtreamAuthService`):**
-   - Métodos `isTlsClockMismatch()`, `isNetworkOrTimeout()` e `isAuthFailure()` classificam a causa exata da falha de conexão.
-   - Em caso de certificados SSL recusados por dessincronização temporal comum no Fire OS, uma mensagem específica orienta o usuário a corrigir a data e hora do dispositivo nas configurações do sistema.
-
-2. **Inicialização Offline-First no Splash (`SplashScreen`):**
-   - A inicialização do aplicativo não expulsa mais o usuário para a tela de login ao enfrentar timeouts de rede ou falhas intermitentes de conexão.
-   - Se houver credenciais salvas no armazenamento seguro, o app carrega o cache local em disco e navega diretamente para a `HomeScreen` no modo offline/resiliente. O redirecionamento para login ocorre exclusivamente sob erros explícitos de autorização (HTTP 401 ou 403).
-
-3. **Busca Global Progressiva e Otimizada em Memória:**
-   - A requisição simultânea `Future.wait([fetchLive, fetchVod, fetchSeries])` causava estouro de memória e paradas de Garbage Collector em Fire TV Stick Lite.
-   - Implementado carregamento sequencial progressivo priorizando streams já carregados em memória (`cachedAllLiveStreams`, `cachedAllVodStreams`, `cachedAllSeries`).
-   - Adicionada reprodução imediata de canais M3U a partir da pesquisa, repassando o item selecionado via parâmetro `initialChannel` para `PlaylistChannelsScreen`.
-
----
-
-## 4. Registro Completo da Verificação de Qualidade
-
-### 4.1. Análise Estática (`flutter analyze`)
+### 3.1. Análise Estática (`flutter analyze`)
 - **Comando:** `flutter analyze`
-- **Resultado:** `No issues found! (ran in 2.7s)`
+- **Resultado:** `No issues found!`
 - **Erros:** 0
 - **Avisos (Warnings):** 0
 - **Informações:** 0
 
-### 4.2. Suíte de Testes Automatizados (`flutter test`)
+### 3.2. Suíte de Testes Automatizados (`flutter test`)
 - **Comando:** `flutter test`
 - **Total de Testes:** **334 testes**
 - **Aprovados:** **334 testes (100%)**
@@ -125,35 +59,38 @@ Todas as três fases foram concluídas com sucesso e validadas por testes automa
 - **Erros:** **0**
 - **Tempo de Execução:** 55 segundos
 
-#### Novos Testes Desenvolvidos na Missão:
-1. `test/phase1_critical_fixes_test.dart` (17 testes cobrindo navegação D-Pad VOD, desambiguação de episódios, diagnósticos e concorrência).
-2. `test/phase2_live_and_player_test.dart` (7 testes cobrindo zapping ArrowUp/ArrowDown, debounce, epoch de conexão e 3 modos de aspecto).
-3. `test/phase3_network_offline_search_test.dart` (7 testes cobrindo diagnóstico de data/hora TLS, splash offline-first, busca progressiva e M3U).
-
-### 4.3. Compilação do APK de Debug
-- **Comando:** `flutter build apk --debug`
-- **Status:** Sucesso absoluto (`√ Built build\app\outputs\flutter-apk\app-debug.apk`)
-- **Caminho:** `C:\Users\Wendell\Desktop\Projeto TV\build\app\outputs\flutter-apk\app-debug.apk`
-- **Tamanho:** **167.318.323 bytes** (~159,5 MB)
-- **Data/Hora de Geração:** 07/11/2026 23:57:01
+### 3.3. Compilação do APK de Release
+- **Comando:** `flutter build apk --release`
+- **Status:** Sucesso (`√ Built build\app\outputs\flutter-apk\app-release.apk (55.1MB)`)
+- **Arquivo de Release:** `JessFlix-v1.2.7.apk`
+- **Tamanho:** **57.733.745 bytes** (~55,1 MB)
+- **SHA-256:** `ae8498c2765ad440484fc3d8ddcb9f6f5f5b2715d06f8919913c1f43444fb322`
 
 ---
 
-## 5. Histórico de Commits na Branch Dedicada
+## 4. Publicação OTT / OTA (v1.2.7+10)
 
-Branch ativa: `feat/jessflix-rea-3-fases` (derivada de `fcdd8fc85f691a5a307e0902ff50aaa1d6201819`)
+| Propriedade | Valor |
+| :--- | :--- |
+| **Versão / Build** | `1.2.7` (versionCode: `10`) |
+| **Repositório** | `wmoura0/player-tv-download` |
+| **Tag da Release** | [`v1.2.7`](https://github.com/wmoura0/player-tv-download/releases/tag/v1.2.7) |
+| **Download Direto do APK** | [`JessFlix-v1.2.7.apk`](https://github.com/wmoura0/player-tv-download/releases/download/v1.2.7/JessFlix-v1.2.7.apk) |
+| **Tamanho em Bytes** | `57.733.745` bytes (~55,1 MB) |
+| **SHA-256** | `ae8498c2765ad440484fc3d8ddcb9f6f5f5b2715d06f8919913c1f43444fb322` |
+| **Manifesto OTA** | [`updates/latest.json`](https://raw.githubusercontent.com/wmoura0/player-tv-download/main/updates/latest.json) |
+| **Status HTTP da URL do APK** | `200 OK` |
+| **Status HTTP do Manifesto** | `200 OK` |
+
+---
+
+## 5. Histórico de Commits na Branch `main`
 
 ```text
+8e0b6ac feat(release): JessFlix v1.2.7+10 - 3 fases REA: navegacao D-Pad VOD, zapping e epoch TV ao vivo, offline-first e busca M3U
+e0a233b docs: adicionar relatorio completo da implementacao rea em 3 fases
 f4be403 feat(fase-3): diagnostico tls data/hora, splash offline-first e busca global progressiva com reproducao m3u
 b06f373 feat(fase-2): zapping rapido com epoch, navegacao d-pad tv ao vivo e 3 modos de proporcao (contain, cover, fill)
 aa5ad53 feat(fase-1): navegacao d-pad, resolucao de episodios 404, favoritos com directSource, ciclo de vida e continuar assistindo
 fcdd8fc feat(release): JessFlix v1.2.6+9 - correcao D-Pad em favoritos, HTTP 404 em series e download persistente em background
 ```
-
----
-
-## 6. Conclusão
-
-A implementação das 3 fases de evolução técnica atendeu rigorosamente a todos os critérios estabelecidos pelo usuário, corrigindo defeitos estruturais do player e da interface sem recorrer a WebViews, dependências frágeis ou cópia de código proprietário externo.
-
-O repositório encontra-se com árvore de trabalho limpa, cobertura integral de testes, integridade de análise estática e APK compilado pronto para homologação física em dispositivos Amazon Fire TV.
