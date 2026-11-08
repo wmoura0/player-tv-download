@@ -14,12 +14,15 @@ enum UpdateStatus {
   idle,
   checking,
   updateAvailable,
-  upToDate,
-  channelNotPublished,
   downloading,
-  downloadCompleted,
+  downloadInBackground,
+  pausedBySystem,
+  resuming,
   verifying,
   readyToInstall,
+  waitingConfirmation,
+  upToDate,
+  channelNotPublished,
   error,
 }
 
@@ -76,8 +79,9 @@ class UpdateCheckResult {
   }
 }
 
-/// Serviço responsável pelo gerenciamento completo do ciclo de atualização OTA do Player TV:
-/// Verificação remota em HTTPS, download seguro com barra de progresso, validação de SHA-256 e tamanho,
+/// Serviço responsável pelo gerenciamento completo do ciclo de atualização OTA do JessFlix:
+/// Verificação remota em HTTPS, download persistente em segundo plano via WorkManager (com suporte
+/// a tela desligada e retomada HTTP Range), validação rigorosa de integridade/assinatura
 /// e disparo do instalador de pacotes nativo do Android.
 class OtaUpdateService extends ChangeNotifier {
   static OtaUpdateService? _instance;
@@ -90,12 +94,13 @@ class OtaUpdateService extends ChangeNotifier {
   static const Duration _minCheckInterval = Duration(hours: 2);
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
-  // Versão instalada corrente (1.2.4+7)
-  static const String currentVersionName = '1.2.4';
-  static const int currentVersionCode = 7;
+  // Versão instalada corrente (1.2.6+9)
+  static const String currentVersionName = '1.2.6';
+  static const int currentVersionCode = 9;
 
   final http.Client _client;
   http.Client? _activeDownloadClient;
+  Timer? _nativeSyncTimer;
   bool _isCancelled = false;
   bool _isDialogShowing = false;
   bool get isDialogShowing => _isDialogShowing;
@@ -122,6 +127,40 @@ class OtaUpdateService extends ChangeNotifier {
   File? get downloadedApkFile => _downloadedApkFile;
 
   OtaUpdateService({http.Client? client}) : _client = client ?? http.Client();
+
+  /// Texto descritivo humanizado do estado atual da atualização.
+  String get statusLabel {
+    switch (_status) {
+      case UpdateStatus.checking:
+        return 'Verificando atualizações...';
+      case UpdateStatus.updateAvailable:
+        return 'Nova versão disponível';
+      case UpdateStatus.downloading:
+        final pct = (_downloadProgress * 100).toStringAsFixed(0);
+        return 'Baixando — $pct%';
+      case UpdateStatus.downloadInBackground:
+        final pct = (_downloadProgress * 100).toStringAsFixed(0);
+        return 'Download em segundo plano ($pct%)';
+      case UpdateStatus.pausedBySystem:
+        return 'Download pausado pelo sistema';
+      case UpdateStatus.resuming:
+        return 'Retomando download...';
+      case UpdateStatus.verifying:
+        return 'Verificando integridade e assinatura...';
+      case UpdateStatus.readyToInstall:
+        return 'Pronto para instalar';
+      case UpdateStatus.waitingConfirmation:
+        return 'Aguardando confirmação';
+      case UpdateStatus.upToDate:
+        return 'Atualizado';
+      case UpdateStatus.error:
+        return 'Falha na atualização';
+      case UpdateStatus.channelNotPublished:
+        return 'Canal não publicado';
+      case UpdateStatus.idle:
+        return 'Ocioso';
+    }
+  }
 
   /// Obtém a URL configurada do manifesto (preferência persistida ou padrão).
   Future<String> getManifestUrl() async {
@@ -163,6 +202,8 @@ class OtaUpdateService extends ChangeNotifier {
 
       if (!force && (now - lastCheckMs) < _minCheckInterval.inMilliseconds) {
         debugPrint('[OTA] Verificação silenciosa ignorada: última checagem recente.');
+        // Se já houver um download prévio pronto para instalar, sincroniza
+        await syncWithNativeStatus();
         return null;
       }
 
@@ -172,7 +213,7 @@ class OtaUpdateService extends ChangeNotifier {
       if (result.hasUpdate && result.manifest != null && context.mounted) {
         if (!_isDialogShowing) {
           _isDialogShowing = true;
-          await OtaUpdateDialog.show(context, result.manifest!);
+          await OtaUpdateDialog.show(context, result.manifest!, service: this);
           _isDialogShowing = false;
         }
       }
@@ -210,7 +251,7 @@ class OtaUpdateService extends ChangeNotifier {
           'Pragma': 'no-cache',
           'User-Agent': 'PlayerTV-Updater/$currentVersionName ($currentVersionCode)',
         },
-      ).timeout(const Duration(seconds: 6));
+      );
 
       if (response.statusCode == 404) {
         const msg = 'Canal de atualização ainda não publicado ou configurado no servidor remoto.';
@@ -243,6 +284,8 @@ class OtaUpdateService extends ChangeNotifier {
 
       if (isNewer) {
         _status = UpdateStatus.updateAvailable;
+        // Verifica se o APK dessa versão já foi baixado em segundo plano anteriormente
+        await syncWithNativeStatus();
         notifyListeners();
         return UpdateCheckResult.updateAvailable(manifest);
       } else {
@@ -277,19 +320,100 @@ class OtaUpdateService extends ChangeNotifier {
     }
   }
 
-  /// Baixa o APK com stream contínuo, validação de tamanho e checagem de SHA-256.
+  /// Sincroniza o estado do download com o Android WorkManager nativo.
+  Future<void> syncWithNativeStatus() async {
+    try {
+      final statusMap = await DeviceUtils.getOtaDownloadStatus();
+      if (statusMap == null) return;
+
+      final nativeStatus = statusMap['status'] as String? ?? 'IDLE';
+      final progress = (statusMap['progress'] as num?)?.toDouble() ?? 0.0;
+      final bytes = (statusMap['bytesDownloaded'] as num?)?.toInt() ?? 0;
+      final total = (statusMap['totalBytes'] as num?)?.toInt() ?? 0;
+      final apkPath = statusMap['apkPath'] as String?;
+      final err = statusMap['errorMessage'] as String?;
+
+      if (nativeStatus == 'DOWNLOADING') {
+        if (_status != UpdateStatus.downloadInBackground) {
+          _status = UpdateStatus.downloading;
+        }
+        _downloadProgress = progress;
+        _bytesDownloaded = bytes;
+        _totalBytesToDownload = total;
+      } else if (nativeStatus == 'RESUMING') {
+        _status = UpdateStatus.resuming;
+        _downloadProgress = progress;
+        _bytesDownloaded = bytes;
+        _totalBytesToDownload = total;
+      } else if (nativeStatus == 'PAUSED_BY_SYSTEM') {
+        _status = UpdateStatus.pausedBySystem;
+        _downloadProgress = progress;
+        _bytesDownloaded = bytes;
+        _totalBytesToDownload = total;
+        _errorMessage = err;
+      } else if (nativeStatus == 'VERIFYING') {
+        _status = UpdateStatus.verifying;
+        _downloadProgress = 1.0;
+      } else if (nativeStatus == 'READY_TO_INSTALL') {
+        _status = UpdateStatus.readyToInstall;
+        _downloadProgress = 1.0;
+        if (apkPath != null) {
+          _downloadedApkFile = File(apkPath);
+        }
+        _stopNativeSync();
+      } else if (nativeStatus == 'ERROR') {
+        _status = UpdateStatus.error;
+        _errorMessage = err ?? 'Falha no download da atualização.';
+        _stopNativeSync();
+      } else if (nativeStatus == 'CANCELLED') {
+        if (_status == UpdateStatus.downloading || _status == UpdateStatus.resuming) {
+          _status = UpdateStatus.idle;
+        }
+        _stopNativeSync();
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  void _startNativeSync(UpdateManifest manifest, void Function(int received, int total, double progress)? onProgress) {
+    _nativeSyncTimer?.cancel();
+    _nativeSyncTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      await syncWithNativeStatus();
+      onProgress?.call(_bytesDownloaded, _totalBytesToDownload, _downloadProgress);
+
+      if (_status == UpdateStatus.readyToInstall ||
+          _status == UpdateStatus.error ||
+          _status == UpdateStatus.idle) {
+        timer.cancel();
+        _nativeSyncTimer = null;
+      }
+    });
+  }
+
+  void _stopNativeSync() {
+    _nativeSyncTimer?.cancel();
+    _nativeSyncTimer = null;
+  }
+
+  /// Permite ao usuário continuar o download em segundo plano sem bloquear a interface.
+  void moveToBackground() {
+    if (_status == UpdateStatus.downloading || _status == UpdateStatus.resuming) {
+      _status = UpdateStatus.downloadInBackground;
+      notifyListeners();
+    }
+  }
+
+  /// Inicia o download da atualização.
+  /// No Android, delega ao WorkManager nativo (permitindo download com tela desligada e em segundo plano).
+  /// Em outros ambientes ou testes, utiliza o fallback seguro em Dart HTTP.
   Future<File?> downloadApk(
     UpdateManifest manifest, {
     void Function(int received, int total, double progress)? onProgress,
+    bool forceDartFallback = false,
   }) async {
-    _status = UpdateStatus.downloading;
+    _latestManifest = manifest;
     _errorMessage = null;
-    _downloadProgress = 0.0;
-    _bytesDownloaded = 0;
-    _totalBytesToDownload = manifest.fileSize;
     _isCancelled = false;
-    _downloadedApkFile = null;
-    notifyListeners();
 
     final apkUri = Uri.tryParse(manifest.apkUrl.trim());
     if (apkUri == null || apkUri.scheme.toLowerCase() != 'https') {
@@ -306,6 +430,46 @@ class OtaUpdateService extends ChangeNotifier {
       throw Exception(_errorMessage);
     }
 
+    // Se estiver no Android nativo e não for teste forçado, inicia via WorkManager
+    final isAndroidPlatform = !forceDartFallback && Platform.isAndroid;
+    if (isAndroidPlatform) {
+      _status = UpdateStatus.downloading;
+      _downloadProgress = 0.0;
+      _bytesDownloaded = 0;
+      _totalBytesToDownload = manifest.fileSize;
+      notifyListeners();
+
+      final started = await DeviceUtils.startOtaDownload(
+        apkUrl: manifest.apkUrl,
+        fileSize: manifest.fileSize,
+        sha256: manifest.sha256,
+        versionCode: manifest.versionCode,
+        versionName: manifest.version,
+      );
+
+      if (started) {
+        _startNativeSync(manifest, onProgress);
+        return null;
+      }
+    }
+
+    // Fallback puro Dart (para testes ou falhas do WorkManager)
+    return _downloadApkDartFallback(manifest, onProgress: onProgress);
+  }
+
+  Future<File?> _downloadApkDartFallback(
+    UpdateManifest manifest, {
+    void Function(int received, int total, double progress)? onProgress,
+  }) async {
+    _status = UpdateStatus.downloading;
+    _errorMessage = null;
+    _downloadProgress = 0.0;
+    _bytesDownloaded = 0;
+    _totalBytesToDownload = manifest.fileSize;
+    _isCancelled = false;
+    _downloadedApkFile = null;
+    notifyListeners();
+
     IOSink? fileSink;
     File? tempFile;
     _activeDownloadClient = http.Client();
@@ -318,6 +482,7 @@ class OtaUpdateService extends ChangeNotifier {
         await tempFile.delete();
       }
 
+      final apkUri = Uri.parse(manifest.apkUrl.trim());
       final request = http.Request('GET', apkUri);
       request.headers['User-Agent'] = 'PlayerTV-Updater/$currentVersionName';
 
@@ -361,7 +526,6 @@ class OtaUpdateService extends ChangeNotifier {
       await sink.close();
       fileSink = null;
 
-      // Fase de Verificação e Integridade
       _status = UpdateStatus.verifying;
       notifyListeners();
 
@@ -373,7 +537,6 @@ class OtaUpdateService extends ChangeNotifier {
         );
       }
 
-      // Cálculo SHA-256 com crypto package
       final calculatedHash = await _calculateSha256(tempFile);
       if (calculatedHash.toLowerCase() != manifest.sha256.toLowerCase()) {
         await tempFile.delete();
@@ -414,12 +577,20 @@ class OtaUpdateService extends ChangeNotifier {
     }
   }
 
-  /// Cancela o download em andamento.
-  void cancelDownload() {
+  /// Cancela o download em andamento (no WorkManager e/ou no Dart).
+  Future<void> cancelDownload() async {
     _isCancelled = true;
+    _stopNativeSync();
     _activeDownloadClient?.close();
     _activeDownloadClient = null;
+
+    if (Platform.isAndroid) {
+      await DeviceUtils.cancelOtaDownload();
+    }
+
     _status = UpdateStatus.idle;
+    _downloadProgress = 0.0;
+    _bytesDownloaded = 0;
     notifyListeners();
   }
 
@@ -436,11 +607,14 @@ class OtaUpdateService extends ChangeNotifier {
     try {
       final canInstall = await DeviceUtils.canRequestPackageInstalls();
       if (!canInstall) {
+        _status = UpdateStatus.waitingConfirmation;
+        notifyListeners();
         await DeviceUtils.openInstallPermissionSettings();
-        // Não prossegue até o usuário conceder permissão
         return false;
       }
 
+      _status = UpdateStatus.waitingConfirmation;
+      notifyListeners();
       final success = await DeviceUtils.installApk(file.path);
       return success;
     } catch (e) {
@@ -453,6 +627,9 @@ class OtaUpdateService extends ChangeNotifier {
 
   /// Limpa arquivos temporários de atualizações antigas.
   Future<void> cleanOldApks() async {
+    if (Platform.isAndroid) {
+      await DeviceUtils.cleanOldApks();
+    }
     try {
       final tempDir = await getTemporaryDirectory();
       final entities = tempDir.listSync();

@@ -293,5 +293,91 @@ void main() {
       expect(sanitizedErr, isNot(contains('pwd888')));
       expect(sanitizedErr, contains('***'));
     });
+
+    // Cenário 11: Colisão invertida (id: 184920, stream_id: 64, episode_num: 64)
+    test('11. Episódio com colisão invertida id=184920 e stream_id=64 resolve ID real prioritário', () {
+      final epInvertido = XtreamSeriesEpisode.fromJson({
+        'id': 184920,
+        'stream_id': 64,
+        'episode_num': 64,
+        'title': 'Episódio 64 - O Fim da Viagem (Invertido)',
+        'container_extension': 'mp4',
+      }, fallbackSeasonNumber: 1);
+
+      // O resolvedId deve ser 184920 (o stream id real) e altId deve ser 64
+      expect(epInvertido.id, equals(184920));
+      expect(epInvertido.streamId, equals(64));
+      expect(epInvertido.playbackStreamId, equals(184920));
+
+      final urls = service.buildSeriesStreamUrls(epInvertido);
+      expect(urls.first, contains('/184920.mp4'));
+      expect(urls[1], contains('/64.mp4'));
+    });
+
+    // Cenário 12: findEpisodeById localiza por id principal ou por streamId alternativo
+    test('12. findEpisodeById localiza tanto pelo id resolvido quanto pelo streamId alternativo', () {
+      final mockInfo = XtreamSeriesInfo.fromJson({
+        'info': {'name': 'FullMetal Alchemist Brotherhood'},
+        'episodes': {
+          '1': [
+            {
+              'id': 64,
+              'stream_id': 184920,
+              'episode_num': 64,
+              'title': 'Episódio 64',
+            },
+          ],
+        },
+      });
+
+      final byRealStreamId = mockInfo.findEpisodeById(184920);
+      final byAltEpisodeId = mockInfo.findEpisodeById(64);
+
+      expect(byRealStreamId, isNotNull);
+      expect(byAltEpisodeId, isNotNull);
+      expect(identical(byRealStreamId, byAltEpisodeId), isTrue);
+      expect(byRealStreamId!.id, equals(184920));
+      expect(byRealStreamId.episodeNum, equals(64));
+    });
+
+    // Cenário 13: findEpisodeBySeasonAndNum localiza por temporada e número
+    test('13. findEpisodeBySeasonAndNum recupera episódio por temporada e índice', () {
+      final mockInfo = XtreamSeriesInfo.fromJson({
+        'info': {'name': 'FullMetal Alchemist Brotherhood'},
+        'episodes': {
+          '5': [
+            {
+              'id': 184920,
+              'stream_id': 64,
+              'episode_num': 14,
+              'title': 'Episódio 14',
+            },
+          ],
+        },
+      });
+
+      final ep = mockInfo.findEpisodeBySeasonAndNum(5, 14);
+      expect(ep, isNotNull);
+      expect(ep!.id, equals(184920));
+      expect(ep.seasonNumber, equals(5));
+      expect(ep.episodeNum, equals(14));
+    });
+
+    // Cenário 14: Prioridade de rotas de contingência com alternativeEpisodeId
+    test('14. Contingência de URL tenta imediatamente alternativeEpisodeId antes de esgotar tentativas', () {
+      final urls = service.buildSeriesStreamUrlsById(
+        184920,
+        extension: 'mp4',
+        alternativeEpisodeId: 64,
+      );
+
+      // A 1ª URL deve ser 184920.mp4
+      expect(urls[0], contains('/184920.mp4'));
+      // A 2ª URL DEVE ser a alternativa com a mesma extensão (64.mp4)
+      expect(urls[1], contains('/64.mp4'));
+      // A 3ª e 4ª são as extensões alternativas
+      expect(urls[2], contains('/184920.mkv'));
+      expect(urls[3], contains('/64.mkv'));
+    });
   });
 }

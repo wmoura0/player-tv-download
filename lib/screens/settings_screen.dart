@@ -1182,14 +1182,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 20),
           ],
 
-          // Estado: Baixando
-          if (ota.status == UpdateStatus.downloading) ...[
+          // Estado: Baixando (inclusive em segundo plano, pausado ou retomando)
+          if (ota.status == UpdateStatus.downloading ||
+              ota.status == UpdateStatus.downloadInBackground ||
+              ota.status == UpdateStatus.resuming ||
+              ota.status == UpdateStatus.pausedBySystem) ...[
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: AppColors.surfaceSecondary,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.primary.withValues(alpha: 0.5)),
+                border: Border.all(
+                  color: ota.status == UpdateStatus.pausedBySystem
+                      ? Colors.amber.withValues(alpha: 0.6)
+                      : AppColors.primary.withValues(alpha: 0.5),
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1197,9 +1204,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        'Baixando atualização...',
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                      Text(
+                        ota.status == UpdateStatus.resuming
+                            ? 'Retomando download...'
+                            : ota.status == UpdateStatus.pausedBySystem
+                                ? 'Pausado pelo sistema (aguardando conexão)...'
+                                : ota.status == UpdateStatus.downloadInBackground
+                                    ? 'Download em segundo plano ativo'
+                                    : 'Baixando atualização...',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: ota.status == UpdateStatus.pausedBySystem ? Colors.amberAccent : AppColors.textPrimary,
+                        ),
                       ),
                       Text(
                         '${(ota.downloadProgress * 100).toStringAsFixed(0)}%',
@@ -1214,7 +1231,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       value: ota.downloadProgress > 0 ? ota.downloadProgress : null,
                       minHeight: 8,
                       backgroundColor: Colors.white12,
-                      valueColor: const AlwaysStoppedAnimation(AppColors.primary),
+                      valueColor: AlwaysStoppedAnimation(
+                        ota.status == UpdateStatus.pausedBySystem ? Colors.amberAccent : AppColors.primary,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -1222,7 +1241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '${(ota.bytesDownloaded / (1024 * 1024)).toStringAsFixed(1)} MB de ${(ota.totalBytesToDownload / (1024 * 1024)).toStringAsFixed(1)} MB',
+                        '${(ota.bytesDownloaded / (1024 * 1024)).toStringAsFixed(1)} MB de ${(ota.totalBytesToDownload / (1024 * 1024)).toStringAsFixed(1)} MB (WorkManager nativo)',
                         style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                       ),
                       TextButton(
@@ -1256,8 +1275,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   SizedBox(width: 14),
                   Expanded(
                     child: Text(
-                      'Validando integridade do pacote (checando SHA-256 e tamanho)...',
+                      'Validando integridade do pacote (checando SHA-256, tamanho e assinatura)...',
                       style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Estado: Aguardando confirmação
+          if (ota.status == UpdateStatus.waitingConfirmation) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue.withValues(alpha: 0.5)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.touch_app_rounded, color: Colors.lightBlueAccent, size: 26),
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'Aguardando confirmação na tela do instalador nativo do sistema...',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
                     ),
                   ),
                 ],
@@ -1294,7 +1338,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Botões de Ação
           Row(
             children: [
-              if (ota.status == UpdateStatus.readyToInstall)
+              if (ota.status == UpdateStatus.readyToInstall || ota.status == UpdateStatus.waitingConfirmation)
                 Expanded(
                   child: _TvActionButton(
                     icon: Icons.install_mobile_rounded,
@@ -1317,7 +1361,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: () => setState(() => _selectedSection = SettingsMenuSection.generalInfo),
                   child: const Text('Lembrar depois', style: TextStyle(color: AppColors.textSecondary)),
                 ),
-              ] else if (ota.status != UpdateStatus.downloading && ota.status != UpdateStatus.verifying) ...[
+              ] else if (ota.status != UpdateStatus.downloading &&
+                  ota.status != UpdateStatus.downloadInBackground &&
+                  ota.status != UpdateStatus.resuming &&
+                  ota.status != UpdateStatus.verifying) ...[
                 Expanded(
                   child: _TvActionButton(
                     icon: Icons.refresh_rounded,

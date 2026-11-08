@@ -6,6 +6,7 @@ import '../services/playback_progress_service.dart';
 import '../services/secure_storage_service.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/device_utils.dart';
 import 'series_detail_screen.dart';
 import 'vod_detail_screen.dart';
 import 'xtream_catalog_screen.dart';
@@ -140,39 +141,89 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
     );
   }
 
-  void _onLiveItemTap(FavoriteItem item) {
-    if (_service == null) return;
+  Future<XtreamCatalogService?> _ensureCatalogService() async {
+    if (_service != null) return _service;
+    final storage = SecureStorageService();
+    final server = await storage.getServerUrl();
+    final user = await storage.getUsername();
+    final pass = await storage.getPassword();
+    if (server != null && user != null && pass != null) {
+      _service = XtreamCatalogService(
+        serverUrl: server,
+        username: user,
+        password: pass,
+      );
+      if (_accountKey.isEmpty) {
+        _accountKey = PlaybackProgressService.buildAccountKey(server, user);
+      }
+      return _service;
+    }
+    return null;
+  }
+
+  Future<void> _onLiveItemTap(FavoriteItem item) async {
+    final service = await _ensureCatalogService();
+    if (!mounted) return;
+    if (service == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Credenciais Xtream não encontradas. Faça login novamente.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => XtreamCatalogScreen(
           type: XtreamCatalogType.live,
-          catalogService: _service!,
+          catalogService: service,
           initialLiveStream: item.toLiveStream(),
         ),
       ),
     );
   }
 
-  void _onMovieItemTap(FavoriteItem item) {
-    if (_service == null) return;
+  Future<void> _onMovieItemTap(FavoriteItem item) async {
+    final service = await _ensureCatalogService();
+    if (!mounted) return;
+    if (service == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Credenciais Xtream não encontradas. Faça login novamente.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VodDetailScreen(
           movie: item.toVodStream(),
-          catalogService: _service!,
+          catalogService: service,
           accountKey: _accountKey,
         ),
       ),
     );
   }
 
-  void _onSeriesItemTap(FavoriteItem item) {
-    if (_service == null) return;
+  Future<void> _onSeriesItemTap(FavoriteItem item) async {
+    final service = await _ensureCatalogService();
+    if (!mounted) return;
+    if (service == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Credenciais Xtream não encontradas. Faça login novamente.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SeriesDetailScreen(
           series: item.toSeriesItem(),
-          catalogService: _service!,
+          catalogService: service,
           accountKey: _accountKey,
         ),
       ),
@@ -466,6 +517,11 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
     final isHighlighted = _isFocused || _isHovered;
 
     return FocusableActionDetector(
+      actions: DeviceUtils.channelActions(
+        onTap: widget.onTap,
+        onToggleFavorite: widget.onRemove,
+      ),
+      shortcuts: DeviceUtils.dpadChannelShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: AnimatedScale(
@@ -493,6 +549,7 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
               onTap: widget.onTap,
               borderRadius: BorderRadius.circular(10),
               splashColor: AppColors.primary.withValues(alpha: 0.15),
@@ -535,10 +592,14 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
                         ],
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Remover dos favoritos',
-                      icon: const Icon(Icons.favorite_rounded, color: AppColors.error, size: 20),
-                      onPressed: widget.onRemove,
+                    Focus(
+                      canRequestFocus: false,
+                      descendantsAreFocusable: false,
+                      child: IconButton(
+                        tooltip: 'Remover dos favoritos',
+                        icon: const Icon(Icons.favorite_rounded, color: AppColors.error, size: 20),
+                        onPressed: widget.onRemove,
+                      ),
                     ),
                   ],
                 ),
@@ -614,6 +675,11 @@ class _FavoritePosterCardState extends State<_FavoritePosterCard> {
     final isHighlighted = _isFocused || _isHovered;
 
     return FocusableActionDetector(
+      actions: DeviceUtils.channelActions(
+        onTap: widget.onTap,
+        onToggleFavorite: widget.onRemove,
+      ),
+      shortcuts: DeviceUtils.dpadChannelShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       onShowHoverHighlight: (v) => setState(() => _isHovered = v),
       child: AnimatedScale(
@@ -641,6 +707,7 @@ class _FavoritePosterCardState extends State<_FavoritePosterCard> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
               onTap: widget.onTap,
               borderRadius: BorderRadius.circular(12),
               child: Column(
@@ -670,6 +737,7 @@ class _FavoritePosterCardState extends State<_FavoritePosterCard> {
                           child: Material(
                             color: Colors.transparent,
                             child: InkWell(
+                              canRequestFocus: false,
                               onTap: widget.onRemove,
                               borderRadius: BorderRadius.circular(16),
                               child: Container(

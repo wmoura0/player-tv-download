@@ -91,7 +91,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final PlaybackProgressService _progressService = PlaybackProgressService();
   final ScrollController _scrollController = ScrollController();
 
@@ -108,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadHomeData();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -118,9 +119,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sharedCatalogService?.removeListener(_onCatalogServiceUpdated);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      OtaUpdateService.instance.syncWithNativeStatus();
+    }
   }
 
   void _onCatalogServiceUpdated() {
@@ -334,15 +343,9 @@ class _HomeScreenState extends State<HomeScreen> {
           XtreamSeriesEpisode? ep = info.findEpisodeById(item.streamId);
           // Fallback caso o streamId/id tenha mudado no servidor, mas seasonNumber e episodeNum coincidam
           if (ep == null && item.seasonNumber != null && item.episodeNum != null) {
-            final seasonEps = info.episodesBySeason[item.seasonNumber!];
-            if (seasonEps != null && seasonEps.isNotEmpty) {
-              for (final candidate in seasonEps) {
-                if (candidate.episodeNum == item.episodeNum) {
-                  ep = candidate;
-                  debugPrint('[HOME] Episódio recuperado por fallback de temporada/número: S${candidate.seasonNumber}E${candidate.episodeNum} (novo ID: ${candidate.id})');
-                  break;
-                }
-              }
+            ep = info.findEpisodeBySeasonAndNum(item.seasonNumber!, item.episodeNum!);
+            if (ep != null) {
+              debugPrint('[HOME] Episódio recuperado por fallback de temporada/número: S${ep.seasonNumber}E${ep.episodeNum} (novo ID: ${ep.id})');
             }
           }
 

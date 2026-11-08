@@ -15,6 +15,12 @@ import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import java.io.File
 
 class MainActivity : FlutterActivity() {
@@ -201,6 +207,75 @@ class MainActivity : FlutterActivity() {
                                 }
                             }
                         }
+                    }
+                    "startOtaDownload" -> {
+                        val apkUrl = call.argument<String>("apkUrl") ?: ""
+                        val fileSize = (call.argument<Number>("fileSize"))?.toLong() ?: 0L
+                        val sha256 = call.argument<String>("sha256") ?: ""
+                        val versionCode = call.argument<Int>("versionCode") ?: 0
+                        val versionName = call.argument<String>("versionName") ?: ""
+
+                        if (apkUrl.isBlank() || fileSize <= 0L || sha256.isBlank()) {
+                            result.error("INVALID_PARAMS", "Parâmetros do APK inválidos", null)
+                        } else {
+                            val data = Data.Builder()
+                                .putString("apkUrl", apkUrl)
+                                .putLong("fileSize", fileSize)
+                                .putString("sha256", sha256)
+                                .putInt("versionCode", versionCode)
+                                .putString("versionName", versionName)
+                                .build()
+
+                            val constraints = Constraints.Builder()
+                                .setRequiredNetworkType(NetworkType.CONNECTED)
+                                .build()
+
+                            val request = OneTimeWorkRequestBuilder<OtaDownloadWorker>()
+                                .setInputData(data)
+                                .setConstraints(constraints)
+                                .build()
+
+                            WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+                                OtaDownloadWorker.WORK_NAME,
+                                ExistingWorkPolicy.KEEP,
+                                request
+                            )
+                            result.success(true)
+                        }
+                    }
+                    "getOtaDownloadStatus" -> {
+                        val prefs = getSharedPreferences(OtaDownloadWorker.PREFS_NAME, Context.MODE_PRIVATE)
+                        val status = prefs.getString(OtaDownloadWorker.KEY_STATUS, "IDLE") ?: "IDLE"
+                        val progress = prefs.getFloat(OtaDownloadWorker.KEY_PROGRESS, 0f).toDouble()
+                        val bytesDownloaded = prefs.getLong(OtaDownloadWorker.KEY_BYTES_DOWNLOADED, 0L)
+                        val totalBytes = prefs.getLong(OtaDownloadWorker.KEY_TOTAL_BYTES, 0L)
+                        val apkPath = prefs.getString(OtaDownloadWorker.KEY_APK_PATH, null)
+                        val errorMessage = prefs.getString(OtaDownloadWorker.KEY_ERROR_MESSAGE, null)
+
+                        val map = mapOf(
+                            "status" to status,
+                            "progress" to progress,
+                            "bytesDownloaded" to bytesDownloaded,
+                            "totalBytes" to totalBytes,
+                            "apkPath" to apkPath,
+                            "errorMessage" to errorMessage
+                        )
+                        result.success(map)
+                    }
+                    "cancelOtaDownload" -> {
+                        WorkManager.getInstance(applicationContext).cancelUniqueWork(OtaDownloadWorker.WORK_NAME)
+                        OtaDownloadWorker.saveState(applicationContext, "CANCELLED")
+                        val dir = OtaDownloadWorker.getUpdatesDir(applicationContext)
+                        val partFiles = dir.listFiles { _, name -> name.endsWith(".part") }
+                        partFiles?.forEach { it.delete() }
+                        result.success(true)
+                    }
+                    "cleanOldApks" -> {
+                        val dir = OtaDownloadWorker.getUpdatesDir(applicationContext)
+                        val apks = dir.listFiles { _, name -> name.endsWith(".apk") || name.endsWith(".part") }
+                        apks?.forEach { it.delete() }
+                        OtaDownloadWorker.clearState(applicationContext)
+                        result.success(true)
                     }
                     else -> {
                         result.notImplemented()

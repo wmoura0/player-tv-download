@@ -240,6 +240,59 @@ class DeviceUtils {
     }
   }
 
+  /// Inicia o download persistente do APK em segundo plano via WorkManager nativo.
+  static Future<bool> startOtaDownload({
+    required String apkUrl,
+    required int fileSize,
+    required String sha256,
+    required int versionCode,
+    required String versionName,
+  }) async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('startOtaDownload', {
+        'apkUrl': apkUrl,
+        'fileSize': fileSize,
+        'sha256': sha256,
+        'versionCode': versionCode,
+        'versionName': versionName,
+      });
+      return res ?? false;
+    } catch (e) {
+      debugPrint('Erro ao iniciar download OTA em segundo plano: $e');
+      return false;
+    }
+  }
+
+  /// Consulta o estado atual do download persistente gerenciado pelo Android WorkManager.
+  static Future<Map<String, dynamic>?> getOtaDownloadStatus() async {
+    try {
+      final res = await _deviceChannel.invokeMapMethod<String, dynamic>('getOtaDownloadStatus');
+      return res;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cancela o download do APK e interrompe o worker nativo.
+  static Future<bool> cancelOtaDownload() async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('cancelOtaDownload');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Remove APKs antigos ou incompletos do diretório de atualizações.
+  static Future<bool> cleanOldApks() async {
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('cleanOldApks');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Atalhos comuns de seleção (OK / Enter / Espaço / Botão A do gamepad) para controle remoto
   static const Map<ShortcutActivator, Intent> dpadSelectShortcuts = {
     SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),

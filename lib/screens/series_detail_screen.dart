@@ -174,7 +174,12 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     // 3. Determinar episódio para o botão principal (Continuar / Próximo / Assistir)
     if (lastWatched != null) {
       final lastEpId = lastWatched['episodeId'];
-      final lastEp = info.findEpisodeById(lastEpId ?? 0);
+      final lastSeason = lastWatched['seasonNumber'];
+      final lastNum = lastWatched['episodeNum'];
+      XtreamSeriesEpisode? lastEp = (lastEpId != null) ? info.findEpisodeById(lastEpId) : null;
+      if (lastEp == null && lastSeason != null && lastNum != null) {
+        lastEp = info.findEpisodeBySeasonAndNum(lastSeason, lastNum);
+      }
 
       if (lastEp != null) {
         final prog = _episodesProgress[lastEp.id];
@@ -1043,6 +1048,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
         : 0.0;
 
     return FocusableActionDetector(
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(

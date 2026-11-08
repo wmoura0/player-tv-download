@@ -5,22 +5,32 @@ import '../theme/app_colors.dart';
 
 /// Modal de notificação e execução de atualização OTA integrada.
 /// Permite ao usuário visualizar as notas da versão, acompanhar o progresso
-/// do download em tempo real e acionar a instalação segura do pacote APK.
+/// do download em tempo real e em segundo plano (com tela desligada),
+/// validar integridade/assinatura e acionar a instalação segura do pacote APK.
 class OtaUpdateDialog extends StatefulWidget {
   final UpdateManifest manifest;
   final VoidCallback? onDismiss;
+  final OtaUpdateService? service;
 
   const OtaUpdateDialog({
     super.key,
     required this.manifest,
     this.onDismiss,
+    this.service,
   });
 
-  static Future<void> show(BuildContext context, UpdateManifest manifest) async {
+  static Future<void> show(
+    BuildContext context,
+    UpdateManifest manifest, {
+    OtaUpdateService? service,
+  }) async {
     await showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) => OtaUpdateDialog(manifest: manifest),
+      barrierDismissible: true,
+      builder: (ctx) => OtaUpdateDialog(
+        manifest: manifest,
+        service: service,
+      ),
     );
   }
 
@@ -29,14 +39,14 @@ class OtaUpdateDialog extends StatefulWidget {
 }
 
 class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
-  final OtaUpdateService _service = OtaUpdateService.instance;
-  bool _isDownloading = false;
+  late final OtaUpdateService _service = widget.service ?? OtaUpdateService.instance;
   String? _localError;
 
   @override
   void initState() {
     super.initState();
     _service.addListener(_onServiceUpdate);
+    _service.syncWithNativeStatus();
   }
 
   @override
@@ -54,21 +64,14 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
 
   Future<void> _startDownload() async {
     setState(() {
-      _isDownloading = true;
       _localError = null;
     });
 
     try {
-      final file = await _service.downloadApk(widget.manifest);
-      if (file != null && mounted) {
-        setState(() {
-          _isDownloading = false;
-        });
-      }
+      await _service.downloadApk(widget.manifest);
     } catch (e) {
       if (mounted) {
         setState(() {
-          _isDownloading = false;
           _localError = e.toString().replaceFirst('Exception: ', '');
         });
       }
@@ -87,8 +90,13 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
   void _cancelDownload() {
     _service.cancelDownload();
     setState(() {
-      _isDownloading = false;
+      _localError = null;
     });
+  }
+
+  void _continueInBackground() {
+    _service.moveToBackground();
+    Navigator.of(context).pop();
   }
 
   @override
@@ -97,6 +105,11 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
     final progress = _service.downloadProgress;
     final downloadedMb = (_service.bytesDownloaded / (1024 * 1024)).toStringAsFixed(1);
     final totalMb = widget.manifest.formattedSize;
+
+    final isDownloading = status == UpdateStatus.downloading ||
+        status == UpdateStatus.downloadInBackground ||
+        status == UpdateStatus.resuming ||
+        status == UpdateStatus.pausedBySystem;
 
     return AlertDialog(
       backgroundColor: AppColors.surfaceSecondary,
@@ -220,11 +233,34 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
               const SizedBox(height: 14),
             ],
 
-            // Barra de Progresso durante download
-            if (_isDownloading || status == UpdateStatus.downloading) ...[
-              const Text(
-                'Baixando atualização...',
-                style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+            // Barra de Progresso e Estados de Download
+            if (isDownloading) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    status == UpdateStatus.resuming
+                        ? 'Retomando download...'
+                        : status == UpdateStatus.pausedBySystem
+                            ? 'Pausado pelo sistema (aguardando rede)...'
+                            : status == UpdateStatus.downloadInBackground
+                                ? 'Download em segundo plano...'
+                                : 'Baixando atualização...',
+                    style: TextStyle(
+                      color: status == UpdateStatus.pausedBySystem ? Colors.amberAccent : AppColors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    '${(progress * 100).toStringAsFixed(0)}%',
+                    style: const TextStyle(
+                      color: AppColors.focusCyan,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               ClipRRect(
@@ -232,7 +268,9 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
                 child: LinearProgressIndicator(
                   value: progress > 0 ? progress : null,
                   backgroundColor: AppColors.background,
-                  valueColor: const AlwaysStoppedAnimation<Color>(AppColors.focusCyan),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    status == UpdateStatus.pausedBySystem ? Colors.amberAccent : AppColors.focusCyan,
+                  ),
                   minHeight: 8,
                 ),
               ),
@@ -244,13 +282,9 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
                     '$downloadedMb MB / $totalMb',
                     style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
                   ),
-                  Text(
-                    '${(progress * 100).toStringAsFixed(0)}%',
-                    style: const TextStyle(
-                      color: AppColors.focusCyan,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  const Text(
+                    'Continua com tela desligada',
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 10),
                   ),
                 ],
               ),
@@ -264,7 +298,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
                   ),
                   SizedBox(width: 10),
                   Text(
-                    'Validando assinatura SHA-256...',
+                    'Validando integridade e assinatura do APK...',
                     style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
                   ),
                 ],
@@ -285,6 +319,27 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
                       child: Text(
                         'Download e integridade verificados com sucesso! Pronto para instalar.',
                         style: TextStyle(color: Colors.greenAccent, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else if (status == UpdateStatus.waitingConfirmation) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.touch_app_rounded, color: Colors.lightBlueAccent, size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Aguardando confirmação do instalador nativo do sistema...',
+                        style: TextStyle(color: Colors.lightBlueAccent, fontSize: 12),
                       ),
                     ),
                   ],
@@ -321,13 +376,23 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
       ),
       actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       actions: [
-        if (_isDownloading) ...[
+        if (isDownloading) ...[
           TextButton(
             onPressed: _cancelDownload,
-            style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
             child: const Text('Cancelar Download'),
           ),
-        ] else if (status == UpdateStatus.readyToInstall) ...[
+          ElevatedButton.icon(
+            onPressed: _continueInBackground,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.surfaceSecondary,
+              foregroundColor: AppColors.textPrimary,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: const Icon(Icons.visibility_off_rounded, size: 16),
+            label: const Text('Segundo Plano'),
+          ),
+        ] else if (status == UpdateStatus.readyToInstall || status == UpdateStatus.waitingConfirmation) ...[
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
             style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
@@ -342,6 +407,22 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
             ),
             icon: const Icon(Icons.install_mobile_rounded, size: 18),
             label: const Text('Instalar Agora', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ] else if (status == UpdateStatus.error) ...[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
+            child: const Text('Fechar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: _startDownload,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('Tentar Novamente', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ] else ...[
           TextButton(

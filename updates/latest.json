@@ -1,11 +1,11 @@
 {
-  "version": "1.2.5",
-  "versionCode": 8,
+  "version": "1.2.6",
+  "versionCode": 9,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.5/JessFlix-v1.2.5.apk",
-  "fileSize": 57382718,
-  "sha256": "f30c052316237c00c975f5839a5499c404d4dca4b7e924a410c79a6c34ffd36b",
-  "releaseNotes": "• Correção definitiva de erro HTTP 404 em episódios de séries com nomes duplicados e resolução de stream_id.\n• Contingência automática de extensões (.ts, .mkv, .mp4) para séries e animes Xtream.\n• Diferenciação precisa de status HTTP (ExoPlayer vs Probe) com logs unificados [JESSFLIX_PLAYER].\n• Sanitização completa de URLs e credenciais sem vazamento em logs ou mensagens de erro.",
-  "publishedAt": "2026-11-04T14:25:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.6/JessFlix-v1.2.6.apk",
+  "fileSize": 57487985,
+  "sha256": "548f0e0ac5d3563485dcedd2a98c94930f902b948e3db2bd8fda28c9cd1e9d7b",
+  "releaseNotes": "• Correção de Favoritos no Fire TV: Séries e cards abrem diretamente na tela de episódios ao pressionar a tecla OK/Select do controle remoto.\n• Tecla Menu / ContextMenu do controle remoto para alternar/remover favoritos de forma intuitiva.\n• Resolução simétrica de id vs stream_id para episódios de séries, eliminando falsos positivos e erro HTTP 404.\n• Contingência instantânea de stream_id alternativo e extensões de vídeo (.mp4, .mkv, .ts) sem travar o player.\n• Download de atualização persistente em segundo plano via WorkManager mesmo com o app minimizado ou tela desligada.",
+  "publishedAt": "2026-11-08T01:11:05.000Z",
   "mandatory": false
 }

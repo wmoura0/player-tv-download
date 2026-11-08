@@ -30,6 +30,9 @@ class XtreamSeriesEpisode {
     this.directSource,
   });
 
+  /// Retorna o ID canônico prioritário para reprodução (o stream_id real do servidor)
+  int get playbackStreamId => id;
+
   factory XtreamSeriesEpisode.fromJson(
     Map<String, dynamic> json, {
     required int fallbackSeasonNumber,
@@ -54,24 +57,35 @@ class XtreamSeriesEpisode {
     final rawId = json['id'] ?? info['id'];
     final parsedId = int.tryParse(rawId?.toString() ?? '');
 
-    int resolvedId;
+    int resolvedId = 0;
     int? altId;
 
-    if (parsedStreamId != null && parsedStreamId > 0) {
-      if (parsedId == episodeNum && parsedStreamId != episodeNum) {
+    if (parsedStreamId != null && parsedStreamId > 0 && parsedId != null && parsedId > 0) {
+      if (parsedStreamId == parsedId) {
+        resolvedId = parsedStreamId;
+      } else if (parsedId == episodeNum && parsedStreamId != episodeNum) {
         // "id" era apenas o número do episódio na temporada (ex: 64) e "stream_id" é o identificador real
         resolvedId = parsedStreamId;
         altId = parsedId;
-      } else if (parsedId != null && parsedId > 0 && parsedId != parsedStreamId) {
-        resolvedId = parsedStreamId;
-        altId = parsedId;
+      } else if (parsedStreamId == episodeNum && parsedId != episodeNum) {
+        // "stream_id" era apenas o número do episódio na temporada (ex: 64) e "id" é o identificador real
+        resolvedId = parsedId;
+        altId = parsedStreamId;
       } else {
-        resolvedId = parsedStreamId;
+        // Se um for o ID global da tabela de streams (> 1000) e o outro pequeno (<= 100),
+        // o maior é priorizado como o ID real do arquivo.
+        if (parsedId > 1000 && parsedStreamId <= 100) {
+          resolvedId = parsedId;
+          altId = parsedStreamId;
+        } else {
+          resolvedId = parsedStreamId;
+          altId = parsedId;
+        }
       }
+    } else if (parsedStreamId != null && parsedStreamId > 0) {
+      resolvedId = parsedStreamId;
     } else if (parsedId != null && parsedId > 0) {
       resolvedId = parsedId;
-    } else {
-      resolvedId = 0;
     }
 
     final rawTitle = json['title']?.toString() ?? info['title']?.toString() ?? json['name']?.toString() ?? 'Episódio $episodeNum';
@@ -355,11 +369,25 @@ class XtreamSeriesInfo {
     );
   }
 
-  /// Localiza um episódio pelo seu ID em qualquer temporada.
+  /// Localiza um episódio pelo seu ID (ou streamId alternativo) em qualquer temporada.
   XtreamSeriesEpisode? findEpisodeById(int episodeId) {
+    if (episodeId <= 0) return null;
     for (final seasonEps in episodesBySeason.values) {
       for (final ep in seasonEps) {
-        if (ep.id == episodeId) return ep;
+        if (ep.id == episodeId || (ep.streamId != null && ep.streamId == episodeId)) {
+          return ep;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Localiza um episódio pelo número da temporada e número do episódio.
+  XtreamSeriesEpisode? findEpisodeBySeasonAndNum(int seasonNumber, int episodeNum) {
+    final seasonEps = episodesBySeason[seasonNumber];
+    if (seasonEps != null) {
+      for (final ep in seasonEps) {
+        if (ep.episodeNum == episodeNum) return ep;
       }
     }
     return null;
@@ -372,7 +400,11 @@ class XtreamSeriesInfo {
   XtreamSeriesEpisode? getNextEpisode(XtreamSeriesEpisode current) {
     final currentSeasonEps = episodesBySeason[current.seasonNumber];
     if (currentSeasonEps != null && currentSeasonEps.isNotEmpty) {
-      final currentIndex = currentSeasonEps.indexWhere((ep) => ep.id == current.id);
+      final currentIndex = currentSeasonEps.indexWhere((ep) =>
+          ep.id == current.id ||
+          (ep.streamId != null && ep.streamId == current.id) ||
+          (current.streamId != null && ep.id == current.streamId) ||
+          ep.episodeNum == current.episodeNum);
       if (currentIndex != -1 && currentIndex + 1 < currentSeasonEps.length) {
         return currentSeasonEps[currentIndex + 1];
       }

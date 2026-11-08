@@ -351,6 +351,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     // e houver URL alternativa válida na lista.
     final isResourceNotFound = probe.isNotFound ||
         details.exoPlayerHttpStatus == 404 ||
+        details.probeHttpStatus == 404 ||
+        details.shortUiMessage.contains('404') ||
+        details.shortUiMessage.contains('não encontrado') ||
         (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
          details.causeClass?.contains('Decoder') == true);
 
@@ -406,6 +409,19 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${c.value.position}, isPlaying=${c.value.isPlaying}, isBuffering=${c.value.isBuffering}');
       _metrics.markError(details.shortUiMessage);
+
+      final isResourceNotFound = details.exoPlayerHttpStatus == 404 ||
+          details.shortUiMessage.contains('404') ||
+          details.shortUiMessage.contains('não encontrado') ||
+          details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
+          details.causeClass?.contains('Decoder') == true;
+
+      if (!_isExiting && isResourceNotFound && (_currentUrlIndex + 1 < _streamUrls.length)) {
+        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
+        _handleConnectionError(c.value.errorDescription ?? 'Erro do player', epoch: _connectionEpoch, initialPosition: c.value.position);
+        return;
+      }
+
       if (_errorMessage == null) {
         setState(() {
           _errorMessage = details.shortUiMessage;

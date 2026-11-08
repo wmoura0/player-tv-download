@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -43,9 +44,28 @@ void main() {
     tempDir = Directory.systemTemp.createTempSync('android_fixes_test_');
     SharedPreferences.setMockInitialValues({});
     await SettingsService.instance.loadSettings();
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+      switch (call.method) {
+        case 'getOtaDownloadStatus':
+          return null;
+        case 'startOtaDownload':
+          return false;
+        case 'cancelOtaDownload':
+        case 'cleanOldApks':
+          return true;
+        case 'isTvDevice':
+          return false;
+        default:
+          return null;
+      }
+    });
   });
 
   tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), null);
     try {
       if (tempDir.existsSync()) {
         tempDir.deleteSync(recursive: true);

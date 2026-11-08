@@ -11,6 +11,7 @@ import 'package:projeto_tv/screens/series_detail_screen.dart';
 import 'package:projeto_tv/services/favorites_service.dart';
 import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
+import 'package:projeto_tv/utils/device_utils.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -142,6 +143,94 @@ void main() {
 
       // Confere que agora a aba está vazia
       expect(find.text('Canais (0)'), findsOneWidget);
+    });
+
+    testWidgets('D-Pad Select em card de série nos Favoritos aciona navegação para SeriesDetailScreen', (tester) async {
+      final serieFav = FavoriteItem(
+        id: '300',
+        scopeKey: accountKey,
+        type: FavoriteType.series,
+        name: 'Breaking Bad',
+        rating: '9.5',
+        addedAt: DateTime.now(),
+      );
+      await service.addFavorite(serieFav);
+
+      final catalogService = XtreamCatalogService(
+        serverUrl: mockAccount.serverUrl,
+        username: mockAccount.username,
+        password: 'password',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FavoritesScreen(
+            xtreamAccount: mockAccount,
+            catalogService: catalogService,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Troca para Aba 3 (Séries)
+      await tester.tap(find.text('Séries (1)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Breaking Bad'), findsOneWidget);
+
+      // Simula tecla Select (D-Pad OK) do controle remoto despachando ActivateIntent
+      Actions.invoke(
+        tester.element(find.text('Breaking Bad')),
+        const ActivateIntent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Deve ter navegado para a SeriesDetailScreen
+      expect(find.byType(SeriesDetailScreen), findsOneWidget);
+    });
+
+    testWidgets('Atalho de controle remoto Menu / ContextMenu remove série dos Favoritos', (tester) async {
+      final serieFav = FavoriteItem(
+        id: '400',
+        scopeKey: accountKey,
+        type: FavoriteType.series,
+        name: 'Chernobyl',
+        rating: '9.4',
+        addedAt: DateTime.now(),
+      );
+      await service.addFavorite(serieFav);
+
+      final catalogService = XtreamCatalogService(
+        serverUrl: mockAccount.serverUrl,
+        username: mockAccount.username,
+        password: 'password',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FavoritesScreen(
+            xtreamAccount: mockAccount,
+            catalogService: catalogService,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Troca para Aba 3 (Séries)
+      await tester.tap(find.text('Séries (1)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Chernobyl'), findsOneWidget);
+
+      // Despacha FavoriteToggleIntent (tecla Menu / ContextMenu do controle)
+      Actions.invoke(
+        tester.element(find.text('Chernobyl')),
+        const FavoriteToggleIntent(),
+      );
+      await tester.pumpAndSettle();
+
+      // Confere SnackBar de remoção
+      expect(find.text('"Chernobyl" removido dos favoritos.'), findsOneWidget);
+      expect(service.isFavorite(scopeKey: accountKey, type: FavoriteType.series, id: '400'), isFalse);
     });
   });
 

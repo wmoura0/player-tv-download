@@ -1339,41 +1339,49 @@ class XtreamCatalogService extends ChangeNotifier {
         : 'mp4';
 
     final urls = <String>[];
-
-    // 1. Rota padrão Xtream Codes para Séries: /series/$user/$pass/$id.$ext com extensão do catálogo
-    urls.add('$cleanServer/series/$user/$pass/$episodeId.$cleanExt');
-
-    // 2. Alternativa prioritária (se mkv -> mp4; senão se mp4 -> mkv; senão mp4)
-    final altExt = cleanExt == 'mkv' ? 'mp4' : (cleanExt == 'mp4' ? 'mkv' : 'mp4');
-    final altUrl = '$cleanServer/series/$user/$pass/$episodeId.$altExt';
-    if (!urls.contains(altUrl)) urls.add(altUrl);
-
-    // 3. Rota legada direta sem /series/
-    urls.add('$cleanServer/$user/$pass/$episodeId.$cleanExt');
-
-    // 4. Contingências adicionais para cobrir todas as extensões comuns ('mp4', 'mkv', 'ts')
-    for (final ext in ['mp4', 'mkv', 'ts']) {
-      final u = '$cleanServer/series/$user/$pass/$episodeId.$ext';
+    void addUrl(String u) {
       if (!urls.contains(u)) urls.add(u);
     }
 
-    // 5. Se houver alternativeEpisodeId (ex: stream_id vs id), adiciona rotas para ele
-    if (alternativeEpisodeId != null && alternativeEpisodeId > 0 && alternativeEpisodeId != episodeId) {
-      for (final ext in [cleanExt, altExt, 'ts', 'mp4', 'mkv']) {
-        final u = '$cleanServer/series/$user/$pass/$alternativeEpisodeId.$ext';
-        if (!urls.contains(u)) urls.add(u);
+    final hasAltId = alternativeEpisodeId != null &&
+        alternativeEpisodeId > 0 &&
+        alternativeEpisodeId != episodeId;
+
+    // 1. Rota padrão Xtream Codes para Séries: /series/$user/$pass/$id.$ext com extensão do catálogo
+    addUrl('$cleanServer/series/$user/$pass/$episodeId.$cleanExt');
+    if (hasAltId) {
+      addUrl('$cleanServer/series/$user/$pass/$alternativeEpisodeId.$cleanExt');
+    }
+
+    // 2. Alternativa prioritária de formato (se mkv -> mp4; senão se mp4 -> mkv; senão mp4)
+    final altExt = cleanExt == 'mkv' ? 'mp4' : (cleanExt == 'mp4' ? 'mkv' : 'mp4');
+    addUrl('$cleanServer/series/$user/$pass/$episodeId.$altExt');
+    if (hasAltId) {
+      addUrl('$cleanServer/series/$user/$pass/$alternativeEpisodeId.$altExt');
+    }
+
+    // 3. Rota legada direta sem /series/
+    addUrl('$cleanServer/$user/$pass/$episodeId.$cleanExt');
+    if (hasAltId) {
+      addUrl('$cleanServer/$user/$pass/$alternativeEpisodeId.$cleanExt');
+    }
+
+    // 4. Contingências adicionais para cobrir todas as extensões comuns ('mp4', 'mkv', 'ts')
+    for (final ext in ['mp4', 'mkv', 'ts']) {
+      addUrl('$cleanServer/series/$user/$pass/$episodeId.$ext');
+      if (hasAltId) {
+        addUrl('$cleanServer/series/$user/$pass/$alternativeEpisodeId.$ext');
       }
     }
 
-    // 6. Contingência de directSource (seja URL absoluta ou relativa)
+    // 5. Contingência de directSource (seja URL absoluta ou relativa)
     final direct = directSource?.trim();
     if (direct != null && direct.isNotEmpty) {
       if (direct.startsWith('http://') || direct.startsWith('https://')) {
-        if (!urls.contains(direct)) urls.add(direct);
+        addUrl(direct);
       } else {
         final normalizedDirect = direct.startsWith('/') ? direct : '/$direct';
-        final directFull = '$cleanServer$normalizedDirect';
-        if (!urls.contains(directFull)) urls.add(directFull);
+        addUrl('$cleanServer$normalizedDirect');
       }
     }
 
