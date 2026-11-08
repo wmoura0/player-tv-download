@@ -60,7 +60,21 @@ class VodPlayerView extends StatefulWidget {
 }
 
 class _VodPlayerViewState extends State<VodPlayerView> {
-  final FocusNode _focusNode = FocusNode();
+  // FocusNodes explícitos para controles e navegação D-Pad em Android TV / Fire TV
+  final FocusNode _focusNode = FocusNode(debugLabel: 'VodPlayerRoot');
+  final FocusNode _backFocusNode = FocusNode(debugLabel: 'VodPlayerBack');
+  final FocusNode _seekBackFocusNode = FocusNode(debugLabel: 'VodPlayerSeekBack');
+  final FocusNode _playPauseFocusNode = FocusNode(debugLabel: 'VodPlayerPlayPause');
+  final FocusNode _seekForwardFocusNode = FocusNode(debugLabel: 'VodPlayerSeekForward');
+  final FocusNode _nextEpFocusNode = FocusNode(debugLabel: 'VodPlayerNextEp');
+  final FocusNode _fitFocusNode = FocusNode(debugLabel: 'VodPlayerFit');
+
+  // FocusNodes para overlays
+  final FocusNode _retryFocusNode = FocusNode(debugLabel: 'VodPlayerRetry');
+  final FocusNode _errorBackFocusNode = FocusNode(debugLabel: 'VodPlayerErrorBack');
+  final FocusNode _cancelCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerCancelCountdown');
+  final FocusNode _playNowCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerPlayNowCountdown');
+
   bool _showControls = true;
   Timer? _controlsTimer;
 
@@ -91,6 +105,28 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _isUserPaused = c != null && c.value.isInitialized && !c.value.isPlaying;
     _attachController(widget.controller);
     _startControlsTimer();
+    _checkInitialOverlayFocus();
+  }
+
+  void _checkInitialOverlayFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.errorMessage != null && !widget.isLoading) {
+        if (widget.onRetry != null) {
+          _retryFocusNode.requestFocus();
+        } else {
+          _errorBackFocusNode.requestFocus();
+        }
+      } else if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0) {
+        if (widget.onPlayNextEpisodeNow != null) {
+          _playNowCountdownFocusNode.requestFocus();
+        } else {
+          _cancelCountdownFocusNode.requestFocus();
+        }
+      } else if (_showControls) {
+        _playPauseFocusNode.requestFocus();
+      }
+    });
   }
 
   @override
@@ -102,6 +138,33 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       if (widget.controller?.value.isPlaying ?? false) {
         _isUserPaused = false;
       }
+    }
+
+    if (widget.errorMessage != oldWidget.errorMessage && widget.errorMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          if (widget.onRetry != null) {
+            _retryFocusNode.requestFocus();
+          } else {
+            _errorBackFocusNode.requestFocus();
+          }
+        }
+      });
+    }
+
+    if (widget.nextEpisodeCountdown != oldWidget.nextEpisodeCountdown &&
+        widget.nextEpisodeCountdown != null &&
+        widget.nextEpisodeCountdown! > 0 &&
+        oldWidget.nextEpisodeCountdown == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          if (widget.onPlayNextEpisodeNow != null) {
+            _playNowCountdownFocusNode.requestFocus();
+          } else {
+            _cancelCountdownFocusNode.requestFocus();
+          }
+        }
+      });
     }
   }
 
@@ -137,8 +200,29 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _continuousSeekTicker?.cancel();
     _inactivityWatchdogTimer?.cancel();
     _backDebounceTimer?.cancel();
+
     _focusNode.dispose();
+    _backFocusNode.dispose();
+    _seekBackFocusNode.dispose();
+    _playPauseFocusNode.dispose();
+    _seekForwardFocusNode.dispose();
+    _nextEpFocusNode.dispose();
+    _fitFocusNode.dispose();
+    _retryFocusNode.dispose();
+    _errorBackFocusNode.dispose();
+    _cancelCountdownFocusNode.dispose();
+    _playNowCountdownFocusNode.dispose();
     super.dispose();
+  }
+
+  void _revealControls() {
+    setState(() => _showControls = true);
+    _startControlsTimer();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _showControls) {
+        _playPauseFocusNode.requestFocus();
+      }
+    });
   }
 
   void _triggerSeekRelative(int seconds) {
@@ -190,11 +274,31 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     }
   }
 
+  String get _fitModeLabel {
+    switch (widget.fitMode) {
+      case LiveVideoFitMode.contain:
+        return 'Original';
+      case LiveVideoFitMode.cover:
+        return 'Preencher';
+      case LiveVideoFitMode.fill:
+        return 'Esticar';
+    }
+  }
+
   void _cycleFitMode() {
     if (widget.onFitModeChanged == null) return;
-    final newMode = widget.fitMode == LiveVideoFitMode.contain
-        ? LiveVideoFitMode.cover
-        : LiveVideoFitMode.contain;
+    final LiveVideoFitMode newMode;
+    switch (widget.fitMode) {
+      case LiveVideoFitMode.contain:
+        newMode = LiveVideoFitMode.cover;
+        break;
+      case LiveVideoFitMode.cover:
+        newMode = LiveVideoFitMode.fill;
+        break;
+      case LiveVideoFitMode.fill:
+        newMode = LiveVideoFitMode.contain;
+        break;
+    }
     widget.onFitModeChanged!(newMode);
     _startControlsTimer();
   }
@@ -202,8 +306,79 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     final key = event.logicalKey;
 
-    // 1. Processa KeyUpEvent: se soltar antes do tempo de hold, executa salto curto (+/-10s).
-    // Se soltar durante seek contínuo, finaliza e envia um único comando seekTo ao player.
+    // A. OVERLAY DE ERRO ATIVO: Foco dedicado nas ações de erro
+    if (widget.errorMessage != null && !widget.isLoading) {
+      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        if (_retryFocusNode.hasFocus) {
+          if (widget.onBack != null) _errorBackFocusNode.requestFocus();
+        } else {
+          if (widget.onRetry != null) _retryFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.space) {
+        if (_errorBackFocusNode.hasFocus) {
+          widget.onBack?.call();
+        } else if (_retryFocusNode.hasFocus || widget.onRetry != null) {
+          widget.onRetry?.call();
+        }
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.escape ||
+          key == LogicalKeyboardKey.goBack ||
+          key == LogicalKeyboardKey.backspace) {
+        widget.onBack?.call();
+        return KeyEventResult.handled;
+      }
+
+      return KeyEventResult.ignored;
+    }
+
+    // B. OVERLAY DE CONTAGEM REGRESSIVA DO PRÓXIMO EPISÓDIO
+    if (widget.nextEpisodeCountdown != null &&
+        widget.nextEpisodeCountdown! > 0 &&
+        widget.errorMessage == null) {
+      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        if (_playNowCountdownFocusNode.hasFocus) {
+          if (widget.onCancelNextEpisode != null) _cancelCountdownFocusNode.requestFocus();
+        } else {
+          if (widget.onPlayNextEpisodeNow != null) _playNowCountdownFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.space) {
+        if (_cancelCountdownFocusNode.hasFocus) {
+          widget.onCancelNextEpisode?.call();
+        } else {
+          widget.onPlayNextEpisodeNow?.call();
+        }
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.escape ||
+          key == LogicalKeyboardKey.goBack ||
+          key == LogicalKeyboardKey.backspace) {
+        widget.onCancelNextEpisode?.call();
+        return KeyEventResult.handled;
+      }
+
+      return KeyEventResult.ignored;
+    }
+
+    // C. PROCESSAMENTO DE TECLAS NO PLAYER (COM OU SEM CONTROLES VISÍVEIS)
+
+    // 1. Processa KeyUpEvent unificado: soltar seek contínuo ou salto curto de 10s
     if (event is KeyUpEvent) {
       if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
         if (_isContinuousSeeking) {
@@ -219,7 +394,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.ignored;
     }
 
-    // 2. Play/Pause dedicado
+    // 2. Play/Pause físico dedicado no controle remoto
     if (key == LogicalKeyboardKey.mediaPlayPause ||
         key == LogicalKeyboardKey.mediaPlay ||
         key == LogicalKeyboardKey.mediaPause) {
@@ -229,37 +404,13 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.handled;
     }
 
-    // 2b. Botão central OK / D-Pad Center / Select / Enter / Space
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.space) {
-      if (event is KeyDownEvent) {
-        if (!_showControls) {
-          // Requisito 2: Pressionar OK quando os controles estiverem ocultos
-          // deve apenas reexibir os controles, sem pausar ou despausar involuntariamente.
-          setState(() => _showControls = true);
-          _startControlsTimer();
-        } else {
-          // Controles já estão visíveis: alterna play/pause normalmente
-          _handleTogglePlayPause();
-        }
-      }
-      return KeyEventResult.handled;
-    }
-
-    // 3. Voltar (Escape / GoBack / Backspace)
+    // 3. Voltar físico (Escape / goBack / backspace)
     if (key == LogicalKeyboardKey.escape ||
         key == LogicalKeyboardKey.goBack ||
         key == LogicalKeyboardKey.backspace) {
-      // Ignora repetição de evento de teclado para não contar dois toques em um aperto físico mantido
-      if (event is KeyRepeatEvent) {
-        return KeyEventResult.handled;
-      }
-
+      if (event is KeyRepeatEvent) return KeyEventResult.handled;
       if (event is KeyDownEvent) {
-        if (_isBackDebounced) {
-          return KeyEventResult.handled;
-        }
+        if (_isBackDebounced) return KeyEventResult.handled;
         _isBackDebounced = true;
         _backDebounceTimer?.cancel();
         _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
@@ -267,50 +418,148 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         });
 
         if (_showControls) {
-          // Primeiro toque em Voltar: ocultar os controles de reprodução,
-          // mantendo o vídeo reproduzindo normalmente em tela cheia.
+          // Primeiro toque com controles visíveis: apenas oculta controles mantendo o vídeo rodando
           _controlsTimer?.cancel();
           setState(() => _showControls = false);
+          _focusNode.requestFocus();
         } else {
-          // Segundo toque em Voltar (ou quando já ocultos): sair do player e retornar
+          // Com controles ocultos: sair da tela e retornar ao catálogo
           widget.onBack?.call();
         }
       }
       return KeyEventResult.handled;
     }
 
-    // 4. Avanço e retrocesso contínuo no controle remoto (Hold / Repeat)
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      final isForward = key == LogicalKeyboardKey.arrowRight;
-      final newDir = isForward ? 1 : -1;
-      setState(() => _showControls = true);
-      _controlsTimer?.cancel();
+    // 4. QUANDO CONTROLES ESTIVEREM OCULTOS:
+    if (!_showControls) {
+      // Setas Left / Right com controles ocultos iniciam seek
+      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        final isForward = key == LogicalKeyboardKey.arrowRight;
+        final newDir = isForward ? 1 : -1;
+        setState(() => _showControls = true);
+        _controlsTimer?.cancel();
+        _resetInactivityWatchdog();
 
-      // Mantém o watchdog de inatividade atualizado (750ms de tolerância contra remotes sem KeyUp)
-      _resetInactivityWatchdog();
-
-      if (_isContinuousSeeking) {
-        if (_seekDirection != newDir) {
-          _seekDirection = newDir;
+        if (_isContinuousSeeking) {
+          if (_seekDirection != newDir) {
+            _seekDirection = newDir;
+          }
+          return KeyEventResult.handled;
         }
+
+        if (event is KeyRepeatEvent) {
+          _cancelHoldTimer();
+          _startContinuousSeeking(newDir);
+          return KeyEventResult.handled;
+        }
+
+        if (event is KeyDownEvent) {
+          _seekDirection = newDir;
+          _cancelHoldTimer();
+          _initialHoldTimer = Timer(const Duration(milliseconds: 250), () {
+            if (mounted) {
+              _startContinuousSeeking(newDir);
+            }
+          });
+          return KeyEventResult.handled;
+        }
+
         return KeyEventResult.handled;
       }
 
-      // Se o sistema já enviar KeyRepeatEvent diretamente, entra imediatamente em continuous seeking
+      // Qualquer outra tecla (Select, Enter, Space, Up, Down): APENAS revela os controles e foca o botão central
+      // Requisito estrito: OK com controles ocultos NÃO pausa nem altera a reprodução involuntariamente!
+      if (event is KeyDownEvent) {
+        _revealControls();
+      }
+      return KeyEventResult.handled;
+    }
+
+    // 5. QUANDO CONTROLES ESTIVEREM VISÍVEIS:
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+
+    _startControlsTimer();
+
+    // 5a. Navegação D-Pad 2D: ArrowUp
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (event is KeyRepeatEvent) return KeyEventResult.handled;
+      if (_fitFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (_playPauseFocusNode.hasFocus ||
+          _seekBackFocusNode.hasFocus ||
+          _seekForwardFocusNode.hasFocus ||
+          _nextEpFocusNode.hasFocus) {
+        if (widget.onBack != null) {
+          _backFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.handled;
+    }
+
+    // 5b. Navegação D-Pad 2D: ArrowDown
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (event is KeyRepeatEvent) return KeyEventResult.handled;
+      if (_backFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (_playPauseFocusNode.hasFocus ||
+          _seekBackFocusNode.hasFocus ||
+          _seekForwardFocusNode.hasFocus ||
+          _nextEpFocusNode.hasFocus) {
+        if (widget.onFitModeChanged != null) {
+          _fitFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.handled;
+    }
+
+    // 5c. Navegação D-Pad 2D e Seek: ArrowLeft
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (_fitFocusNode.hasFocus) {
+        _backFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+
+      // Se estiver no botão Voltar superior, mantém foco lá
+      if (_backFocusNode.hasFocus) {
+        return KeyEventResult.handled;
+      }
+
+      // Move foco visual entre botões
+      if (_nextEpFocusNode.hasFocus) {
+        _seekForwardFocusNode.requestFocus();
+      } else if (_seekForwardFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+      } else if (_playPauseFocusNode.hasFocus) {
+        _seekBackFocusNode.requestFocus();
+      }
+
+      // Dispara lógica de seek acelerado / salto de 10s
+      final newDir = -1;
+      _controlsTimer?.cancel();
+      _resetInactivityWatchdog();
+
+      if (_isContinuousSeeking) {
+        if (_seekDirection != newDir) _seekDirection = newDir;
+        return KeyEventResult.handled;
+      }
+
       if (event is KeyRepeatEvent) {
         _cancelHoldTimer();
         _startContinuousSeeking(newDir);
         return KeyEventResult.handled;
       }
 
-      // Primeiro KeyDownEvent
       if (event is KeyDownEvent) {
         _seekDirection = newDir;
         _cancelHoldTimer();
         _initialHoldTimer = Timer(const Duration(milliseconds: 250), () {
-          if (mounted) {
-            _startContinuousSeeking(newDir);
-          }
+          if (mounted) _startContinuousSeeking(newDir);
         });
         return KeyEventResult.handled;
       }
@@ -318,10 +567,79 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       return KeyEventResult.handled;
     }
 
-    if (event is KeyDownEvent) {
-      setState(() => _showControls = true);
-      _startControlsTimer();
+    // 5d. Navegação D-Pad 2D e Seek: ArrowRight
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (_backFocusNode.hasFocus) {
+        if (widget.onFitModeChanged != null) {
+          _fitFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+
+      // Se estiver no botão Proporção superior, mantém foco lá
+      if (_fitFocusNode.hasFocus) {
+        return KeyEventResult.handled;
+      }
+
+      // Move foco visual entre botões
+      if (_seekBackFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+      } else if (_playPauseFocusNode.hasFocus) {
+        _seekForwardFocusNode.requestFocus();
+      } else if (_seekForwardFocusNode.hasFocus && widget.onNextEpisode != null) {
+        _nextEpFocusNode.requestFocus();
+      }
+
+      // Dispara lógica de seek acelerado / salto de 10s
+      final newDir = 1;
+      _controlsTimer?.cancel();
+      _resetInactivityWatchdog();
+
+      if (_isContinuousSeeking) {
+        if (_seekDirection != newDir) _seekDirection = newDir;
+        return KeyEventResult.handled;
+      }
+
+      if (event is KeyRepeatEvent) {
+        _cancelHoldTimer();
+        _startContinuousSeeking(newDir);
+        return KeyEventResult.handled;
+      }
+
+      if (event is KeyDownEvent) {
+        _seekDirection = newDir;
+        _cancelHoldTimer();
+        _initialHoldTimer = Timer(const Duration(milliseconds: 250), () {
+          if (mounted) _startContinuousSeeking(newDir);
+        });
+        return KeyEventResult.handled;
+      }
+
+      return KeyEventResult.handled;
     }
+
+    // 5e. Ação Central OK / Select / Enter / Space
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space) {
+      if (_backFocusNode.hasFocus) {
+        widget.onBack?.call();
+      } else if (_seekBackFocusNode.hasFocus) {
+        _triggerSeekRelative(-10);
+      } else if (_seekForwardFocusNode.hasFocus) {
+        _triggerSeekRelative(10);
+      } else if (_nextEpFocusNode.hasFocus) {
+        widget.onNextEpisode?.call();
+        _startControlsTimer();
+      } else if (_fitFocusNode.hasFocus) {
+        _cycleFitMode();
+      } else {
+        // Se Play/Pause ou qualquer outro tiver foco
+        _handleTogglePlayPause();
+      }
+      return KeyEventResult.handled;
+    }
+
     return KeyEventResult.ignored;
   }
 
@@ -506,6 +824,17 @@ class _VodPlayerViewState extends State<VodPlayerView> {
               child: VideoPlayer(controller),
             ),
           );
+        } else if (widget.fitMode == LiveVideoFitMode.fill) {
+          return SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.fill,
+              child: SizedBox(
+                width: rawVideoWidth > 0 ? rawVideoWidth : 16,
+                height: rawVideoHeight > 0 ? rawVideoHeight : 9,
+                child: VideoPlayer(controller),
+              ),
+            ),
+          );
         } else {
           final containerAspect = containerWidth / containerHeight;
           double renderWidth;
@@ -642,6 +971,46 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     );
   }
 
+  Widget _buildFocusableIconButton({
+    required FocusNode focusNode,
+    required String tooltip,
+    required double iconSize,
+    required Widget icon,
+    required VoidCallback onPressed,
+  }) {
+    return AnimatedBuilder(
+      animation: focusNode,
+      builder: (context, _) {
+        final isFocused = focusNode.hasFocus;
+        return Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+              width: 2.2,
+            ),
+            boxShadow: isFocused
+                ? [
+                    const BoxShadow(
+                      color: Color(0x9900E5FF),
+                      blurRadius: 12,
+                      spreadRadius: 2,
+                    )
+                  ]
+                : null,
+          ),
+          child: IconButton(
+            focusNode: focusNode,
+            tooltip: tooltip,
+            iconSize: iconSize,
+            icon: icon,
+            onPressed: onPressed,
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildErrorOverlay() {
     final sanitizedError = UrlSanitizer.sanitizeErrorMessage(
       widget.errorMessage ?? 'Transmissão do filme indisponível.',
@@ -697,25 +1066,56 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     if (widget.onRetry != null) ...[
-                      ElevatedButton.icon(
-                        onPressed: widget.onRetry,
-                        icon: const Icon(Icons.refresh_rounded, size: 16),
-                        label: const Text('Tentar novamente'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFE50914),
-                          foregroundColor: Colors.white,
-                        ),
+                      AnimatedBuilder(
+                        animation: _retryFocusNode,
+                        builder: (context, _) {
+                          final isFocused = _retryFocusNode.hasFocus;
+                          return Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: isFocused
+                                  ? [
+                                      const BoxShadow(
+                                        color: Color(0x9900E5FF),
+                                        blurRadius: 12,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                            child: ElevatedButton.icon(
+                              focusNode: _retryFocusNode,
+                              onPressed: widget.onRetry,
+                              icon: const Icon(Icons.refresh_rounded, size: 16),
+                              label: const Text('Tentar novamente'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isFocused ? const Color(0xFF00E5FF) : const Color(0xFFE50914),
+                                foregroundColor: isFocused ? Colors.black : Colors.white,
+                              ),
+                            ),
+                          );
+                        },
                       ),
                       const SizedBox(width: 12),
                     ],
                     if (widget.onBack != null)
-                      OutlinedButton(
-                        onPressed: widget.onBack,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white70,
-                          side: const BorderSide(color: Color(0xFF37474F)),
-                        ),
-                        child: const Text('Voltar'),
+                      AnimatedBuilder(
+                        animation: _errorBackFocusNode,
+                        builder: (context, _) {
+                          final isFocused = _errorBackFocusNode.hasFocus;
+                          return OutlinedButton(
+                            focusNode: _errorBackFocusNode,
+                            onPressed: widget.onBack,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: isFocused ? const Color(0xFF00E5FF) : Colors.white70,
+                              side: BorderSide(
+                                color: isFocused ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
+                                width: isFocused ? 2 : 1,
+                              ),
+                            ),
+                            child: const Text('Voltar'),
+                          );
+                        },
                       ),
                   ],
                 ),
@@ -768,10 +1168,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       child: Row(
         children: [
           if (widget.onBack != null)
-            IconButton(
+            _buildFocusableIconButton(
+              focusNode: _backFocusNode,
               tooltip: 'Voltar',
-              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 24),
-              onPressed: widget.onBack,
+              iconSize: 24,
+              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+              onPressed: () => widget.onBack?.call(),
             ),
           const SizedBox(width: 8),
           Expanded(
@@ -883,14 +1285,16 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            IconButton(
+            _buildFocusableIconButton(
+              focusNode: _seekBackFocusNode,
               tooltip: 'Retroceder 10s',
               iconSize: 42,
               icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
               onPressed: () => _triggerSeekRelative(-10),
             ),
             const SizedBox(width: 20),
-            IconButton(
+            _buildFocusableIconButton(
+              focusNode: _playPauseFocusNode,
               tooltip: showPauseIcon ? 'Pausar' : 'Reproduzir',
               iconSize: 64,
               icon: Container(
@@ -908,7 +1312,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
               onPressed: _handleTogglePlayPause,
             ),
             const SizedBox(width: 20),
-            IconButton(
+            _buildFocusableIconButton(
+              focusNode: _seekForwardFocusNode,
               tooltip: 'Avançar 10s',
               iconSize: 42,
               icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
@@ -916,7 +1321,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
             ),
             if (widget.onNextEpisode != null) ...[
               const SizedBox(width: 20),
-              IconButton(
+              _buildFocusableIconButton(
+                focusNode: _nextEpFocusNode,
                 tooltip: 'Próximo episódio',
                 iconSize: 42,
                 icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
@@ -951,8 +1357,6 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     final elapsedStr = PlaybackProgressService.formatDuration(currentDisplayDuration);
     final totalStr = PlaybackProgressService.formatDuration(duration);
     final remainingStr = '-${PlaybackProgressService.formatDuration(remaining)}';
-
-    final fitLabel = widget.fitMode == LiveVideoFitMode.contain ? 'Original' : 'Preencher';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1024,13 +1428,38 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                 ],
               ),
               if (widget.onFitModeChanged != null)
-                TextButton.icon(
-                  onPressed: _cycleFitMode,
-                  icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
-                  label: Text(
-                    fitLabel,
-                    style: const TextStyle(color: Colors.white70, fontSize: 11),
-                  ),
+                AnimatedBuilder(
+                  animation: _fitFocusNode,
+                  builder: (context, _) {
+                    final isFocused = _fitFocusNode.hasFocus;
+                    return Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+                          width: 2.0,
+                        ),
+                        boxShadow: isFocused
+                            ? [
+                                const BoxShadow(
+                                  color: Color(0x9900E5FF),
+                                  blurRadius: 10,
+                                  spreadRadius: 1,
+                                )
+                              ]
+                            : null,
+                      ),
+                      child: TextButton.icon(
+                        focusNode: _fitFocusNode,
+                        onPressed: _cycleFitMode,
+                        icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
+                        label: Text(
+                          _fitModeLabel,
+                          style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        ),
+                      ),
+                    );
+                  },
                 ),
             ],
           ),
@@ -1096,25 +1525,56 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                   runSpacing: 10,
                   children: [
                     if (widget.onCancelNextEpisode != null)
-                      OutlinedButton(
-                        onPressed: widget.onCancelNextEpisode,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white70,
-                          side: const BorderSide(color: Color(0xFF37474F)),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        ),
-                        child: const Text('Cancelar'),
+                      AnimatedBuilder(
+                        animation: _cancelCountdownFocusNode,
+                        builder: (context, _) {
+                          final isFocused = _cancelCountdownFocusNode.hasFocus;
+                          return OutlinedButton(
+                            focusNode: _cancelCountdownFocusNode,
+                            onPressed: widget.onCancelNextEpisode,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: isFocused ? const Color(0xFF00E5FF) : Colors.white70,
+                              side: BorderSide(
+                                color: isFocused ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
+                                width: isFocused ? 2 : 1,
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            ),
+                            child: const Text('Cancelar'),
+                          );
+                        },
                       ),
                     if (widget.onPlayNextEpisodeNow != null)
-                      ElevatedButton.icon(
-                        onPressed: widget.onPlayNextEpisodeNow,
-                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                        label: const Text('Assistir agora'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFE50914),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                        ),
+                      AnimatedBuilder(
+                        animation: _playNowCountdownFocusNode,
+                        builder: (context, _) {
+                          final isFocused = _playNowCountdownFocusNode.hasFocus;
+                          return Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: isFocused
+                                  ? [
+                                      const BoxShadow(
+                                        color: Color(0x9900E5FF),
+                                        blurRadius: 12,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                            child: ElevatedButton.icon(
+                              focusNode: _playNowCountdownFocusNode,
+                              onPressed: widget.onPlayNextEpisodeNow,
+                              icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                              label: const Text('Assistir agora'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isFocused ? const Color(0xFF00E5FF) : const Color(0xFFE50914),
+                                foregroundColor: isFocused ? Colors.black : Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                              ),
+                            ),
+                          );
+                        },
                       ),
                   ],
                 ),

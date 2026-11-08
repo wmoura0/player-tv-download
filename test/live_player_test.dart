@@ -160,7 +160,7 @@ void main() {
       expect(fullscreenToggled, isTrue);
     });
 
-    testWidgets('Modos de proporção alternam estritamente entre Original e Preencher', (tester) async {
+    testWidgets('Modos de proporção alternam ciclicamente entre Original, Preencher e Esticar', (tester) async {
       LiveVideoFitMode currentMode = LiveVideoFitMode.contain;
 
       await tester.pumpWidget(
@@ -190,7 +190,7 @@ void main() {
       expect(find.text('Original'), findsOneWidget);
       expect(find.text('Esticar'), findsNothing);
 
-      // Clica para alternar
+      // Clica para alternar -> vai para "Preencher" (cover)
       await tester.tap(find.text('Original'));
       await tester.pumpAndSettle();
 
@@ -199,8 +199,15 @@ void main() {
       expect(find.text('Preencher'), findsOneWidget);
       expect(find.text('Esticar'), findsNothing);
 
-      // Clica novamente para voltar a "Original"
+      // Clica para alternar -> vai para "Esticar" (fill)
       await tester.tap(find.text('Preencher'));
+      await tester.pumpAndSettle();
+
+      expect(currentMode, equals(LiveVideoFitMode.fill));
+      expect(find.text('Esticar'), findsOneWidget);
+
+      // Clica novamente para voltar a "Original"
+      await tester.tap(find.text('Esticar'));
       await tester.pumpAndSettle();
 
       expect(currentMode, equals(LiveVideoFitMode.contain));
@@ -271,16 +278,19 @@ void main() {
       final fitButton = find.byIcon(Icons.aspect_ratio_rounded);
       expect(fitButton, findsOneWidget);
 
-      // Clica para alternar
+      // Clica para alternar -> cover
       await tester.tap(fitButton);
       await tester.pumpAndSettle();
-
       expect(currentMode, equals(LiveVideoFitMode.cover));
+
+      // Clica para alternar -> fill
+      await tester.tap(fitButton);
+      await tester.pumpAndSettle();
+      expect(currentMode, equals(LiveVideoFitMode.fill));
 
       // Clica novamente para voltar a Original
       await tester.tap(fitButton);
       await tester.pumpAndSettle();
-
       expect(currentMode, equals(LiveVideoFitMode.contain));
     });
 

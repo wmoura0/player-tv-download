@@ -75,7 +75,13 @@ class ContinueWatchingItem {
   }
 
   bool get canResume {
-    return position.inSeconds >= 10 && !isCompleted;
+    if (isCompleted) return false;
+    if (position.inSeconds >= 10) return true;
+    // Séries com próximo episódio promovido com posição inicial zero podem ser retomadas
+    if (type == ContinueWatchingType.series && position == Duration.zero && (episodeNum ?? 0) >= 1) {
+      return true;
+    }
+    return false;
   }
 
   Map<String, dynamic> toJson() => {
@@ -163,6 +169,18 @@ class PlaybackProgressService {
     if (progress.isCompleted) {
       await prefs.remove(key);
       return;
+    }
+
+    // Proteção contra gravações antigas concorrentes
+    final raw = prefs.getString(key);
+    if (raw != null) {
+      try {
+        final existing = jsonDecode(raw);
+        final existingTime = existing['time'] as int?;
+        if (existingTime != null && existingTime > progress.updatedAt.millisecondsSinceEpoch) {
+          return;
+        }
+      } catch (_) {}
     }
 
     // Só grava se tiver assistido pelo menos 10 segundos
@@ -255,6 +273,18 @@ class PlaybackProgressService {
     if (progress.isCompleted) {
       await prefs.remove(key);
       return;
+    }
+
+    // Proteção contra gravações antigas concorrentes
+    final raw = prefs.getString(key);
+    if (raw != null) {
+      try {
+        final existing = jsonDecode(raw);
+        final existingTime = existing['time'] as int?;
+        if (existingTime != null && existingTime > progress.updatedAt.millisecondsSinceEpoch) {
+          return;
+        }
+      } catch (_) {}
     }
 
     // Só grava se tiver assistido pelo menos 10 segundos
@@ -408,6 +438,12 @@ class PlaybackProgressService {
       return false;
     });
     final existingItem = existingIndex >= 0 ? currentList[existingIndex] : null;
+
+    // Proteção contra gravações concorrentes desatualizadas:
+    // Se o item persistido já possui timestamp posterior ao que está sendo gravado, ignora
+    if (existingItem != null && existingItem.updatedAt.isAfter(item.updatedAt)) {
+      return;
+    }
 
     currentList.removeWhere((i) {
       if (i.type == item.type) {

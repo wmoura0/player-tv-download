@@ -34,7 +34,8 @@ class VodPlayerScreen extends StatefulWidget {
   State<VodPlayerScreen> createState() => _VodPlayerScreenState();
 }
 
-class _VodPlayerScreenState extends State<VodPlayerScreen> {
+class _VodPlayerScreenState extends State<VodPlayerScreen>
+    with WidgetsBindingObserver {
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
   late final PlaybackMetrics _metrics;
@@ -57,6 +58,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     DeviceUtils.setVideoOrientation();
     DeviceUtils.setKeepScreenOn(true);
 
@@ -82,7 +84,24 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _saveCurrentProgress(force: true);
+      final c = _controller;
+      if (c != null && c.value.isInitialized && c.value.isPlaying) {
+        c.pause();
+      }
+    } else if (state == AppLifecycleState.detached) {
+      _saveCurrentProgress(force: true);
+      _disposeCurrentController();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     DeviceUtils.setKeepScreenOn(false);
     _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
@@ -306,16 +325,17 @@ class _VodPlayerScreenState extends State<VodPlayerScreen> {
     final userMessage = details.shortUiMessage;
     _metrics.markError(userMessage);
 
-    final isResourceNotFound = probe.isNotFound ||
-        details.exoPlayerHttpStatus == 404 ||
-        (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
-         details.causeClass?.contains('Decoder') == true);
+    final isAuthOrForbidden = details.isAuthOrForbidden || probe.isForbidden;
+    final isResourceNotFound = probe.isNotFound || details.isResourceNotFound;
+    final isFormatOrContainerError = details.isFormatOrContainerError;
 
-    final canTryAlternative = isResourceNotFound && (_currentUrlIndex + 1 < widget.streamUrls.length);
+    final canTryAlternative = !isAuthOrForbidden &&
+        (isResourceNotFound || isFormatOrContainerError) &&
+        (_currentUrlIndex + 1 < widget.streamUrls.length);
 
     if (canTryAlternative) {
       _currentUrlIndex++;
-      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando rota de contingência index $_currentUrlIndex devido a erro de recurso.');
+      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando rota de contingência index $_currentUrlIndex devido a erro de recurso ou container.');
       await _connectToUrl(widget.streamUrls[_currentUrlIndex]);
     } else {
       setState(() {

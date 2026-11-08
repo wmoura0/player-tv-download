@@ -41,7 +41,8 @@ class SeriesPlayerScreen extends StatefulWidget {
   State<SeriesPlayerScreen> createState() => _SeriesPlayerScreenState();
 }
 
-class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
+class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
+    with WidgetsBindingObserver {
   late XtreamSeriesEpisode _currentEpisode;
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
@@ -72,6 +73,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentEpisode = widget.initialEpisode;
     _updateNextEpisode();
 
@@ -97,7 +99,24 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _saveCurrentProgress(force: true);
+      final c = _controller;
+      if (c != null && c.value.isInitialized && c.value.isPlaying) {
+        c.pause();
+      }
+    } else if (state == AppLifecycleState.detached) {
+      _saveCurrentProgress(force: true);
+      _disposeCurrentController();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     DeviceUtils.setKeepScreenOn(false);
     _cancelCountdown();
     _initialBufferingWatchdog?.cancel();
@@ -346,22 +365,21 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
     final userMessage = details.shortUiMessage;
     _metrics.markError(userMessage);
 
-    // REGRA 3: Não tentar outra extensão ou rota apenas porque houve timeout.
-    // Tenta alternativa somente quando for falha comprovada de rota/recurso (ex: 404 ou formato não reconhecido)
-    // e houver URL alternativa válida na lista.
-    final isResourceNotFound = probe.isNotFound ||
-        details.exoPlayerHttpStatus == 404 ||
-        details.probeHttpStatus == 404 ||
-        details.shortUiMessage.contains('404') ||
-        details.shortUiMessage.contains('não encontrado') ||
-        (details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
-         details.causeClass?.contains('Decoder') == true);
+    // REGRA DE SEGURANÇA E FORMATO:
+    // 1. Nunca tentar contornar erros de autenticação ou permissão (HTTP 401/403).
+    // 2. Não tentar rotas alternativas para timeouts de rede puros.
+    // 3. Tenta contingência somente para recurso não encontrado (404) ou incompatibilidade de formato/container Media3 (3001, 3003, Parser/Decoder).
+    final isAuthOrForbidden = details.isAuthOrForbidden || probe.isForbidden;
+    final isResourceNotFound = probe.isNotFound || details.isResourceNotFound;
+    final isFormatOrContainerError = details.isFormatOrContainerError;
 
-    final canTryAlternative = isResourceNotFound && (_currentUrlIndex + 1 < _streamUrls.length);
+    final canTryAlternative = !isAuthOrForbidden &&
+        (isResourceNotFound || isFormatOrContainerError) &&
+        (_currentUrlIndex + 1 < _streamUrls.length);
 
     if (canTryAlternative) {
       _currentUrlIndex++;
-      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando URL de contingência $_currentUrlIndex devido a erro de recurso.');
+      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando URL de contingência $_currentUrlIndex devido a erro de recurso ou container incompatível.');
       await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
     } else {
       setState(() {
@@ -480,12 +498,60 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen> {
       final remaining = dur.inSeconds - pos.inSeconds;
       if (remaining <= 2 && pos.inSeconds > 10) {
         _hasTriggeredCompletion = true;
-        _saveCurrentProgress();
+        _handleEpisodeCompleted();
 
         if (_nextEpisode != null && SettingsService.instance.enableAutoPlayNextEpisode) {
           _startNextEpisodeCountdown();
         }
       }
+    }
+  }
+
+  Future<void> _handleEpisodeCompleted() async {
+    // 1. Limpa o progresso salvo do episódio concluído
+    await _progressService.clearEpisodeProgress(
+      accountKey: widget.accountKey,
+      seriesId: widget.series.seriesId,
+      episodeId: _currentEpisode.id,
+    );
+
+    // 2. Se houver próximo episódio na série, promove-o com posição inicial zero
+    if (_nextEpisode != null) {
+      await _progressService.saveLastWatchedEpisode(
+        accountKey: widget.accountKey,
+        seriesId: widget.series.seriesId,
+        episodeId: _nextEpisode!.id,
+        seasonNumber: _nextEpisode!.seasonNumber,
+        episodeNum: _nextEpisode!.episodeNum,
+      );
+
+      await _progressService.saveContinueWatchingItem(
+        accountKey: widget.accountKey,
+        item: ContinueWatchingItem(
+          streamId: _nextEpisode!.id,
+          seriesId: widget.series.seriesId,
+          type: ContinueWatchingType.series,
+          title: widget.series.name,
+          subtitle: 'T${_nextEpisode!.seasonNumber}:E${_nextEpisode!.episodeNum} • ${_nextEpisode!.title}',
+          coverUrl: _nextEpisode!.cover ?? widget.series.cover,
+          position: Duration.zero,
+          duration: _nextEpisode!.durationSecs != null
+              ? Duration(seconds: _nextEpisode!.durationSecs!)
+              : Duration.zero,
+          updatedAt: DateTime.now(),
+          containerExtension: _nextEpisode!.containerExtension,
+          categoryId: widget.series.categoryId,
+          seasonNumber: _nextEpisode!.seasonNumber,
+          episodeNum: _nextEpisode!.episodeNum,
+        ),
+      );
+    } else {
+      // Último episódio da série: remove do Continuar Assistindo
+      await _progressService.removeContinueWatchingItem(
+        accountKey: widget.accountKey,
+        type: ContinueWatchingType.series,
+        id: widget.series.seriesId,
+      );
     }
   }
 

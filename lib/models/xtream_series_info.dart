@@ -54,6 +54,9 @@ class XtreamSeriesEpisode {
     final rawStreamId = json['stream_id'] ?? info['stream_id'];
     final parsedStreamId = int.tryParse(rawStreamId?.toString() ?? '');
 
+    final rawEpisodeId = json['episode_id'] ?? info['episode_id'];
+    final parsedEpisodeId = int.tryParse(rawEpisodeId?.toString() ?? '');
+
     final rawId = json['id'] ?? info['id'];
     final parsedId = int.tryParse(rawId?.toString() ?? '');
 
@@ -63,18 +66,28 @@ class XtreamSeriesEpisode {
     if (parsedStreamId != null && parsedStreamId > 0 && parsedId != null && parsedId > 0) {
       if (parsedStreamId == parsedId) {
         resolvedId = parsedStreamId;
+        altId = (parsedEpisodeId != null && parsedEpisodeId != parsedStreamId && parsedEpisodeId != episodeNum)
+            ? parsedEpisodeId
+            : null;
       } else if (parsedId == episodeNum && parsedStreamId != episodeNum) {
-        // "id" era apenas o número do episódio na temporada (ex: 64) e "stream_id" é o identificador real
+        // "id" era apenas o índice/número do episódio (ex: 64, 105) e "stream_id" é o identificador real do arquivo
         resolvedId = parsedStreamId;
         altId = parsedId;
       } else if (parsedStreamId == episodeNum && parsedId != episodeNum) {
-        // "stream_id" era apenas o número do episódio na temporada (ex: 64) e "id" é o identificador real
+        // "stream_id" era apenas o índice/número do episódio e "id" é o identificador real do arquivo
         resolvedId = parsedId;
         altId = parsedStreamId;
       } else {
-        // Se um for o ID global da tabela de streams (> 1000) e o outro pequeno (<= 100),
-        // o maior é priorizado como o ID real do arquivo.
-        if (parsedId > 1000 && parsedStreamId <= 100) {
+        // Quando nenhum dos dois coincide com o número do episódio,
+        // se um deles for nitidamente o ID global do banco Xtream (ex: > 1000 enquanto o outro <= 500 ou 5x maior),
+        // o identificador global é priorizado.
+        if (parsedId > 1000 && parsedStreamId <= 500) {
+          resolvedId = parsedId;
+          altId = parsedStreamId;
+        } else if (parsedStreamId > 1000 && parsedId <= 500) {
+          resolvedId = parsedStreamId;
+          altId = parsedId;
+        } else if (parsedId > parsedStreamId * 5) {
           resolvedId = parsedId;
           altId = parsedStreamId;
         } else {
@@ -84,8 +97,14 @@ class XtreamSeriesEpisode {
       }
     } else if (parsedStreamId != null && parsedStreamId > 0) {
       resolvedId = parsedStreamId;
+      altId = (parsedEpisodeId != null && parsedEpisodeId != parsedStreamId)
+          ? parsedEpisodeId
+          : (parsedId != null && parsedId != parsedStreamId ? parsedId : null);
     } else if (parsedId != null && parsedId > 0) {
       resolvedId = parsedId;
+      altId = (parsedEpisodeId != null && parsedEpisodeId != parsedId) ? parsedEpisodeId : null;
+    } else if (parsedEpisodeId != null && parsedEpisodeId > 0) {
+      resolvedId = parsedEpisodeId;
     }
 
     final rawTitle = json['title']?.toString() ?? info['title']?.toString() ?? json['name']?.toString() ?? 'Episódio $episodeNum';

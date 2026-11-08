@@ -46,13 +46,16 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   Duration? _primaryPosition;
   String _primaryButtonLabel = '';
 
+  late XtreamSeriesItem _currentSeries;
+
   @override
   void initState() {
     super.initState();
+    _currentSeries = widget.series;
     _isFavorite = FavoritesService.instance.isFavorite(
       scopeKey: widget.accountKey,
       type: FavoriteType.series,
-      id: widget.series.seriesId.toString(),
+      id: _currentSeries.seriesId.toString(),
     );
     FavoritesService.instance.addListener(_onFavoritesChanged);
     _loadSeriesData();
@@ -70,7 +73,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         _isFavorite = FavoritesService.instance.isFavorite(
           scopeKey: widget.accountKey,
           type: FavoriteType.series,
-          id: widget.series.seriesId.toString(),
+          id: _currentSeries.seriesId.toString(),
         );
       });
     }
@@ -79,7 +82,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   Future<void> _toggleFavorite() async {
     final item = FavoriteItem.fromSeriesItem(
       accountKey: widget.accountKey,
-      series: widget.series,
+      series: _currentSeries,
     );
     final isFav = await FavoritesService.instance.toggleFavorite(item);
     if (mounted) {
@@ -106,7 +109,46 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     });
 
     try {
-      final info = await widget.catalogService.fetchSeriesInfo(widget.series.seriesId);
+      var info = await widget.catalogService.fetchSeriesInfo(_currentSeries.seriesId);
+
+      // Se a série não retornou dados, tenta recuperar se foi reindexada com novo seriesId
+      if (info == null || info.seasons.isEmpty) {
+        try {
+          final seriesList = await widget.catalogService.fetchSeries(
+            categoryId: _currentSeries.categoryId,
+          );
+          final cleanTargetTitle = _currentSeries.name.trim().toLowerCase();
+
+          // Validação robusta de metadados:
+          // Não confiar apenas no título. Exigir que categoria, rating ou cover coincida
+          // para nunca associar acidentalmente uma série diferente com o mesmo nome.
+          final matches = seriesList.where((s) {
+            final titleMatch = s.name.trim().toLowerCase() == cleanTargetTitle;
+            if (!titleMatch) return false;
+            final categoryMatch = s.categoryId == _currentSeries.categoryId;
+            final coverMatch = s.cover != null && _currentSeries.cover != null && s.cover == _currentSeries.cover;
+            final ratingMatch = s.rating != null && _currentSeries.rating != null && s.rating == _currentSeries.rating;
+            return categoryMatch || coverMatch || ratingMatch;
+          }).toList();
+
+          if (matches.isNotEmpty) {
+            final matched = matches.first;
+            final recoveredInfo = await widget.catalogService.fetchSeriesInfo(matched.seriesId);
+            if (recoveredInfo != null && recoveredInfo.seasons.isNotEmpty) {
+              info = recoveredInfo;
+              _currentSeries = matched;
+              if (_isFavorite) {
+                await FavoritesService.instance.addFavorite(
+                  FavoriteItem.fromSeriesItem(
+                    accountKey: widget.accountKey,
+                    series: matched,
+                  ),
+                );
+              }
+            }
+          }
+        } catch (_) {}
+      }
 
       if (!mounted) return;
 
@@ -150,7 +192,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     // 1. Verificar último episódio assistido salvo
     final lastWatched = await _progressService.getLastWatchedEpisode(
       accountKey: widget.accountKey,
-      seriesId: widget.series.seriesId,
+      seriesId: _currentSeries.seriesId,
     );
 
     // 2. Consultar progresso de todos os episódios disponíveis em paralelo
@@ -158,7 +200,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     final progressFutures = allEpisodes.map((ep) async {
       final prog = await _progressService.getEpisodeProgress(
         accountKey: widget.accountKey,
-        seriesId: widget.series.seriesId,
+        seriesId: _currentSeries.seriesId,
         episodeId: ep.id,
       );
       return MapEntry(ep.id, prog);
@@ -261,7 +303,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SeriesPlayerScreen(
-          series: widget.series,
+          series: _currentSeries,
           seriesInfo: _seriesInfo!,
           initialEpisode: episode,
           catalogService: widget.catalogService,

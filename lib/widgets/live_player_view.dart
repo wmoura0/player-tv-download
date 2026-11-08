@@ -5,8 +5,8 @@ import 'package:video_player/video_player.dart';
 import '../services/url_sanitizer.dart';
 import '../utils/device_utils.dart';
 
-/// Modos de enquadramento do vídeo na tela (Original ou Preencher).
-enum LiveVideoFitMode { contain, cover }
+/// Modos de enquadramento do vídeo na tela (Original, Preencher ou Esticar).
+enum LiveVideoFitMode { contain, cover, fill }
 
 /// Widget modular de reprodução de TV ao vivo com suporte unificado
 /// para modo mini player e modo tela cheia compartilhando a mesma instância
@@ -243,13 +243,24 @@ class LivePlayerViewState extends State<LivePlayerView> {
         return 'Original';
       case LiveVideoFitMode.cover:
         return 'Preencher';
+      case LiveVideoFitMode.fill:
+        return 'Esticar';
     }
   }
 
   void _cycleFitMode() {
-    final newMode = _currentFitMode == LiveVideoFitMode.contain
-        ? LiveVideoFitMode.cover
-        : LiveVideoFitMode.contain;
+    final LiveVideoFitMode newMode;
+    switch (_currentFitMode) {
+      case LiveVideoFitMode.contain:
+        newMode = LiveVideoFitMode.cover;
+        break;
+      case LiveVideoFitMode.cover:
+        newMode = LiveVideoFitMode.fill;
+        break;
+      case LiveVideoFitMode.fill:
+        newMode = LiveVideoFitMode.contain;
+        break;
+    }
     setState(() {
       _currentFitMode = newMode;
     });
@@ -637,6 +648,18 @@ class LivePlayerViewState extends State<LivePlayerView> {
             child: AspectRatio(
               aspectRatio: videoAspect,
               child: VideoPlayer(controller),
+            ),
+          );
+        } else if (_currentFitMode == LiveVideoFitMode.fill) {
+          // Modo Esticar: Preenche 100% da área do container esticando o vídeo sem barras pretas
+          return SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.fill,
+              child: SizedBox(
+                width: rawVideoWidth > 0 ? rawVideoWidth : 16,
+                height: rawVideoHeight > 0 ? rawVideoHeight : 9,
+                child: VideoPlayer(controller),
+              ),
             ),
           );
         } else {

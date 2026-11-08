@@ -99,6 +99,7 @@ class XtreamVodStream {
   final double? rating5based;
   final String categoryId;
   final String? containerExtension;
+  final String? directSource;
   final DateTime? addedDate;
 
   const XtreamVodStream({
@@ -110,6 +111,7 @@ class XtreamVodStream {
     this.rating5based,
     required this.categoryId,
     this.containerExtension,
+    this.directSource,
     this.addedDate,
   });
 
@@ -125,6 +127,9 @@ class XtreamVodStream {
       }
     }
 
+    final rawDirect = json['direct_source']?.toString();
+    final directSource = (rawDirect != null && rawDirect.trim().isNotEmpty) ? rawDirect.trim() : null;
+
     return XtreamVodStream(
       streamId: int.tryParse(json['stream_id']?.toString() ?? '') ?? 0,
       num: int.tryParse(json['num']?.toString() ?? ''),
@@ -134,6 +139,7 @@ class XtreamVodStream {
       rating5based: double.tryParse(json['rating_5based']?.toString() ?? ''),
       categoryId: json['category_id']?.toString() ?? '0',
       containerExtension: json['container_extension']?.toString(),
+      directSource: directSource,
       addedDate: addedDate,
     );
   }

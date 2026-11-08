@@ -51,6 +51,29 @@ class DiagnosticErrorDetails {
     required this.shortUiMessage,
     required this.technicalSummary,
   });
+
+  bool get isAuthOrForbidden =>
+      exoPlayerHttpStatus == 401 ||
+      exoPlayerHttpStatus == 403 ||
+      probeHttpStatus == 401 ||
+      probeHttpStatus == 403;
+
+  bool get isResourceNotFound =>
+      exoPlayerHttpStatus == 404 ||
+      probeHttpStatus == 404 ||
+      shortUiMessage.contains('404') ||
+      shortUiMessage.contains('não encontrado');
+
+  bool get isFormatOrContainerError =>
+      errorCode == 3001 ||
+      errorCode == 3003 ||
+      errorCodeName == 'ERROR_CODE_PARSING_CONTAINER_MALFORMED' ||
+      errorCodeName == 'ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED' ||
+      errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
+      (causeClass != null &&
+          (causeClass!.contains('Decoder') ||
+              causeClass!.contains('Parser') ||
+              causeClass!.contains('MediaCodec')));
 }
 
 /// Utilitário central de diagnóstico instrumental para o player JessFlix no Fire TV.
@@ -187,7 +210,30 @@ class PlayerDiagnostics {
     }
 
     // 4. Extração de classe de causa e códigos específicos
-    if (lower.contains('cleartext http traffic') || lower.contains('cleartext not permitted')) {
+    final isTlsError = lower.contains('handshake') ||
+        lower.contains('certpathvalidator') ||
+        lower.contains('certificate_verify_failed') ||
+        lower.contains('sslhandshakeexception') ||
+        lower.contains('certpathvalidatorexception') ||
+        lower.contains('trust anchor');
+
+    final isClockMismatch = isTlsError &&
+        (lower.contains('not yet valid') ||
+            lower.contains('expired') ||
+            lower.contains('current time') ||
+            lower.contains('validity') ||
+            lower.contains('time of'));
+
+    if (isClockMismatch) {
+      causeClass = 'SSLHandshakeException (Data/Hora incorreta)';
+      causeMsg =
+          'O certificado SSL não pôde ser validado porque o relógio do Fire TV está desatualizado. Ajuste data e hora nas configurações do sistema.';
+      shortUi = 'Data/Hora do dispositivo incorreta (Falha SSL/TLS)';
+    } else if (isTlsError) {
+      causeClass = 'SSLHandshakeException';
+      causeMsg = 'Falha no aperto de mão seguro (Handshake TLS) com o servidor de streaming.';
+      shortUi = 'Falha de Certificado SSL/TLS';
+    } else if (lower.contains('cleartext http traffic') || lower.contains('cleartext not permitted')) {
       causeClass = 'CleartextNotPermittedException';
       causeMsg = 'O sistema operacional bloqueou tráfego HTTP sem criptografia';
       shortUi = 'Bloqueio de rede Cleartext (HTTP)';
@@ -203,6 +249,14 @@ class PlayerDiagnostics {
       exoPlayerHttpStatus ??= (lower.contains('401') ? 401 : 403);
       causeMsg = 'Servidor rejeitou acesso com HTTP $exoPlayerHttpStatus (Token expirado ou limite de conexões simultâneas)';
       shortUi = 'HTTP $exoPlayerHttpStatus (Acesso Negado / Limite de Telas)';
+    } else if (code == 3001 || codeName == 'ERROR_CODE_PARSING_CONTAINER_MALFORMED') {
+      causeClass = 'ParserException\$BadContainer';
+      causeMsg = 'Container de mídia corrompido ou incompatível com a extensão (Media3 3001)';
+      shortUi = 'Formato/Container malformado (Media3 3001)';
+    } else if (code == 3003 || codeName == 'ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED') {
+      causeClass = 'ParserException\$UnsupportedContainer';
+      causeMsg = 'Container de mídia não suportado pelo hardware ou extensão incorreta (Media3 3003)';
+      shortUi = 'Container não suportado (Media3 3003)';
     } else if (exoPlayerHttpStatus == 404 ||
         lower.contains('response code: 404') ||
         lower.contains('code: 404') ||

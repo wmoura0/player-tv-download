@@ -22,6 +22,7 @@ class FavoriteItem {
   final String? categoryId;
   final String? containerExtension;
   final String? streamUrl;
+  final String? directSource;
   final DateTime addedAt;
 
   const FavoriteItem({
@@ -34,6 +35,7 @@ class FavoriteItem {
     this.categoryId,
     this.containerExtension,
     this.streamUrl,
+    this.directSource,
     required this.addedAt,
   });
 
@@ -96,6 +98,7 @@ class FavoriteItem {
       rating: movie.rating,
       categoryId: movie.categoryId,
       containerExtension: movie.containerExtension,
+      directSource: movie.directSource,
       addedAt: DateTime.now(),
     );
   }
@@ -159,6 +162,7 @@ class FavoriteItem {
       rating: rating,
       categoryId: categoryId ?? '0',
       containerExtension: containerExtension,
+      directSource: directSource,
     );
   }
 
@@ -194,6 +198,7 @@ class FavoriteItem {
       'categoryId': categoryId,
       'containerExtension': containerExtension,
       'streamUrl': streamUrl,
+      'directSource': directSource,
       'addedAt': addedAt.toIso8601String(),
     };
   }
@@ -212,6 +217,7 @@ class FavoriteItem {
       categoryId: json['categoryId'] as String?,
       containerExtension: json['containerExtension'] as String?,
       streamUrl: json['streamUrl'] as String?,
+      directSource: json['directSource'] as String?,
       addedAt: json['addedAt'] != null
           ? DateTime.tryParse(json['addedAt'] as String) ?? DateTime.now()
           : DateTime.now(),
