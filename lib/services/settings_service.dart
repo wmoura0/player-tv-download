@@ -118,6 +118,10 @@ class SettingsService extends ChangeNotifier {
   static const String _keyDefaultAspectRatio = 'pref_default_aspect_ratio';
   static const String _keyEnableResumePlayback = 'pref_enable_resume_playback';
   static const String _keyEnableAutoPlayNextEpisode = 'pref_enable_autoplay_next_episode';
+  static const String _keyPreferredAudioLanguage = 'pref_preferred_audio_language';
+  static const String _keyEnableSmartSource = 'pref_enable_smart_source';
+  static const String _keyPreferredContainerExtension = 'pref_preferred_container_extension';
+  static const String _keySmartSourceTimeoutSecs = 'pref_smart_source_timeout_secs';
 
   AccentColorOption _accentColor = AccentColorOption.cyan;
   PosterDensity _posterDensity = PosterDensity.normal;
@@ -125,6 +129,10 @@ class SettingsService extends ChangeNotifier {
   LiveVideoFitMode _defaultAspectRatio = LiveVideoFitMode.contain;
   bool _enableResumePlayback = true;
   bool _enableAutoPlayNextEpisode = true;
+  String _preferredAudioLanguage = 'pt';
+  bool _enableSmartSource = true;
+  String _preferredContainerExtension = 'auto'; // 'auto', 'mp4', 'mkv', 'ts'
+  int _smartSourceTimeoutSecs = 4;
   bool _isLoaded = false;
 
   AccentColorOption get accentColor => _accentColor;
@@ -133,6 +141,10 @@ class SettingsService extends ChangeNotifier {
   LiveVideoFitMode get defaultAspectRatio => _defaultAspectRatio;
   bool get enableResumePlayback => _enableResumePlayback;
   bool get enableAutoPlayNextEpisode => _enableAutoPlayNextEpisode;
+  String get preferredAudioLanguage => _preferredAudioLanguage;
+  bool get enableSmartSource => _enableSmartSource;
+  String get preferredContainerExtension => _preferredContainerExtension;
+  int get smartSourceTimeoutSecs => _smartSourceTimeoutSecs;
   bool get isLoaded => _isLoaded;
 
   /// Inicializa as configurações lendo do SharedPreferences
@@ -162,6 +174,10 @@ class SettingsService extends ChangeNotifier {
 
     _enableResumePlayback = sp.getBool(_keyEnableResumePlayback) ?? true;
     _enableAutoPlayNextEpisode = sp.getBool(_keyEnableAutoPlayNextEpisode) ?? true;
+    _preferredAudioLanguage = sp.getString(_keyPreferredAudioLanguage) ?? 'pt';
+    _enableSmartSource = sp.getBool(_keyEnableSmartSource) ?? true;
+    _preferredContainerExtension = sp.getString(_keyPreferredContainerExtension) ?? 'auto';
+    _smartSourceTimeoutSecs = sp.getInt(_keySmartSourceTimeoutSecs) ?? 4;
 
     _isLoaded = true;
     notifyListeners();
@@ -231,5 +247,41 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(_keyEnableAutoPlayNextEpisode, enable);
+  }
+
+  /// Define e persiste o idioma de áudio preferencial
+  Future<void> setPreferredAudioLanguage(String lang) async {
+    if (_preferredAudioLanguage == lang) return;
+    _preferredAudioLanguage = lang;
+    notifyListeners();
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_keyPreferredAudioLanguage, lang);
+  }
+
+  /// Define e persiste o Smart Source Resolver
+  Future<void> setEnableSmartSource(bool enable) async {
+    if (_enableSmartSource == enable) return;
+    _enableSmartSource = enable;
+    notifyListeners();
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(_keyEnableSmartSource, enable);
+  }
+
+  /// Define e persiste a extensão de container preferencial
+  Future<void> setPreferredContainerExtension(String ext) async {
+    if (_preferredContainerExtension == ext) return;
+    _preferredContainerExtension = ext;
+    notifyListeners();
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_keyPreferredContainerExtension, ext);
+  }
+
+  /// Define e persiste o timeout do Smart Source
+  Future<void> setSmartSourceTimeoutSecs(int secs) async {
+    if (_smartSourceTimeoutSecs == secs) return;
+    _smartSourceTimeoutSecs = secs;
+    notifyListeners();
+    final sp = await SharedPreferences.getInstance();
+    await sp.setInt(_keySmartSourceTimeoutSecs, secs);
   }
 }

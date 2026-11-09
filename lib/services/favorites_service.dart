@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/favorite_item.dart';
+import 'user_profile_service.dart';
 
 /// Serviço responsável por persistir e gerenciar favoritos localmente,
 /// garantindo isolamento estrito por conta/servidor Xtream e por lista M3U.
@@ -36,9 +37,18 @@ class FavoritesService extends ChangeNotifier {
     return _prefsOverride ?? await SharedPreferences.getInstance();
   }
 
-  /// Gera a chave de armazenamento isolada por escopo
+  /// Limpa caches em memória ao alternar perfis ou fontes
+  void clearCache() {
+    _cachedCompositeKeys.clear();
+    _cachedItems.clear();
+    _loadedScopes.clear();
+    notifyListeners();
+  }
+
+  /// Gera a chave de armazenamento isolada por escopo e perfil
   static String buildStorageKey(String scopeKey) {
-    final cleanScope = scopeKey.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+    final effective = UserProfileService.instance.getScopedKey(scopeKey);
+    final cleanScope = effective.trim().toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
     return 'player_fav_${cleanScope}_v1';
   }
 

@@ -15,11 +15,15 @@ import 'screens/vod_player_screen.dart';
 import 'screens/xtream_catalog_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/xtream_login_screen.dart';
+import 'services/account_manager_service.dart';
+import 'services/favorites_service.dart';
 import 'services/hidden_categories_service.dart';
 import 'services/ota_update_service.dart';
+import 'services/pin_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
+import 'services/user_profile_service.dart';
 import 'services/xtream_catalog_service.dart';
 import 'theme/app_colors.dart';
 import 'utils/device_utils.dart';
@@ -39,6 +43,9 @@ void main() async {
   try {
     await SettingsService.instance.loadSettings();
     await HiddenCategoriesService.instance.init();
+    await PinService.instance.init();
+    await AccountManagerService.instance.init();
+    await UserProfileService.instance.init();
     await DeviceUtils.init();
     await DeviceUtils.setNormalOrientation();
   } catch (e, st) {
@@ -476,6 +483,105 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     ).then((_) => _loadHomeData());
   }
 
+  Future<void> _onProfilePressed() async {
+    final profiles = UserProfileService.instance.profiles;
+    final current = UserProfileService.instance.currentProfile;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.borderSubtle),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.switch_account_rounded, color: AppColors.focusCyan, size: 24),
+            SizedBox(width: 10),
+            Text('Alternar Perfil', style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: profiles.map((p) {
+                  final isCurrent = p.id == current.id;
+                  return InkWell(
+                    onTap: () async {
+                      if (!isCurrent) {
+                        await UserProfileService.instance.switchProfile(p.id);
+                        FavoritesService.instance.clearCache();
+                        if (ctx.mounted) Navigator.of(ctx).pop();
+                        _loadHomeData();
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isCurrent ? AppColors.focusCyan.withValues(alpha: 0.15) : AppColors.background,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isCurrent ? AppColors.focusCyan : AppColors.borderSubtle,
+                          width: isCurrent ? 2 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            radius: 14,
+                            backgroundColor: Color(p.avatarColor),
+                            child: Icon(
+                              p.isKids ? Icons.child_care_rounded : Icons.person_rounded,
+                              size: 16,
+                              color: Colors.black,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            p.name,
+                            style: TextStyle(
+                              color: isCurrent ? Colors.white : AppColors.textPrimary,
+                              fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                          if (p.isKids) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.shade800,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text('KIDS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white)),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Fechar', style: TextStyle(color: AppColors.textSecondary)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _confirmRemoveContinueWatching(ContinueWatchingItem item) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -662,6 +768,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       child: _AppHeader(
                         xtreamAccount: widget.xtreamAccount,
                         onSearchTap: _onSearchPressed,
+                        onProfileTap: _onProfilePressed,
                         onSettingsTap: _onSettingsPressed,
                         onLogoutTap: _onLogout,
                         onRecentsTap: () {
@@ -772,6 +879,7 @@ class _AppHeader extends StatelessWidget {
   final VoidCallback onSettingsTap;
   final VoidCallback onLogoutTap;
   final VoidCallback? onRecentsTap;
+  final VoidCallback? onProfileTap;
 
   const _AppHeader({
     this.xtreamAccount,
@@ -779,6 +887,7 @@ class _AppHeader extends StatelessWidget {
     required this.onSettingsTap,
     required this.onLogoutTap,
     this.onRecentsTap,
+    this.onProfileTap,
   });
 
   @override
@@ -869,6 +978,27 @@ class _AppHeader extends StatelessWidget {
                         onTap: onRecentsTap!,
                       ),
                     ],
+                    ListenableBuilder(
+                      listenable: UserProfileService.instance,
+                      builder: (context, _) {
+                        final prof = UserProfileService.instance.currentProfile;
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(width: 8),
+                            _HeaderActionButton(
+                              key: const Key('header_profile_btn'),
+                              icon: prof.isKids ? Icons.child_care_rounded : Icons.person_rounded,
+                              tooltip: 'Perfil: ${prof.name}',
+                              label: isCompact ? null : prof.name,
+                              iconColor: Color(prof.avatarColor),
+                              isCompact: isCompact,
+                              onTap: onProfileTap ?? () {},
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                     const SizedBox(width: 8),
                     _HeaderActionButton(
                       key: const Key('header_settings_btn'),

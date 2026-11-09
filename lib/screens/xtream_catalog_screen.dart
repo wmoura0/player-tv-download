@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../models/epg_program.dart';
 import '../models/favorite_item.dart';
+import '../models/live_mini_channel.dart';
 import '../models/xtream_catalog.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
@@ -1583,6 +1584,29 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 ),
               );
             },
+      miniGuideChannels: _filteredItems.asMap().entries.map((entry) {
+        final idx = entry.key;
+        final item = entry.value;
+        if (item is! XtreamLiveStream) {
+          return null;
+        }
+        final isCurrent = _activeLiveStream?.streamId == item.streamId;
+        return LiveMiniChannelItem(
+          id: item.streamId.toString(),
+          name: item.name,
+          number: item.num ?? (idx + 1),
+          logoUrl: item.streamIcon,
+          groupTitle: _getCategoryName(item.categoryId),
+          currentProgram: isCurrent ? _currentProgram : null,
+          isCurrent: isCurrent,
+        );
+      }).whereType<LiveMiniChannelItem>().toList(),
+      onSelectMiniGuideChannel: (index) {
+        final liveStreams = _filteredItems.whereType<XtreamLiveStream>().toList();
+        if (index >= 0 && index < liveStreams.length) {
+          _playLiveChannel(liveStreams[index], keepFullscreen: true);
+        }
+      },
     );
   }
 

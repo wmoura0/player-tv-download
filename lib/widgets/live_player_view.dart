@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import '../models/live_mini_channel.dart';
 import '../services/url_sanitizer.dart';
 import '../utils/device_utils.dart';
+import 'audio_subtitle_selector_dialog.dart';
 
 /// Modos de enquadramento do vídeo na tela (Original, Preencher ou Esticar).
 enum LiveVideoFitMode { contain, cover, fill }
@@ -33,6 +35,8 @@ class LivePlayerView extends StatefulWidget {
   final VoidCallback? onOpenGuide;
   final VoidCallback? onPreviousChannel;
   final VoidCallback? onNextChannel;
+  final List<LiveMiniChannelItem>? miniGuideChannels;
+  final ValueChanged<int>? onSelectMiniGuideChannel;
 
   const LivePlayerView({
     super.key,
@@ -57,6 +61,8 @@ class LivePlayerView extends StatefulWidget {
     this.onOpenGuide,
     this.onPreviousChannel,
     this.onNextChannel,
+    this.miniGuideChannels,
+    this.onSelectMiniGuideChannel,
   });
 
   @override
@@ -89,6 +95,71 @@ class LivePlayerViewState extends State<LivePlayerView> {
   final FocusNode _backFocusNode = FocusNode();
   final FocusNode _fitFocusNode = FocusNode();
   final FocusNode _fsFocusNode = FocusNode();
+  final FocusNode _audioTrackFocusNode = FocusNode();
+
+  // Mini-Guia OSD lateral
+  bool _showMiniGuide = false;
+  bool get isMiniGuideOpen => _showMiniGuide;
+  ScrollController? _miniGuideScrollController;
+  Timer? _miniGuideTimer;
+
+  void openMiniGuide() {
+    if (!widget.isFullscreen || widget.miniGuideChannels == null || widget.miniGuideChannels!.isEmpty) {
+      return;
+    }
+    _controlsTimer?.cancel();
+    setState(() {
+      _showMiniGuide = true;
+      _showControls = false;
+    });
+    _startMiniGuideTimer();
+    _scrollToActiveMiniChannel();
+  }
+
+  void closeMiniGuide() {
+    _miniGuideTimer?.cancel();
+    if (_showMiniGuide) {
+      setState(() {
+        _showMiniGuide = false;
+      });
+      if (mounted) {
+        _focusNode.requestFocus();
+      }
+    }
+  }
+
+  void toggleMiniGuide() {
+    if (_showMiniGuide) {
+      closeMiniGuide();
+    } else {
+      openMiniGuide();
+    }
+  }
+
+  void _startMiniGuideTimer() {
+    _miniGuideTimer?.cancel();
+    _miniGuideTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && _showMiniGuide) {
+        closeMiniGuide();
+      }
+    });
+  }
+
+  void _scrollToActiveMiniChannel() {
+    final channels = widget.miniGuideChannels;
+    if (channels == null || channels.isEmpty) return;
+    final activeIdx = channels.indexWhere((c) => c.isCurrent);
+    if (activeIdx > 0 && _miniGuideScrollController != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_miniGuideScrollController!.hasClients) {
+          final target = (activeIdx * 56.0) - 100.0;
+          _miniGuideScrollController!.jumpTo(
+            target.clamp(0.0, _miniGuideScrollController!.position.maxScrollExtent),
+          );
+        }
+      });
+    }
+  }
 
   bool _showBufferingIndicator = false;
   Timer? _bufferingDebounceTimer;
@@ -118,6 +189,7 @@ class LivePlayerViewState extends State<LivePlayerView> {
   @override
   void initState() {
     super.initState();
+    _miniGuideScrollController = ScrollController();
     _currentFitMode = widget.fitMode;
     _wasPlaying = widget.controller?.value.isPlaying ?? false;
     _startControlsTimer();
@@ -193,6 +265,8 @@ class LivePlayerViewState extends State<LivePlayerView> {
 
   @override
   void dispose() {
+    _miniGuideTimer?.cancel();
+    _miniGuideScrollController?.dispose();
     _detachControllerListener(widget.controller);
     _bufferingDebounceTimer?.cancel();
     _controlsTimer?.cancel();
@@ -205,6 +279,7 @@ class LivePlayerViewState extends State<LivePlayerView> {
     _backFocusNode.dispose();
     _fitFocusNode.dispose();
     _fsFocusNode.dispose();
+    _audioTrackFocusNode.dispose();
     super.dispose();
   }
 
@@ -277,6 +352,18 @@ class LivePlayerViewState extends State<LivePlayerView> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
+    // 0. Se o Mini-Guia OSD lateral estiver aberto:
+    if (_showMiniGuide) {
+      _startMiniGuideTimer();
+      if (event.logicalKey == LogicalKeyboardKey.escape ||
+          event.logicalKey == LogicalKeyboardKey.goBack ||
+          event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        closeMiniGuide();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
     // 1. Se os controles estiverem ocultos:
     if (!_showControls) {
       // Tecla Voltar (Escape / goBack)
@@ -312,8 +399,22 @@ class LivePlayerViewState extends State<LivePlayerView> {
       }
 
       // Tecla Guia
-      if (event.logicalKey == LogicalKeyboardKey.guide && widget.onOpenGuide != null) {
-        widget.onOpenGuide!();
+      if (event.logicalKey == LogicalKeyboardKey.guide) {
+        if (widget.isFullscreen && widget.miniGuideChannels != null && widget.miniGuideChannels!.isNotEmpty) {
+          openMiniGuide();
+          return KeyEventResult.handled;
+        } else if (widget.onOpenGuide != null) {
+          widget.onOpenGuide!();
+          return KeyEventResult.handled;
+        }
+      }
+
+      // Atalho D-Pad Esquerda em tela cheia: abre o Mini-Guia lateral
+      if (widget.isFullscreen &&
+          event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+          widget.miniGuideChannels != null &&
+          widget.miniGuideChannels!.isNotEmpty) {
+        openMiniGuide();
         return KeyEventResult.handled;
       }
 
@@ -629,6 +730,10 @@ class LivePlayerViewState extends State<LivePlayerView> {
                   // 4. Controles Sobrepostos (OSD)
                   if (_showControls && widget.errorMessage == null)
                     _buildControlsOverlay(isPlaying),
+
+                  // 5. Mini-Guia OSD lateral translúcido (tela cheia)
+                  if (_showMiniGuide && widget.isFullscreen)
+                    _buildMiniGuideOverlay(),
                 ],
               ),
             ),
@@ -1013,20 +1118,43 @@ class LivePlayerViewState extends State<LivePlayerView> {
               ],
             ),
           ),
-          if (widget.onOpenGuide != null) ...[
+          if (widget.miniGuideChannels != null || widget.onOpenGuide != null) ...[
             const SizedBox(width: 4),
             _PlayerTvIconButton(
               buttonKey: const Key('btn_open_guide'),
-              tooltip: 'Guia de Programação (EPG)',
+              tooltip: 'Mini-Guia de Canais (EPG)',
               focusNode: _guideFocusNode,
               constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
               icon: Icon(
-                Icons.schedule_rounded,
+                Icons.menu_open_rounded,
                 color: const Color(0xFF00E5FF),
                 size: isCompact ? 20 : 22,
               ),
               onPressed: () {
-                widget.onOpenGuide?.call();
+                if (widget.isFullscreen && widget.miniGuideChannels != null && widget.miniGuideChannels!.isNotEmpty) {
+                  toggleMiniGuide();
+                } else {
+                  widget.onOpenGuide?.call();
+                  _startControlsTimer();
+                }
+              },
+            ),
+          ],
+          // Seletor de Áudio e Legendas (Media3 ExoPlayer)
+          if (widget.controller != null) ...[
+            const SizedBox(width: 4),
+            _PlayerTvIconButton(
+              buttonKey: const Key('btn_live_audio_tracks'),
+              tooltip: 'Áudio e Legendas',
+              focusNode: _audioTrackFocusNode,
+              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
+              icon: Icon(
+                Icons.audiotrack_rounded,
+                color: Colors.white70,
+                size: isCompact ? 20 : 22,
+              ),
+              onPressed: () {
+                AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
                 _startControlsTimer();
               },
             ),
@@ -1292,6 +1420,118 @@ class LivePlayerViewState extends State<LivePlayerView> {
       ),
     );
   }
+
+  Widget _buildMiniGuideOverlay() {
+    final channels = widget.miniGuideChannels ?? const [];
+    return Positioned(
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 340,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xEE0B0F19),
+            border: const Border(
+              right: BorderSide(color: Color(0xFFE50914), width: 1.5),
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black87,
+                blurRadius: 16,
+                offset: Offset(4, 0),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Cabeçalho do Mini-Guia
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF141A29),
+                  border: Border(
+                    bottom: BorderSide(color: Colors.white12, width: 1),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.live_tv_rounded, color: Color(0xFFE50914), size: 22),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'MINI-GUIA',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white12,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${channels.length}',
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Lista de canais
+              Expanded(
+                child: ListView.builder(
+                  controller: _miniGuideScrollController,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: channels.length,
+                  itemBuilder: (context, index) {
+                    final ch = channels[index];
+                    return _MiniGuideChannelTile(
+                      key: ValueKey('mini_ch_${ch.id}_$index'),
+                      channel: ch,
+                      onTap: () {
+                        widget.onSelectMiniGuideChannel?.call(index);
+                        _startMiniGuideTimer();
+                      },
+                      onFocusChange: (hasF) {
+                        if (hasF) _startMiniGuideTimer();
+                      },
+                    );
+                  },
+                ),
+              ),
+              // Rodapé de instruções
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                color: Colors.black45,
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.arrow_forward_rounded, color: Colors.white38, size: 14),
+                    SizedBox(width: 6),
+                    Text(
+                      'Pressione Direita ou Voltar para fechar',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Botão de controle sobreposto adaptado para Smart TV e controle remoto D-pad.
@@ -1396,6 +1636,167 @@ class _PlayerTvIconButtonState extends State<_PlayerTvIconButton> {
                   : null,
             ),
             child: widget.icon,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniGuideChannelTile extends StatefulWidget {
+  final LiveMiniChannelItem channel;
+  final VoidCallback onTap;
+  final ValueChanged<bool>? onFocusChange;
+
+  const _MiniGuideChannelTile({
+    super.key,
+    required this.channel,
+    required this.onTap,
+    this.onFocusChange,
+  });
+
+  @override
+  State<_MiniGuideChannelTile> createState() => _MiniGuideChannelTileState();
+}
+
+class _MiniGuideChannelTileState extends State<_MiniGuideChannelTile> {
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCurrent = widget.channel.isCurrent;
+    return Focus(
+      autofocus: isCurrent,
+      onFocusChange: (focused) {
+        setState(() => _isFocused = focused);
+        widget.onFocusChange?.call(focused);
+      },
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.select ||
+             event.logicalKey == LogicalKeyboardKey.enter ||
+             event.logicalKey == LogicalKeyboardKey.space)) {
+          widget.onTap();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: _isFocused
+                ? const Color(0xFFE50914).withValues(alpha: 0.25)
+                : (isCurrent ? const Color(0x331E293B) : Colors.transparent),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _isFocused
+                  ? const Color(0xFFE50914)
+                  : (isCurrent ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : Colors.transparent),
+              width: _isFocused ? 2.0 : 1.0,
+            ),
+          ),
+          child: Row(
+            children: [
+              // Número
+              SizedBox(
+                width: 28,
+                child: Text(
+                  widget.channel.number.toString().padLeft(2, '0'),
+                  style: TextStyle(
+                    color: _isFocused ? Colors.white : Colors.white38,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Logo ou ícone
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: widget.channel.logoUrl != null && widget.channel.logoUrl!.isNotEmpty
+                      ? Image.network(
+                          widget.channel.logoUrl!,
+                          fit: BoxFit.contain,
+                          errorBuilder: (ctx, err, stack) => const Icon(
+                            Icons.tv_rounded,
+                            color: Colors.white38,
+                            size: 20,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.tv_rounded,
+                          color: Colors.white38,
+                          size: 20,
+                        ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Nome e programa
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.channel.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _isFocused || isCurrent ? Colors.white : Colors.white70,
+                        fontSize: 13,
+                        fontWeight: isCurrent || _isFocused ? FontWeight.bold : FontWeight.w500,
+                      ),
+                    ),
+                    if (widget.channel.currentProgram != null &&
+                        widget.channel.currentProgram!.isNotEmpty)
+                      Text(
+                        widget.channel.currentProgram!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 11,
+                        ),
+                      )
+                    else if (widget.channel.groupTitle != null &&
+                        widget.channel.groupTitle!.isNotEmpty)
+                      Text(
+                        widget.channel.groupTitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 10,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              // Badge de canal atual
+              if (isCurrent)
+                Container(
+                  margin: const EdgeInsets.only(left: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD32F2F),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'AO VIVO',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),

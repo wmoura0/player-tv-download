@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../models/channel.dart';
 import '../models/favorite_item.dart';
+import '../models/live_mini_channel.dart';
 import '../models/playlist.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
@@ -897,6 +898,30 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
                 ),
               );
             },
+      miniGuideChannels: _filteredChannels.asMap().entries.map((entry) {
+        final idx = entry.key;
+        final ch = entry.value;
+        final isCurrent = _activeChannel?.streamUrl == ch.streamUrl && _activeChannel?.name == ch.name;
+        final prog = EpgService.instance.getNowAndNext(
+          channelId: ch.tvgId,
+          channelName: ch.name,
+        );
+        return LiveMiniChannelItem(
+          id: ch.streamUrl,
+          name: ch.name,
+          number: idx + 1,
+          logoUrl: ch.logoUrl,
+          groupTitle: ch.groupTitle,
+          currentProgram: prog.now?.title,
+          isCurrent: isCurrent,
+        );
+      }).toList(),
+      onSelectMiniGuideChannel: (index) {
+        if (index >= 0 && index < _filteredChannels.length) {
+          final ch = _filteredChannels[index];
+          _playM3uChannel(ch, keepFullscreen: true);
+        }
+      },
     );
   }
 

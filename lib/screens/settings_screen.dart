@@ -13,9 +13,18 @@ import '../widgets/ota_update_dialog.dart';
 import 'hidden_categories_screen.dart';
 import 'playlists_screen.dart';
 import 'xtream_login_screen.dart';
+import '../models/managed_account.dart';
+import '../services/account_manager_service.dart';
+import '../services/pin_service.dart';
+import '../services/settings_service.dart';
+import '../services/user_profile_service.dart';
+import '../widgets/pin_entry_dialog.dart';
 
 enum SettingsMenuSection {
   generalInfo,
+  playbackPreferences,
+  parentalControl,
+  accountsAndProfiles,
   hiddenCategories,
   clearCache,
   updates,
@@ -485,6 +494,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           icon: Icons.storage_rounded,
                           accentColor: accent,
                         ),
+                        const SizedBox(height: 8),
+                        _buildMenuItem(
+                          section: SettingsMenuSection.playbackPreferences,
+                          title: 'Reprodução e Fontes',
+                          subtitle: 'Áudio, Legendas e Smart Source',
+                          icon: Icons.play_circle_outline_rounded,
+                          accentColor: accent,
+                        ),
+                        const SizedBox(height: 8),
+                        _buildMenuItem(
+                          section: SettingsMenuSection.parentalControl,
+                          title: 'Controle Parental',
+                          subtitle: 'Bloqueio por PIN e Adulto',
+                          icon: Icons.lock_outline_rounded,
+                          accentColor: accent,
+                        ),
+                        const SizedBox(height: 8),
+                        _buildMenuItem(
+                          section: SettingsMenuSection.accountsAndProfiles,
+                          title: 'Contas e Perfis',
+                          subtitle: 'Gerenciar Usuários e Listas',
+                          icon: Icons.switch_account_rounded,
+                          accentColor: accent,
+                        ),
                         const SizedBox(height: 16),
                         const Divider(color: AppColors.borderSubtle, height: 1),
                         const SizedBox(height: 16),
@@ -580,6 +613,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     switch (_selectedSection) {
       case SettingsMenuSection.generalInfo:
         return _buildGeneralInfoPanel(accent);
+      case SettingsMenuSection.playbackPreferences:
+        return _buildPlaybackPreferencesPanel(accent);
+      case SettingsMenuSection.parentalControl:
+        return _buildParentalControlPanel(accent);
+      case SettingsMenuSection.accountsAndProfiles:
+        return _buildAccountsAndProfilesPanel(accent);
       case SettingsMenuSection.updates:
         return _buildUpdatesPanel(accent);
       case SettingsMenuSection.hiddenCategories:
@@ -589,6 +628,632 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case SettingsMenuSection.logout:
         return _buildLogoutPanel(accent);
     }
+  }
+
+  Widget _buildPlaybackPreferencesPanel(Color accent) {
+    return ListenableBuilder(
+      listenable: SettingsService.instance,
+      builder: (context, _) {
+        final settings = SettingsService.instance;
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.surfaceSecondary,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.borderSubtle, width: 1.5),
+            boxShadow: const [
+              BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
+            ],
+          ),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.play_circle_outline_rounded, color: accent, size: 26),
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Reprodução e Resolução de Fontes',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Controles avançados de áudio, legendas e recuperação inteligente de episódios',
+                          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Divider(color: AppColors.borderSubtle, height: 1),
+              const SizedBox(height: 16),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: accent,
+                title: const Text(
+                  'Smart Source (Recuperação de Episódios)',
+                  style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                subtitle: const Text(
+                  'Sonda automaticamente formatos alternativos (.mp4, .mkv, .ts) sem travar o player quando o servidor reportar erro 404 em séries longas.',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+                value: settings.enableSmartSource,
+                onChanged: (val) async {
+                  await settings.setEnableSmartSource(val);
+                  _showSnackbar('Smart Source ${val ? "ativado" : "desativado"}.');
+                },
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Formato de Contêiner Preferido',
+                          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Prioriza a extensão na resolução de fontes de vídeo',
+                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownButton<String>(
+                    value: settings.preferredContainerExtension,
+                    dropdownColor: AppColors.surfaceSecondary,
+                    style: const TextStyle(color: AppColors.focusCyan, fontWeight: FontWeight.bold),
+                    items: const [
+                      DropdownMenuItem(value: 'auto', child: Text('Automático (Padrão)')),
+                      DropdownMenuItem(value: 'mp4', child: Text('MP4')),
+                      DropdownMenuItem(value: 'mkv', child: Text('MKV')),
+                      DropdownMenuItem(value: 'ts', child: Text('TS')),
+                    ],
+                    onChanged: (val) async {
+                      if (val != null) {
+                        await settings.setPreferredContainerExtension(val);
+                        _showSnackbar('Formato preferido definido para $val.');
+                      }
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Idioma de Áudio Preferido',
+                          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Faixa de áudio prioritária selecionada automaticamente ao abrir filmes ou séries',
+                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownButton<String>(
+                    value: settings.preferredAudioLanguage,
+                    dropdownColor: AppColors.surfaceSecondary,
+                    style: const TextStyle(color: AppColors.focusCyan, fontWeight: FontWeight.bold),
+                    items: const [
+                      DropdownMenuItem(value: 'pt', child: Text('Português (Dublado)')),
+                      DropdownMenuItem(value: 'en', child: Text('Inglês (Original)')),
+                      DropdownMenuItem(value: 'es', child: Text('Espanhol')),
+                      DropdownMenuItem(value: 'orig', child: Text('Original do Arquivo')),
+                    ],
+                    onChanged: (val) async {
+                      if (val != null) {
+                        await settings.setPreferredAudioLanguage(val);
+                        _showSnackbar('Idioma preferido definido para $val.');
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildParentalControlPanel(Color accent) {
+    return ListenableBuilder(
+      listenable: PinService.instance,
+      builder: (context, _) {
+        final pinService = PinService.instance;
+        final hasPin = pinService.isPinSet;
+
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.surfaceSecondary,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.borderSubtle, width: 1.5),
+            boxShadow: const [
+              BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
+            ],
+          ),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: hasPin ? AppColors.success.withValues(alpha: 0.15) : AppColors.primary.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      hasPin ? Icons.lock_rounded : Icons.lock_open_rounded,
+                      color: hasPin ? AppColors.success : AppColors.textSecondary,
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Controle Parental e Bloqueio por PIN',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          hasPin
+                              ? 'PIN de 4 dígitos ativo (Protegido por SHA-256 e Salt)'
+                              : 'Nenhum PIN configurado. O controle parental está inativo.',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: hasPin ? AppColors.success : AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Divider(color: AppColors.borderSubtle, height: 1),
+              const SizedBox(height: 16),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: accent,
+                title: const Text(
+                  'Bloquear Conteúdo Adulto (+18)',
+                  style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                subtitle: const Text(
+                  'Exige autenticação por PIN para acessar canais, filmes e séries das categorias adultas ou eróticas.',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+                value: pinService.isAdultContentHidden,
+                onChanged: (val) async {
+                  if (hasPin) {
+                    final ok = await PinEntryDialog.show(
+                      context,
+                      title: 'Confirmar PIN',
+                      subtitle: 'Digite o PIN para alterar esta configuração.',
+                    );
+                    if (!ok || !context.mounted) return;
+                  }
+                  await pinService.setHideAdultContent(val);
+                  _showSnackbar('Bloqueio adulto ${val ? "ativado" : "desativado"}.');
+                },
+              ),
+              const SizedBox(height: 16),
+              _buildInfoRow('Categorias Bloqueadas', '${pinService.lockedCategories.length} categorias protegidas'),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  if (!hasPin) ...[
+                    Expanded(
+                      child: _TvActionButton(
+                        icon: Icons.pin_rounded,
+                        label: 'Definir PIN de 4 Dígitos',
+                        accentColor: accent,
+                        onTap: () async {
+                          await PinEntryDialog.show(
+                            context,
+                            title: 'Criar Novo PIN',
+                            subtitle: 'Digite o PIN de 4 dígitos desejado:',
+                            isCreatingNewPin: true,
+                            onPinCreated: (newPin) async {
+                              await pinService.setPin(newPin);
+                              _showSnackbar('PIN de 4 dígitos cadastrado com sucesso!');
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ] else ...[
+                    Expanded(
+                      child: _TvActionButton(
+                        icon: Icons.edit_rounded,
+                        label: 'Alterar PIN',
+                        accentColor: accent,
+                        onTap: () async {
+                          final ok = await PinEntryDialog.show(
+                            context,
+                            title: 'PIN Atual',
+                            subtitle: 'Digite o PIN atual para prosseguir:',
+                          );
+                          if (!ok || !context.mounted) return;
+                          await PinEntryDialog.show(
+                            context,
+                            title: 'Novo PIN',
+                            subtitle: 'Digite o novo PIN de 4 dígitos:',
+                            isCreatingNewPin: true,
+                            onPinCreated: (newPin) async {
+                              await pinService.setPin(newPin);
+                              _showSnackbar('Novo PIN atualizado com sucesso!');
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _TvActionButton(
+                        icon: Icons.lock_open_rounded,
+                        label: 'Remover PIN',
+                        accentColor: AppColors.error,
+                        isDanger: true,
+                        onTap: () async {
+                          final ok = await PinEntryDialog.show(
+                            context,
+                            title: 'Remover PIN',
+                            subtitle: 'Digite o PIN atual para desativar a proteção:',
+                          );
+                          if (!ok) return;
+                          await pinService.setHideAdultContent(false);
+                          _showSnackbar('PIN e proteção parental removidos.');
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAccountsAndProfilesPanel(Color accent) {
+    return ListenableBuilder(
+      listenable: UserProfileService.instance,
+      builder: (context, _) {
+        final profileService = UserProfileService.instance;
+        final currentProfile = profileService.currentProfile;
+        final profiles = profileService.profiles;
+
+        return ListenableBuilder(
+          listenable: AccountManagerService.instance,
+          builder: (context, _) {
+            final accService = AccountManagerService.instance;
+            final accounts = accService.accounts;
+            final currentAcc = accService.currentAccount;
+
+            return Container(
+              decoration: BoxDecoration(
+                color: AppColors.surfaceSecondary,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.borderSubtle, width: 1.5),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
+                ],
+              ),
+              padding: const EdgeInsets.all(24),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(Icons.switch_account_rounded, color: accent, size: 26),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Perfis de Usuário e Múltiplas Contas',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textPrimary,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Favoritos, histórico e progresso isolados para cada perfil familiar',
+                                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    const Divider(color: AppColors.borderSubtle, height: 1),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Perfis de Usuário',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                        ),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: accent,
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          onPressed: () => _showCreateProfileDialog(),
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('Novo Perfil', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 10,
+                      children: profiles.map((p) {
+                        final isSelected = p.id == currentProfile.id;
+                        return InkWell(
+                          onTap: () async {
+                            if (!isSelected) {
+                              await profileService.switchProfile(p.id);
+                              _showSnackbar('Perfil alterado para "${p.name}".');
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: isSelected ? accent.withValues(alpha: 0.2) : AppColors.background,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: isSelected ? accent : AppColors.borderSubtle,
+                                width: isSelected ? 2 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                CircleAvatar(
+                                  radius: 14,
+                                  backgroundColor: Color(p.avatarColor),
+                                  child: Icon(
+                                    p.isKids ? Icons.child_care_rounded : Icons.person_rounded,
+                                    size: 16,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  p.name,
+                                  style: TextStyle(
+                                    color: isSelected ? Colors.white : AppColors.textPrimary,
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                if (p.isKids) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.shade800,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text('KIDS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ),
+                                ],
+                                if (isSelected) ...[
+                                  const SizedBox(width: 8),
+                                  const Icon(Icons.check_circle_rounded, color: AppColors.focusCyan, size: 16),
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 24),
+                    const Divider(color: AppColors.borderSubtle, height: 1),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Contas Conectadas',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                    ),
+                    const SizedBox(height: 12),
+                    if (accounts.isEmpty)
+                      const Text(
+                        'Nenhuma conta cadastrada adicionalmente.',
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                      )
+                    else
+                      Column(
+                        children: accounts.map((acc) {
+                          final isCurrent = acc.id == currentAcc?.id;
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: isCurrent ? AppColors.primary.withValues(alpha: 0.15) : AppColors.background,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: isCurrent ? AppColors.focusCyan : AppColors.borderSubtle,
+                                width: isCurrent ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  acc.type == AccountType.xtream ? Icons.cloud_rounded : Icons.playlist_play_rounded,
+                                  color: isCurrent ? AppColors.focusCyan : AppColors.textSecondary,
+                                  size: 22,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        acc.name,
+                                        style: TextStyle(
+                                          color: isCurrent ? Colors.white : AppColors.textPrimary,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      Text(
+                                        UrlSanitizer.sanitize(acc.serverUrl),
+                                        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (isCurrent)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.focusCyan.withValues(alpha: 0.2),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text('ATIVA', style: TextStyle(color: AppColors.focusCyan, fontSize: 11, fontWeight: FontWeight.bold)),
+                                  )
+                                else
+                                  TextButton(
+                                    onPressed: () async {
+                                      await accService.switchAccount(acc.id);
+                                      _showSnackbar('Conta alternada para "${acc.name}".');
+                                    },
+                                    child: const Text('Alternar'),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showCreateProfileDialog() async {
+    final nameCtrl = TextEditingController();
+    bool isKids = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: AppColors.surfaceSecondary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: AppColors.borderSubtle),
+          ),
+          title: const Text('Novo Perfil Familiar', style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(color: AppColors.textPrimary),
+                decoration: InputDecoration(
+                  labelText: 'Nome do Perfil',
+                  labelStyle: const TextStyle(color: AppColors.textSecondary),
+                  filled: true,
+                  fillColor: AppColors.background,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                activeColor: AppColors.focusCyan,
+                title: const Text('Perfil Infantil (Kids)', style: TextStyle(color: AppColors.textPrimary)),
+                subtitle: const Text('Bloqueia automaticamente todo conteúdo adulto (+18)', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                value: isKids,
+                onChanged: (val) => setDialogState(() => isKids = val ?? false),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancelar', style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+              onPressed: () async {
+                final name = nameCtrl.text.trim();
+                if (name.isNotEmpty) {
+                  await UserProfileService.instance.createProfile(name: name, isKids: isKids);
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  _showSnackbar('Perfil "$name" criado com sucesso.');
+                }
+              },
+              child: const Text('Criar'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildGeneralInfoPanel(Color accent) {

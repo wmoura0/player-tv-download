@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../services/playback_progress_service.dart';
 import '../services/url_sanitizer.dart';
+import 'audio_subtitle_selector_dialog.dart';
 import 'live_player_view.dart'; // Para reutilizar LiveVideoFitMode
 
 /// Widget modular de interface de reprodução de Filmes (VOD).
@@ -67,10 +68,13 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   final FocusNode _playPauseFocusNode = FocusNode(debugLabel: 'VodPlayerPlayPause');
   final FocusNode _seekForwardFocusNode = FocusNode(debugLabel: 'VodPlayerSeekForward');
   final FocusNode _nextEpFocusNode = FocusNode(debugLabel: 'VodPlayerNextEp');
+  final FocusNode _skipIntroFocusNode = FocusNode(debugLabel: 'VodPlayerSkipIntro');
+  final FocusNode _audioTrackFocusNode = FocusNode(debugLabel: 'VodPlayerAudioTrack');
   final FocusNode _fitFocusNode = FocusNode(debugLabel: 'VodPlayerFit');
 
   // FocusNodes para overlays
   final FocusNode _retryFocusNode = FocusNode(debugLabel: 'VodPlayerRetry');
+  final FocusNode _errorNextEpFocusNode = FocusNode(debugLabel: 'VodPlayerErrorNextEp');
   final FocusNode _errorBackFocusNode = FocusNode(debugLabel: 'VodPlayerErrorBack');
   final FocusNode _cancelCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerCancelCountdown');
   final FocusNode _playNowCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerPlayNowCountdown');
@@ -207,8 +211,11 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _playPauseFocusNode.dispose();
     _seekForwardFocusNode.dispose();
     _nextEpFocusNode.dispose();
+    _skipIntroFocusNode.dispose();
+    _audioTrackFocusNode.dispose();
     _fitFocusNode.dispose();
     _retryFocusNode.dispose();
+    _errorNextEpFocusNode.dispose();
     _errorBackFocusNode.dispose();
     _cancelCountdownFocusNode.dispose();
     _playNowCountdownFocusNode.dispose();
@@ -310,11 +317,28 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     if (widget.errorMessage != null && !widget.isLoading) {
       if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-        if (_retryFocusNode.hasFocus) {
-          if (widget.onBack != null) _errorBackFocusNode.requestFocus();
-        } else {
+      if (key == LogicalKeyboardKey.arrowLeft) {
+        if (_errorBackFocusNode.hasFocus) {
+          if (widget.onNextEpisode != null) {
+            _errorNextEpFocusNode.requestFocus();
+          } else if (widget.onRetry != null) {
+            _retryFocusNode.requestFocus();
+          }
+        } else if (_errorNextEpFocusNode.hasFocus) {
           if (widget.onRetry != null) _retryFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.arrowRight) {
+        if (_retryFocusNode.hasFocus) {
+          if (widget.onNextEpisode != null) {
+            _errorNextEpFocusNode.requestFocus();
+          } else if (widget.onBack != null) {
+            _errorBackFocusNode.requestFocus();
+          }
+        } else if (_errorNextEpFocusNode.hasFocus) {
+          if (widget.onBack != null) _errorBackFocusNode.requestFocus();
         }
         return KeyEventResult.handled;
       }
@@ -324,6 +348,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           key == LogicalKeyboardKey.space) {
         if (_errorBackFocusNode.hasFocus) {
           widget.onBack?.call();
+        } else if (_errorNextEpFocusNode.hasFocus) {
+          widget.onNextEpisode?.call();
         } else if (_retryFocusNode.hasFocus || widget.onRetry != null) {
           widget.onRetry?.call();
         }
@@ -531,7 +557,13 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       }
 
       // Move foco visual entre botões
-      if (_nextEpFocusNode.hasFocus) {
+      if (_skipIntroFocusNode.hasFocus) {
+        if (widget.onNextEpisode != null) {
+          _nextEpFocusNode.requestFocus();
+        } else {
+          _seekForwardFocusNode.requestFocus();
+        }
+      } else if (_nextEpFocusNode.hasFocus) {
         _seekForwardFocusNode.requestFocus();
       } else if (_seekForwardFocusNode.hasFocus) {
         _playPauseFocusNode.requestFocus();
@@ -586,8 +618,14 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         _playPauseFocusNode.requestFocus();
       } else if (_playPauseFocusNode.hasFocus) {
         _seekForwardFocusNode.requestFocus();
-      } else if (_seekForwardFocusNode.hasFocus && widget.onNextEpisode != null) {
-        _nextEpFocusNode.requestFocus();
+      } else if (_seekForwardFocusNode.hasFocus) {
+        if (widget.onNextEpisode != null) {
+          _nextEpFocusNode.requestFocus();
+        } else if (_skipIntroFocusNode.canRequestFocus) {
+          _skipIntroFocusNode.requestFocus();
+        }
+      } else if (_nextEpFocusNode.hasFocus && _skipIntroFocusNode.canRequestFocus) {
+        _skipIntroFocusNode.requestFocus();
       }
 
       // Dispara lógica de seek acelerado / salto de 10s
@@ -630,6 +668,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         _triggerSeekRelative(10);
       } else if (_nextEpFocusNode.hasFocus) {
         widget.onNextEpisode?.call();
+        _startControlsTimer();
+      } else if (_skipIntroFocusNode.hasFocus) {
+        _triggerSeekRelative(85);
+        _startControlsTimer();
+      } else if (_audioTrackFocusNode.hasFocus) {
+        AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
         _startControlsTimer();
       } else if (_fitFocusNode.hasFocus) {
         _cycleFitMode();
@@ -1098,6 +1142,39 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                       ),
                       const SizedBox(width: 12),
                     ],
+                    if (widget.onNextEpisode != null) ...[
+                      AnimatedBuilder(
+                        animation: _errorNextEpFocusNode,
+                        builder: (context, _) {
+                          final isFocused = _errorNextEpFocusNode.hasFocus;
+                          return Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: isFocused
+                                  ? [
+                                      const BoxShadow(
+                                        color: Color(0x9900E5FF),
+                                        blurRadius: 12,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                            child: ElevatedButton.icon(
+                              focusNode: _errorNextEpFocusNode,
+                              onPressed: widget.onNextEpisode,
+                              icon: const Icon(Icons.skip_next_rounded, size: 16),
+                              label: const Text('Próximo episódio'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isFocused ? const Color(0xFF00E5FF) : const Color(0xFF1E293B),
+                                foregroundColor: isFocused ? Colors.black : Colors.white,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(width: 12),
+                    ],
                     if (widget.onBack != null)
                       AnimatedBuilder(
                         animation: _errorBackFocusNode,
@@ -1151,8 +1228,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
             // Barra Superior
             _buildTopBar(),
 
-            // Centro: Botões de Controle Rápido (-10s, Play/Pause, +10s, [Próximo Ep])
-            _buildCenterControls(isPlaying),
+            // Centro: Botões de Controle Rápido (-10s, Play/Pause, +10s, [Próximo Ep], [Pular Abertura])
+            _buildCenterControls(isPlaying, position: position, duration: duration),
 
             // Barra Inferior: Scrubber de Progresso, Tempos e Fit Mode
             _buildBottomBar(position, duration, isPlaying),
@@ -1211,10 +1288,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     );
   }
 
-  Widget _buildCenterControls(bool isPlaying) {
+  Widget _buildCenterControls(bool isPlaying, {Duration position = Duration.zero, Duration duration = Duration.zero}) {
     final isSeekingActive = _isRelativeSeeking || _isContinuousSeeking || _isDraggingSlider;
     final showPausedPill = _isUserPaused && !isPlaying && !isSeekingActive && !widget.isLoading && !widget.isBuffering;
     final showPauseIcon = (isPlaying || isSeekingActive) && !_isUserPaused;
+
+    final canSkipIntro = position < const Duration(minutes: 5) && duration >= const Duration(minutes: 6);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1332,9 +1411,72 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                 },
               ),
             ],
+            if (canSkipIntro) ...[
+              const SizedBox(width: 20),
+              _buildSkipIntroPillButton(),
+            ],
           ],
         ),
       ],
+    );
+  }
+
+  Widget _buildSkipIntroPillButton() {
+    return AnimatedBuilder(
+      animation: _skipIntroFocusNode,
+      builder: (context, _) {
+        final isFocused = _skipIntroFocusNode.hasFocus;
+        return Tooltip(
+          message: 'Pular Abertura (+85s)',
+          child: InkWell(
+            focusNode: _skipIntroFocusNode,
+            onTap: () {
+              _triggerSeekRelative(85);
+              _startControlsTimer();
+            },
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: isFocused ? const Color(0xFFE50914) : const Color(0xCC182234),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: isFocused ? Colors.white : const Color(0xFFE50914),
+                  width: isFocused ? 2.0 : 1.2,
+                ),
+                boxShadow: isFocused
+                    ? const [
+                        BoxShadow(
+                          color: Color(0x99E50914),
+                          blurRadius: 12,
+                          spreadRadius: 1,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.fast_forward_rounded,
+                    size: 18,
+                    color: isFocused ? Colors.white : const Color(0xFFE50914),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Pular Abertura (+85s)',
+                    style: TextStyle(
+                      color: isFocused ? Colors.white : const Color(0xFFF1F5F9),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1427,40 +1569,48 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                   ],
                 ],
               ),
-              if (widget.onFitModeChanged != null)
-                AnimatedBuilder(
-                  animation: _fitFocusNode,
-                  builder: (context, _) {
-                    final isFocused = _fitFocusNode.hasFocus;
-                    return Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
-                          width: 2.0,
-                        ),
-                        boxShadow: isFocused
-                            ? [
-                                const BoxShadow(
-                                  color: Color(0x9900E5FF),
-                                  blurRadius: 10,
-                                  spreadRadius: 1,
-                                )
-                              ]
-                            : null,
-                      ),
-                      child: TextButton.icon(
-                        focusNode: _fitFocusNode,
-                        onPressed: _cycleFitMode,
-                        icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
-                        label: Text(
-                          _fitModeLabel,
-                          style: const TextStyle(color: Colors.white70, fontSize: 11),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildAudioTracksButton(),
+                  if (widget.onFitModeChanged != null) ...[
+                    const SizedBox(width: 8),
+                    AnimatedBuilder(
+                      animation: _fitFocusNode,
+                      builder: (context, _) {
+                        final isFocused = _fitFocusNode.hasFocus;
+                        return Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+                              width: 2.0,
+                            ),
+                            boxShadow: isFocused
+                                ? [
+                                    const BoxShadow(
+                                      color: Color(0x9900E5FF),
+                                      blurRadius: 10,
+                                      spreadRadius: 1,
+                                    )
+                                  ]
+                                : null,
+                          ),
+                          child: TextButton.icon(
+                            focusNode: _fitFocusNode,
+                            onPressed: _cycleFitMode,
+                            icon: const Icon(Icons.aspect_ratio_rounded, color: Colors.white70, size: 18),
+                            label: Text(
+                              _fitModeLabel,
+                              style: const TextStyle(color: Colors.white70, fontSize: 11),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
             ],
           ),
         ],
@@ -1468,118 +1618,157 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     );
   }
 
-  Widget _buildNextEpisodeCountdownOverlay() {
-    return Container(
-      color: Colors.black87,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Center(
-        child: SingleChildScrollView(
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.all(24),
-            constraints: const BoxConstraints(maxWidth: 420),
-            decoration: BoxDecoration(
-              color: const Color(0xFF141C2A),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFE50914), width: 1.5),
+  Widget _buildAudioTracksButton() {
+    return AnimatedBuilder(
+      animation: _audioTrackFocusNode,
+      builder: (context, _) {
+        final isFocused = _audioTrackFocusNode.hasFocus;
+        return Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
+              width: 2.0,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.skip_next_rounded, color: Color(0xFFE50914), size: 48),
-                const SizedBox(height: 12),
-                const Text(
-                  'Próximo Episódio',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                if (widget.nextEpisodeTitle != null) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    widget.nextEpisodeTitle!,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFB0BEC5),
-                      fontSize: 14,
+            boxShadow: isFocused
+                ? const [
+                    BoxShadow(
+                      color: Color(0x9900E5FF),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: TextButton.icon(
+            focusNode: _audioTrackFocusNode,
+            onPressed: () {
+              AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
+              _startControlsTimer();
+            },
+            icon: const Icon(Icons.audiotrack_rounded, color: Colors.white70, size: 18),
+            label: const Text(
+              'Áudio & Legendas',
+              style: TextStyle(color: Colors.white70, fontSize: 11),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildNextEpisodeCountdownOverlay() {
+    return Positioned(
+      bottom: 24,
+      right: 24,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 380,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xEE0D121D),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE50914), width: 1.8),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black87,
+                blurRadius: 18,
+                offset: Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.skip_next_rounded, color: Color(0xFFE50914), size: 26),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Próximo Episódio',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ],
-                const SizedBox(height: 16),
+              ),
+              if (widget.nextEpisodeTitle != null) ...[
+                const SizedBox(height: 6),
                 Text(
-                  'Iniciando em ${widget.nextEpisodeCountdown}s...',
+                  widget.nextEpisodeTitle!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Color(0xFF00E5FF),
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFB0BEC5),
+                    fontSize: 13,
                   ),
                 ),
-                const SizedBox(height: 20),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 12,
-                  runSpacing: 10,
-                  children: [
-                    if (widget.onCancelNextEpisode != null)
-                      AnimatedBuilder(
-                        animation: _cancelCountdownFocusNode,
-                        builder: (context, _) {
-                          final isFocused = _cancelCountdownFocusNode.hasFocus;
-                          return OutlinedButton(
-                            focusNode: _cancelCountdownFocusNode,
-                            onPressed: widget.onCancelNextEpisode,
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: isFocused ? const Color(0xFF00E5FF) : Colors.white70,
-                              side: BorderSide(
-                                color: isFocused ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
-                                width: isFocused ? 2 : 1,
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            ),
-                            child: const Text('Cancelar'),
-                          );
-                        },
-                      ),
-                    if (widget.onPlayNextEpisodeNow != null)
-                      AnimatedBuilder(
-                        animation: _playNowCountdownFocusNode,
-                        builder: (context, _) {
-                          final isFocused = _playNowCountdownFocusNode.hasFocus;
-                          return Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              boxShadow: isFocused
-                                  ? [
-                                      const BoxShadow(
-                                        color: Color(0x9900E5FF),
-                                        blurRadius: 12,
-                                        spreadRadius: 2,
-                                      )
-                                    ]
-                                  : null,
-                            ),
-                            child: ElevatedButton.icon(
-                              focusNode: _playNowCountdownFocusNode,
-                              onPressed: widget.onPlayNextEpisodeNow,
-                              icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                              label: const Text('Assistir agora'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: isFocused ? const Color(0xFF00E5FF) : const Color(0xFFE50914),
-                                foregroundColor: isFocused ? Colors.black : Colors.white,
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                  ],
-                ),
               ],
-            ),
+              const SizedBox(height: 10),
+              Text(
+                'Iniciando em ${widget.nextEpisodeCountdown}s...',
+                style: const TextStyle(
+                  color: Color(0xFF00E5FF),
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  if (widget.onCancelNextEpisode != null)
+                    AnimatedBuilder(
+                      animation: _cancelCountdownFocusNode,
+                      builder: (context, _) {
+                        final isFocused = _cancelCountdownFocusNode.hasFocus;
+                        return OutlinedButton(
+                          focusNode: _cancelCountdownFocusNode,
+                          onPressed: widget.onCancelNextEpisode,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: isFocused ? const Color(0xFF00E5FF) : Colors.white70,
+                            side: BorderSide(
+                              color: isFocused ? const Color(0xFF00E5FF) : const Color(0xFF37474F),
+                              width: isFocused ? 2 : 1,
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          ),
+                          child: const Text('Cancelar', style: TextStyle(fontSize: 12)),
+                        );
+                      },
+                    ),
+                  if (widget.onPlayNextEpisodeNow != null)
+                    AnimatedBuilder(
+                      animation: _playNowCountdownFocusNode,
+                      builder: (context, _) {
+                        final isFocused = _playNowCountdownFocusNode.hasFocus;
+                        return ElevatedButton.icon(
+                          focusNode: _playNowCountdownFocusNode,
+                          autofocus: true,
+                          onPressed: widget.onPlayNextEpisodeNow,
+                          icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                          label: const Text('Assistir agora', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFE50914),
+                            foregroundColor: Colors.white,
+                            side: BorderSide(
+                              color: isFocused ? Colors.white : Colors.transparent,
+                              width: isFocused ? 2 : 0,
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          ),
+                        );
+                      },
+                    ),
+                ],
+              ),
+            ],
           ),
         ),
       ),

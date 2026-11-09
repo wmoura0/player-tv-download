@@ -7,6 +7,7 @@ import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
 import '../services/settings_service.dart';
+import '../services/smart_source_resolver.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
@@ -53,6 +54,8 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   bool _isSeekingToInitial = false;
   bool _isExiting = false;
   String? _errorMessage;
+  String? _smartSourceStatusMessage;
+  bool _smartSourceAttempted = false;
   List<String> _streamUrls = [];
   int _currentUrlIndex = 0;
 
@@ -69,6 +72,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   int? _countdownSeconds;
   Timer? _countdownTimer;
   bool _hasTriggeredCompletion = false;
+  bool _hasTriggeredBingeCard = false;
 
   @override
   void initState() {
@@ -242,9 +246,31 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
     _resumptionTarget = initialPosition;
     _seekAttempted = false;
-    _streamUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
+    _smartSourceAttempted = false;
+    _smartSourceStatusMessage = null;
+
+    final baseUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
+    final candidateUrls = SmartSourceResolver.instance.generateCandidateUrls(
+      catalogService: widget.catalogService,
+      episode: _currentEpisode,
+    );
+    final cached = SmartSourceResolver.instance.getCachedSource(widget.series.seriesId, _currentEpisode.id);
+
+    final merged = <String>[];
+    if (cached != null) {
+      merged.add(cached);
+    }
+    for (final u in baseUrls) {
+      if (!merged.contains(u)) merged.add(u);
+    }
+    for (final u in candidateUrls) {
+      if (!merged.contains(u)) merged.add(u);
+    }
+
+    _streamUrls = merged;
     _currentUrlIndex = 0;
     _hasTriggeredCompletion = false;
+    _hasTriggeredBingeCard = false;
     _cancelCountdown();
 
     debugPrint('[SERIES PLAYER] Início de fluxo: ID=${_currentEpisode.id}, T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} ("${_currentEpisode.title}"), Série="${widget.series.name}" (seriesId=${widget.series.seriesId})');
@@ -381,10 +407,50 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       _currentUrlIndex++;
       PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando URL de contingência $_currentUrlIndex devido a erro de recurso ou container incompatível.');
       await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
+    } else if (!_smartSourceAttempted &&
+        SettingsService.instance.enableSmartSource &&
+        !isAuthOrForbidden &&
+        (isResourceNotFound || isFormatOrContainerError)) {
+      _smartSourceAttempted = true;
+      setState(() {
+        _isLoading = true;
+        _smartSourceStatusMessage = 'Recuperando fonte do episódio (Smart Source)...';
+      });
+
+      PlayerDiagnostics.log('SMART_SOURCE', 'Iniciando resolução inteligente de fonte via sondagem multi-container (.mp4/.mkv/.ts).');
+      final result = await SmartSourceResolver.instance.resolveBestSource(
+        catalogService: widget.catalogService,
+        episode: _currentEpisode,
+        seriesId: widget.series.seriesId,
+        onProgressMessage: (msg) {
+          if (mounted && epoch == _connectionEpoch) {
+            setState(() => _smartSourceStatusMessage = msg);
+          }
+        },
+      );
+
+      if (!mounted || epoch != _connectionEpoch) return;
+
+      if (result.isSuccess && result.workingUrl != null) {
+        setState(() {
+          _smartSourceStatusMessage = null;
+        });
+        PlayerDiagnostics.log('SMART_SOURCE', 'Fonte resolvida com sucesso: ${result.workingUrl}');
+        await _connectToUrl(result.workingUrl!, initialPosition: initialPosition);
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _isBuffering = false;
+        _smartSourceStatusMessage = null;
+        _errorMessage = result.diagnosticMessage ?? userMessage;
+      });
     } else {
       setState(() {
         _isLoading = false;
         _isBuffering = false;
+        _smartSourceStatusMessage = null;
         _errorMessage = userMessage;
       });
     }
@@ -482,26 +548,40 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       setState(() => _isBuffering = isBuff);
     }
 
-    // Regra 3: O avanço automático só pode ocorrer após a conclusão NORMAL do episódio.
-    // Falhas de rede ou reprodução não podem disparar o próximo episódio.
-    if (!_hasTriggeredCompletion &&
-        c.value.isInitialized &&
-        !c.value.isPlaying &&
+    // Regra 3: O avanço automático só pode ocorrer após a conclusão NORMAL do episódio
+    // ou no modo Binge-Watching antecipado durante os créditos.
+    if (c.value.isInitialized &&
         _errorMessage == null &&
         !_isLoading &&
         !_isBuffering &&
         c.value.duration > Duration.zero) {
       final pos = c.value.position;
       final dur = c.value.duration;
-
-      // Conclusão normal: posição próxima ao fim (faltam menos de 2s ou atingiu dur)
       final remaining = dur.inSeconds - pos.inSeconds;
-      if (remaining <= 2 && pos.inSeconds > 10) {
+
+      // Binge-Watching antecipado nos créditos (quando faltarem 25s ou menos de vídeo):
+      if (!_hasTriggeredBingeCard &&
+          _nextEpisode != null &&
+          SettingsService.instance.enableAutoPlayNextEpisode &&
+          pos.inSeconds > 20 &&
+          remaining <= 25 &&
+          remaining > 2) {
+        _hasTriggeredBingeCard = true;
+        _startNextEpisodeCountdown(initialSeconds: 15);
+      }
+
+      // Conclusão normal ao fim do vídeo
+      if (!_hasTriggeredCompletion &&
+          !c.value.isPlaying &&
+          remaining <= 2 &&
+          pos.inSeconds > 10) {
         _hasTriggeredCompletion = true;
         _handleEpisodeCompleted();
 
-        if (_nextEpisode != null && SettingsService.instance.enableAutoPlayNextEpisode) {
-          _startNextEpisodeCountdown();
+        if (_nextEpisode != null &&
+            SettingsService.instance.enableAutoPlayNextEpisode &&
+            _countdownSeconds == null) {
+          _startNextEpisodeCountdown(initialSeconds: 5);
         }
       }
     }
@@ -555,10 +635,10 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
   }
 
-  void _startNextEpisodeCountdown() {
+  void _startNextEpisodeCountdown({int initialSeconds = 15}) {
     _cancelCountdown();
     setState(() {
-      _countdownSeconds = 5;
+      _countdownSeconds = initialSeconds;
     });
 
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -672,7 +752,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             title: _displayTitle,
             coverUrl: _currentEpisode.cover ?? widget.series.cover,
             badgeText: 'SÉRIE',
-            loadingMessage: 'Carregando episódio...',
+            loadingMessage: _smartSourceStatusMessage ?? 'Carregando episódio...',
             fitMode: _fitMode,
             onFitModeChanged: (mode) => setState(() => _fitMode = mode),
             onTogglePlayPause: _togglePlayPause,
@@ -684,7 +764,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             nextEpisodeCountdown: _countdownSeconds,
             onCancelNextEpisode: _cancelCountdown,
             onPlayNextEpisodeNow: _playNextEpisode,
-            isLoading: _isLoading,
+            isLoading: _isLoading || _smartSourceStatusMessage != null,
             isBuffering: _isBuffering,
             errorMessage: _errorMessage,
             onRetry: () => _initCurrentEpisode(),

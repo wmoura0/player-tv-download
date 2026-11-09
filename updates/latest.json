@@ -1,11 +1,11 @@
 {
-  "version": "1.2.7",
-  "versionCode": 10,
+  "version": "1.2.8",
+  "versionCode": 11,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.7/JessFlix-v1.2.7.apk",
-  "fileSize": 57864833,
-  "sha256": "3ac4af7147e97b1a53326cdf530a775611994af4e30962e42480b7f7615f9576",
-  "releaseNotes": "• Correção P0 de Inicialização e Atualizador OTA: Preservação de WorkDatabase_Impl e OverwritingInputMerger no R8 Full Mode, permitindo download em segundo plano e com tela desligada via WorkManager.\n• Download Resiliente: Suporte a múltiplos redirecionamentos HTTP com preservação de cabeçalhos Range e retomada de download.\n• Foco Automático no Fire TV: Botão 'Atualizar Agora' com foco automático pelo D-Pad do controle remoto.\n• Navegação D-Pad 2D no Player VOD: Foco visual ativo ciano (#00E5FF) e setas do controle remoto navegando entre botões e seeking (±10s e contínuo) sem fechar os controles precocemente.\n• Resolução de Episódios e Fim do HTTP 404: Heurística simétrica entre id e stream_id para séries com mais de 100 capítulos e contingência automática de formatos (.mp4, .mkv, .ts).\n• Zapping Ágil na TV ao Vivo: Troca de canais desacoplada por geração assíncrona (epoch), eliminando bloqueios de interface, com zapping fullscreen via setas Cima/Baixo e debounce anti-repique.\n• Modos de Proporção de Tela: Ciclo unificado em 3 modos (contain, cover, fill) em TV ao Vivo e VOD com persistência nas configurações.\n• Diagnóstico Preciso de Rede e TLS: Detecção de data/hora desatualizada no Fire OS com orientação clara de ajuste do relógio.\n• Inicialização Offline-First: Abertura imediata na tela inicial com cache local em caso de instabilidade de conexão, sem expulsar para login.\n• Busca Global Otimizada e M3U: Carregamento progressivo sequencial sem picos de RAM e reprodução direta de canais M3U.",
-  "publishedAt": "2026-11-09T11:12:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.8/JessFlix-v1.2.8.apk",
+  "fileSize": 58783821,
+  "sha256": "a79bf2038b7e8850a6576f3e70aff237832244a33980b396be7b259bc632eb97",
+  "releaseNotes": "• Smart Source Resolver: Resolução inteligente multi-container (.mp4, .mkv, .ts) e contingência para séries longas sem erro 404.\n• Controle Parental por PIN: Bloqueio por PIN criptografado (SHA-256 + salt), proteção contra força bruta e ocultação de categorias adultas (+18).\n• Multi-Contas e Perfis de Usuário: Suporte a múltiplos acessos Xtream/M3U e perfis familiares com histórico e favoritos isolados por perfil.\n• Mini-Guia OSD Lateral na TV ao Vivo: Troca rápida de canais sem interromper a transmissão com navegação fluida via D-Pad (Seta Esquerda).\n• Recursos Avançados no Player: Botão 'Pular Abertura' (+85s) e card flutuante de Binge-Watching nos créditos finais com contagem regressiva para o próximo episódio.\n• Seleção de Áudio e Legendas: Menu nativo de trilhas de áudio e legendas embutidas com persistência de preferências de idioma.\n• Todas as correções críticas preservadas: WorkManager, estabilidade de inicialização e compatibilidade Fire TV / Android TV.",
+  "publishedAt": "2026-11-09T16:00:00.000Z",
   "mandatory": false
 }

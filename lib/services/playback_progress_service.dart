@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'user_profile_service.dart';
 
 /// Representação do progresso de reprodução salvo para um filme.
 class PlaybackProgress {
@@ -143,8 +144,13 @@ class PlaybackProgressService {
     return '${cleanServer}_$cleanUser';
   }
 
+  String _effectiveAccountKey(String accountKey) {
+    return UserProfileService.instance.getScopedKey(accountKey);
+  }
+
   String _buildStorageKey(String accountKey, int streamId) {
-    return 'vod_prog_${accountKey}_$streamId';
+    final effective = _effectiveAccountKey(accountKey);
+    return 'vod_prog_${effective}_$streamId';
   }
 
   /// Salva a posição assistida de um filme.
@@ -244,11 +250,13 @@ class PlaybackProgressService {
   // =========================================================================
 
   String _buildEpisodeStorageKey(String accountKey, int seriesId, int episodeId) {
-    return 'series_prog_${accountKey}_${seriesId}_$episodeId';
+    final effective = _effectiveAccountKey(accountKey);
+    return 'series_prog_${effective}_${seriesId}_$episodeId';
   }
 
   String _buildSeriesLastKey(String accountKey, int seriesId) {
-    return 'series_last_${accountKey}_$seriesId';
+    final effective = _effectiveAccountKey(accountKey);
+    return 'series_last_${effective}_$seriesId';
   }
 
   /// Salva a posição assistida de um episódio de série.
@@ -390,7 +398,8 @@ class PlaybackProgressService {
   // =========================================================================
 
   String _buildContinueWatchingKey(String accountKey) {
-    return 'continue_watching_$accountKey';
+    final effective = _effectiveAccountKey(accountKey);
+    return 'continue_watching_$effective';
   }
 
   /// Recupera a lista de conteúdos com progresso útil para continuar assistindo.
