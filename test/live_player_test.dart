@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/services/url_sanitizer.dart';

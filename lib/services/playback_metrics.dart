@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart';
+﻿import 'package:flutter/foundation.dart';
 import 'url_sanitizer.dart';
 
 /// Tipo de mídia monitorada pelas métricas de reprodução

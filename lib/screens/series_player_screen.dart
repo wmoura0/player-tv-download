@@ -752,6 +752,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             title: _displayTitle,
             coverUrl: _currentEpisode.cover ?? widget.series.cover,
             badgeText: 'SÉRIE',
+            isSeriesEpisode: true,
             loadingMessage: _smartSourceStatusMessage ?? 'Carregando episódio...',
             fitMode: _fitMode,
             onFitModeChanged: (mode) => setState(() => _fitMode = mode),

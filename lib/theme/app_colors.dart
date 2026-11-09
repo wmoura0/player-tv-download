@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 /// Paleta oficial de cores do Player TV baseada no layout de referência
 ///

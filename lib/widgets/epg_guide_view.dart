@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/epg_program.dart';
 import '../utils/device_utils.dart';

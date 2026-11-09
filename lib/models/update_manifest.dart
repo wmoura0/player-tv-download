@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 /// Modelo de dados validado para o manifesto de atualização remota (OTA).
 class UpdateManifest {

@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/services/player_diagnostics.dart';
 

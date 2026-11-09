@@ -1,4 +1,4 @@
-/// Modelo representando uma conta autenticada via API Xtream Codes.
+﻿/// Modelo representando uma conta autenticada via API Xtream Codes.
 class XtreamAccount {
   final String serverUrl;
   final String username;

@@ -1,4 +1,4 @@
-enum AccountType {
+﻿enum AccountType {
   xtream,
   m3u,
 }

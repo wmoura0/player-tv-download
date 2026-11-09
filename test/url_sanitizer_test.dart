@@ -1,4 +1,4 @@
-import 'package:flutter_test/flutter_test.dart';
+﻿import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/services/url_sanitizer.dart';
 
 void main() {

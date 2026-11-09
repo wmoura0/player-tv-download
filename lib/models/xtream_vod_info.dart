@@ -1,4 +1,4 @@
-// Modelo para metadados detalhados de um filme obtidos via get_vod_info.
+﻿// Modelo para metadados detalhados de um filme obtidos via get_vod_info.
 
 class XtreamVodInfo {
   final int streamId;

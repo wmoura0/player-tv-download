@@ -476,6 +476,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           controller: _controller,
           title: widget.movie.name,
           coverUrl: widget.movie.streamIcon,
+          isSeriesEpisode: false,
           fitMode: _fitMode,
           onFitModeChanged: (mode) => setState(() => _fitMode = mode),
           onTogglePlayPause: _togglePlayPause,

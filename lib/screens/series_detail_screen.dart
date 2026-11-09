@@ -426,6 +426,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             child: Image.network(
               backdropUrl,
               fit: BoxFit.cover,
+              cacheWidth: 1280,
               errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
             ),
           ),

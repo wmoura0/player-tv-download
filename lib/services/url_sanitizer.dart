@@ -1,4 +1,4 @@
-/// Utilitário de segurança para mascarar credenciais sensíveis em URLs.
+﻿/// Utilitário de segurança para mascarar credenciais sensíveis em URLs.
 class UrlSanitizer {
   static final _sensitiveParamKeys = {
     'username',

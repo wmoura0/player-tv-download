@@ -1,4 +1,4 @@
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+﻿import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Serviço responsável pelo armazenamento seguro e criptografado de credenciais
 /// utilizando Android Keystore / EncryptedSharedPreferences.

@@ -1,4 +1,4 @@
-import '../models/channel.dart';
+﻿import '../models/channel.dart';
 import '../models/xtream_catalog.dart';
 
 /// Tipos de conteúdo suportados pelo sistema de favoritos.

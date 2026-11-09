@@ -5,7 +5,6 @@ import 'package:video_player/video_player.dart';
 import '../models/live_mini_channel.dart';
 import '../services/url_sanitizer.dart';
 import '../utils/device_utils.dart';
-import 'audio_subtitle_selector_dialog.dart';
 
 /// Modos de enquadramento do vídeo na tela (Original, Preencher ou Esticar).
 enum LiveVideoFitMode { contain, cover, fill }
@@ -95,7 +94,6 @@ class LivePlayerViewState extends State<LivePlayerView> {
   final FocusNode _backFocusNode = FocusNode();
   final FocusNode _fitFocusNode = FocusNode();
   final FocusNode _fsFocusNode = FocusNode();
-  final FocusNode _audioTrackFocusNode = FocusNode();
 
   // Mini-Guia OSD lateral
   bool _showMiniGuide = false;
@@ -279,7 +277,6 @@ class LivePlayerViewState extends State<LivePlayerView> {
     _backFocusNode.dispose();
     _fitFocusNode.dispose();
     _fsFocusNode.dispose();
-    _audioTrackFocusNode.dispose();
     super.dispose();
   }
 
@@ -1137,25 +1134,6 @@ class LivePlayerViewState extends State<LivePlayerView> {
                   widget.onOpenGuide?.call();
                   _startControlsTimer();
                 }
-              },
-            ),
-          ],
-          // Seletor de Áudio e Legendas (Media3 ExoPlayer)
-          if (widget.controller != null) ...[
-            const SizedBox(width: 4),
-            _PlayerTvIconButton(
-              buttonKey: const Key('btn_live_audio_tracks'),
-              tooltip: 'Áudio e Legendas',
-              focusNode: _audioTrackFocusNode,
-              constraints: BoxConstraints(minWidth: isCompact ? 30 : 36, minHeight: isCompact ? 30 : 36),
-              icon: Icon(
-                Icons.audiotrack_rounded,
-                color: Colors.white70,
-                size: isCompact ? 20 : 22,
-              ),
-              onPressed: () {
-                AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
-                _startControlsTimer();
               },
             ),
           ],

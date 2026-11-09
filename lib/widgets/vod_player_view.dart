@@ -4,11 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../services/playback_progress_service.dart';
 import '../services/url_sanitizer.dart';
-import 'audio_subtitle_selector_dialog.dart';
 import 'live_player_view.dart'; // Para reutilizar LiveVideoFitMode
 
-/// Widget modular de interface de reprodução de Filmes (VOD).
+/// Widget modular de interface de reprodução de Filmes (VOD) e Séries.
 /// Contém scrubber de progresso, botões -10s e +10s, alternador Original/Preencher,
+/// botão inteligente de "Pular Abertura (+85s)" exclusivo para episódios de séries,
 /// e suporte nativo a controle remoto D-Pad e rotação horizontal.
 class VodPlayerView extends StatefulWidget {
   final VideoPlayerController? controller;
@@ -31,6 +31,7 @@ class VodPlayerView extends StatefulWidget {
   final bool isBuffering;
   final String? errorMessage;
   final VoidCallback? onRetry;
+  final bool isSeriesEpisode;
 
   const VodPlayerView({
     super.key,
@@ -54,6 +55,7 @@ class VodPlayerView extends StatefulWidget {
     this.isBuffering = false,
     this.errorMessage,
     this.onRetry,
+    this.isSeriesEpisode = false,
   });
 
   @override
@@ -69,7 +71,6 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   final FocusNode _seekForwardFocusNode = FocusNode(debugLabel: 'VodPlayerSeekForward');
   final FocusNode _nextEpFocusNode = FocusNode(debugLabel: 'VodPlayerNextEp');
   final FocusNode _skipIntroFocusNode = FocusNode(debugLabel: 'VodPlayerSkipIntro');
-  final FocusNode _audioTrackFocusNode = FocusNode(debugLabel: 'VodPlayerAudioTrack');
   final FocusNode _fitFocusNode = FocusNode(debugLabel: 'VodPlayerFit');
 
   // FocusNodes para overlays
@@ -84,6 +85,10 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
   bool _isDraggingSlider = false;
   double _dragSliderValue = 0.0;
+
+  // Estado do botão "Pular Abertura (+85s)"
+  bool _introSkippedForCurrentEpisode = false;
+  bool _lastShowSkipIntro = false;
 
   // Variáveis para controle de avanço e retrocesso contínuo fluido (active ticker)
   bool _isContinuousSeeking = false;
@@ -102,12 +107,58 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   bool _isRelativeSeeking = false;
   Timer? _relativeSeekResetTimer;
 
+  /// Regra estrita de visibilidade do botão "Pular Abertura (+85s)":
+  /// 1. Apenas em episódios de séries.
+  /// 2. Posição entre 0s e < 180s (primeiros 3 minutos).
+  /// 3. Oculta automaticamente a partir de 180s.
+  /// 4. Nunca exibe em filmes ou TV ao vivo.
+  /// 5. Duração restante deve ser estritamente > 85 segundos.
+  /// 6. Oculta pelo restante do episódio assim que for acionado.
+  /// 7. Oculta imediatamente ao avançar para além de 3 minutos.
+  /// 8. Ao retroceder para < 3 minutos, reaparece somente se ainda não utilizado.
+  bool get _canSkipIntro {
+    if (!widget.isSeriesEpisode) return false;
+    if (_introSkippedForCurrentEpisode) return false;
+    final c = widget.controller;
+    if (c == null || !c.value.isInitialized) return false;
+    if (widget.isLoading || widget.errorMessage != null) return false;
+
+    final pos = c.value.position;
+    final dur = c.value.duration;
+
+    if (dur <= Duration.zero) return false;
+    if (pos < Duration.zero || pos >= const Duration(seconds: 180)) return false;
+
+    final remaining = dur - pos;
+    if (remaining <= const Duration(seconds: 85)) return false;
+
+    return true;
+  }
+
+  void _handleSkipIntro() {
+    final c = widget.controller;
+    if (c == null || !c.value.isInitialized) return;
+
+    setState(() {
+      _introSkippedForCurrentEpisode = true;
+      _lastShowSkipIntro = false;
+    });
+
+    _triggerSeekRelative(85);
+    _startControlsTimer();
+
+    if (_skipIntroFocusNode.hasFocus) {
+      _playPauseFocusNode.requestFocus();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     final c = widget.controller;
     _isUserPaused = c != null && c.value.isInitialized && !c.value.isPlaying;
     _attachController(widget.controller);
+    _lastShowSkipIntro = _canSkipIntro;
     _startControlsTimer();
     _checkInitialOverlayFocus();
   }
@@ -136,9 +187,11 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   @override
   void didUpdateWidget(covariant VodPlayerView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.controller != oldWidget.controller) {
+    if (widget.controller != oldWidget.controller || widget.title != oldWidget.title) {
       _detachController(oldWidget.controller);
       _attachController(widget.controller);
+      _introSkippedForCurrentEpisode = false;
+      _lastShowSkipIntro = _canSkipIntro;
       if (widget.controller?.value.isPlaying ?? false) {
         _isUserPaused = false;
       }
@@ -192,6 +245,16 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           });
         }
       }
+
+      final canSkip = _canSkipIntro;
+      if (canSkip != _lastShowSkipIntro) {
+        setState(() {
+          _lastShowSkipIntro = canSkip;
+          if (!canSkip && _skipIntroFocusNode.hasFocus) {
+            _playPauseFocusNode.requestFocus();
+          }
+        });
+      }
     }
   }
 
@@ -212,7 +275,6 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _seekForwardFocusNode.dispose();
     _nextEpFocusNode.dispose();
     _skipIntroFocusNode.dispose();
-    _audioTrackFocusNode.dispose();
     _fitFocusNode.dispose();
     _retryFocusNode.dispose();
     _errorNextEpFocusNode.dispose();
@@ -242,7 +304,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     });
     widget.onSeekRelative?.call(seconds);
     _startControlsTimer();
-    setState(() {});
+    setState(() {
+      _lastShowSkipIntro = _canSkipIntro;
+      if (!_lastShowSkipIntro && _skipIntroFocusNode.hasFocus) {
+        _playPauseFocusNode.requestFocus();
+      }
+    });
   }
 
   void _handleTogglePlayPause() {
@@ -621,10 +688,10 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       } else if (_seekForwardFocusNode.hasFocus) {
         if (widget.onNextEpisode != null) {
           _nextEpFocusNode.requestFocus();
-        } else if (_skipIntroFocusNode.canRequestFocus) {
+        } else if (_canSkipIntro && _skipIntroFocusNode.canRequestFocus) {
           _skipIntroFocusNode.requestFocus();
         }
-      } else if (_nextEpFocusNode.hasFocus && _skipIntroFocusNode.canRequestFocus) {
+      } else if (_nextEpFocusNode.hasFocus && _canSkipIntro && _skipIntroFocusNode.canRequestFocus) {
         _skipIntroFocusNode.requestFocus();
       }
 
@@ -670,11 +737,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         widget.onNextEpisode?.call();
         _startControlsTimer();
       } else if (_skipIntroFocusNode.hasFocus) {
-        _triggerSeekRelative(85);
-        _startControlsTimer();
-      } else if (_audioTrackFocusNode.hasFocus) {
-        AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
-        _startControlsTimer();
+        _handleSkipIntro();
       } else if (_fitFocusNode.hasFocus) {
         _cycleFitMode();
       } else {
@@ -830,11 +893,19 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                 if (widget.errorMessage != null && !widget.isLoading)
                   _buildErrorOverlay(),
 
-                // 4. Controles Sobrepostos (OSD)
+                // 4. Botão flutuante "Pular Abertura (+85s)" para Séries quando OSD fechado
+                if (!_showControls && _canSkipIntro && widget.errorMessage == null)
+                  Positioned(
+                    bottom: 28,
+                    right: 28,
+                    child: _buildSkipIntroPillButton(),
+                  ),
+
+                // 5. Controles Sobrepostos (OSD)
                 if (_showControls && widget.errorMessage == null)
                   _buildControlsOverlay(controller, isPlaying),
 
-                // 5. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
+                // 6. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
                 if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0 && widget.errorMessage == null)
                   _buildNextEpisodeCountdownOverlay(),
               ],
@@ -1293,7 +1364,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     final showPausedPill = _isUserPaused && !isPlaying && !isSeekingActive && !widget.isLoading && !widget.isBuffering;
     final showPauseIcon = (isPlaying || isSeekingActive) && !_isUserPaused;
 
-    final canSkipIntro = position < const Duration(minutes: 5) && duration >= const Duration(minutes: 6);
+    final canSkipIntro = _canSkipIntro;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1430,10 +1501,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           message: 'Pular Abertura (+85s)',
           child: InkWell(
             focusNode: _skipIntroFocusNode,
-            onTap: () {
-              _triggerSeekRelative(85);
-              _startControlsTimer();
-            },
+            canRequestFocus: _canSkipIntro,
+            onTap: _handleSkipIntro,
             borderRadius: BorderRadius.circular(20),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -1572,9 +1641,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildAudioTracksButton(),
                   if (widget.onFitModeChanged != null) ...[
-                    const SizedBox(width: 8),
                     AnimatedBuilder(
                       animation: _fitFocusNode,
                       builder: (context, _) {
@@ -1615,45 +1682,6 @@ class _VodPlayerViewState extends State<VodPlayerView> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildAudioTracksButton() {
-    return AnimatedBuilder(
-      animation: _audioTrackFocusNode,
-      builder: (context, _) {
-        final isFocused = _audioTrackFocusNode.hasFocus;
-        return Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isFocused ? const Color(0xFF00E5FF) : Colors.transparent,
-              width: 2.0,
-            ),
-            boxShadow: isFocused
-                ? const [
-                    BoxShadow(
-                      color: Color(0x9900E5FF),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    )
-                  ]
-                : null,
-          ),
-          child: TextButton.icon(
-            focusNode: _audioTrackFocusNode,
-            onPressed: () {
-              AudioSubtitleSelectorDialog.show(context, controller: widget.controller);
-              _startControlsTimer();
-            },
-            icon: const Icon(Icons.audiotrack_rounded, color: Colors.white70, size: 18),
-            label: const Text(
-              'Áudio & Legendas',
-              style: TextStyle(color: Colors.white70, fontSize: 11),
-            ),
-          ),
-        );
-      },
     );
   }
 

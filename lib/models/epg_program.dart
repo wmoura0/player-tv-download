@@ -1,4 +1,4 @@
-import '../services/xmltv_parser.dart';
+﻿import '../services/xmltv_parser.dart';
 import 'xtream_catalog.dart';
 
 /// Representa um programa individual da grade do Guia Eletrônico de Programação (EPG).

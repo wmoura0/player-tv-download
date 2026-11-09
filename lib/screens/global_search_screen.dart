@@ -709,6 +709,8 @@ class _SearchResultTileState extends State<_SearchResultTile> {
                         ? Image.network(
                             widget.imageUrl!,
                             fit: BoxFit.cover,
+                            cacheWidth: 120,
+                            cacheHeight: 160,
                             errorBuilder: (context, error, stackTrace) =>
                                 Icon(widget.fallbackIcon, color: AppColors.textSecondary, size: 24),
                           )

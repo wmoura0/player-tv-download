@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_account.dart';
 import '../services/favorites_service.dart';

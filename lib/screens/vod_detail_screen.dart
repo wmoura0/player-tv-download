@@ -160,6 +160,7 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
               child: Image.network(
                 backdropUrl,
                 fit: BoxFit.cover,
+                cacheWidth: 1280,
                 errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
               ),
             ),

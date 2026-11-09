@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../models/update_manifest.dart';
 import '../models/xtream_account.dart';
 import '../services/ota_update_service.dart';

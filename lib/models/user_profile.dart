@@ -1,4 +1,4 @@
-/// Modelo de perfil de usuário local com dados isolados (Favoritos, Histórico, Progresso).
+﻿/// Modelo de perfil de usuário local com dados isolados (Favoritos, Histórico, Progresso).
 class UserProfile {
   final String id;
   final String name;

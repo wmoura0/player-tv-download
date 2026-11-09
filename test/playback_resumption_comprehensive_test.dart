@@ -1,4 +1,4 @@
-import 'package:flutter_test/flutter_test.dart';
+﻿import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/models/xtream_series_info.dart';

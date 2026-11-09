@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:projeto_tv/services/playback_metrics.dart';
 import 'package:projeto_tv/services/player_stability_manager.dart';

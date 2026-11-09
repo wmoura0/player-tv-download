@@ -1,4 +1,4 @@
-/// Modelo leve para canais exibidos no Mini-Guia OSD lateral durante reprodução ao vivo.
+﻿/// Modelo leve para canais exibidos no Mini-Guia OSD lateral durante reprodução ao vivo.
 class LiveMiniChannelItem {
   final String id;
   final String name;

@@ -1,4 +1,4 @@
-import 'channel.dart';
+﻿import 'channel.dart';
 
 /// Modelo representando uma lista M3U cadastrada no aplicativo.
 class M3uPlaylist {

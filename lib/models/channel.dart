@@ -1,4 +1,4 @@
-/// Modelo representando um canal extraído de uma lista M3U.
+﻿/// Modelo representando um canal extraído de uma lista M3U.
 class M3uChannel {
   final String name;
   final String streamUrl;

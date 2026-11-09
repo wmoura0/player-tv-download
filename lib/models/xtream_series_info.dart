@@ -1,4 +1,4 @@
-// Modelos para informações detalhadas de séries, temporadas e episódios
+﻿// Modelos para informações detalhadas de séries, temporadas e episódios
 // obtidos a partir do endpoint get_series_info da API Xtream Codes.
 
 class XtreamSeriesEpisode {

@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 // Modelos para o catálogo Xtream Codes (Categorias, TV ao vivo, Filmes e Séries).
 

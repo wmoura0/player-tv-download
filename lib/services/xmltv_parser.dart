@@ -1,4 +1,4 @@
-import 'dart:isolate';
+﻿import 'dart:isolate';
 import '../models/epg_program.dart';
 
 /// Resultado estruturado do processamento de um feed XMLTV.
