@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,6 +7,44 @@ class DeviceUtils {
   static const MethodChannel _deviceChannel = MethodChannel('com.player.m3u/device');
   static bool? _cachedIsTv;
   static bool? _mockIsPipSupported;
+
+  // Versão instalada real (padrão v1.2.9+12 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 12;
+  static String _installedVersionName = '1.2.9';
+
+  /// Versão de build (versionCode) da aplicação instalada no dispositivo.
+  static int get installedVersionCode => _installedVersionCode;
+
+  /// Nome legível da versão (versionName) da aplicação instalada no dispositivo.
+  static String get installedVersionName => _installedVersionName;
+
+  /// Permite injetar a versão do app para testes controlados.
+  @visibleForTesting
+  static void setMockAppVersion({int? versionCode, String? versionName}) {
+    if (versionCode != null) _installedVersionCode = versionCode;
+    if (versionName != null) _installedVersionName = versionName;
+  }
+
+  /// Consulta a versão do pacote instalada nativamente no Android/Fire OS.
+  static Future<void> loadAppVersion() async {
+    try {
+      final res = await _deviceChannel.invokeMapMethod<String, dynamic>('getAppVersion');
+      if (res != null) {
+        final vCode = res['versionCode'];
+        if (vCode is int) {
+          _installedVersionCode = vCode;
+        } else if (vCode is num) {
+          _installedVersionCode = vCode.toInt();
+        }
+        final vName = res['versionName'];
+        if (vName is String && vName.trim().isNotEmpty) {
+          _installedVersionName = vName.trim();
+        }
+      }
+    } catch (_) {
+      // Ignora falhas em ambientes sem o plugin (desktop, testes unitários)
+    }
+  }
 
   /// Notificador reativo do estado de Picture-in-Picture (PiP).
   /// Verdadeiro quando o aplicativo estiver minimizado na janela flutuante nativa do Android.
@@ -26,6 +64,7 @@ class DeviceUtils {
       if (isTv != null) {
         _cachedIsTv = isTv;
       }
+      await loadAppVersion();
     } catch (_) {
       // Ignora falhas em ambientes sem o plugin (ex: desktop, testes)
     }

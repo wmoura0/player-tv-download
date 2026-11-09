@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/xtream_account.dart';
@@ -334,61 +334,117 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           DeviceUtils.restoreOrientation();
           _loadHomeData();
         });
-      } else if (item.type == ContinueWatchingType.series && item.seriesId != null) {
-        debugPrint('[HOME] Continuar assistindo série: seriesId=${item.seriesId}, epId=${item.streamId}, T${item.seasonNumber ?? '?'}:E${item.episodeNum ?? '?'}, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
+      } else if (item.type == ContinueWatchingType.series) {
+        final int effectiveSeriesId = (item.seriesId != null && item.seriesId! > 0)
+            ? item.seriesId!
+            : item.streamId;
+
+        // Extrai com segurança número da temporada e do episódio
+        int? season = item.seasonNumber;
+        int? epNum = item.episodeNum;
+        if ((season == null || epNum == null) && item.subtitle != null) {
+          final regExp = RegExp(r'[sStT](\d+)[\s:xXeE\-]+(?:[eE]|ep|Ep)?(\d+)');
+          final match = regExp.firstMatch(item.subtitle!);
+          if (match != null) {
+            season ??= int.tryParse(match.group(1)!);
+            epNum ??= int.tryParse(match.group(2)!);
+          }
+        }
+        season ??= 1;
+        epNum ??= 1;
+
+        // Título limpo do episódio
+        String epTitle = 'Episódio $epNum';
+        if (item.subtitle != null && item.subtitle!.trim().isNotEmpty) {
+          final raw = item.subtitle!;
+          if (raw.contains(' • ')) {
+            epTitle = raw.split(' • ').last.trim();
+          } else if (raw.contains(' - ')) {
+            epTitle = raw.split(' - ').last.trim();
+          } else if (raw.contains('   ')) {
+            epTitle = raw.split('   ').last.trim();
+          } else {
+            epTitle = raw.trim();
+          }
+        }
+
+        debugPrint('[HOME] Continuar assistindo série: seriesId=$effectiveSeriesId, epId=${item.streamId}, T$season:E$epNum, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
+
         final series = XtreamSeriesItem(
-          seriesId: item.seriesId!,
+          seriesId: effectiveSeriesId,
           name: item.title,
           cover: item.coverUrl,
           categoryId: item.categoryId ?? '0',
         );
 
-        final info = await service.fetchSeriesInfo(item.seriesId!);
+        // Tenta obter os detalhes da série do cache ou rede com timeout de 8 segundos para não bloquear a UI
+        XtreamSeriesInfo? info;
+        try {
+          info = await service.fetchSeriesInfo(effectiveSeriesId).timeout(const Duration(seconds: 8));
+        } catch (_) {
+          // Timeout ou erro de rede não impede a reprodução: usará contingência inteligente
+        }
+
         if (!mounted) return;
 
+        XtreamSeriesEpisode? ep;
         if (info != null) {
-          XtreamSeriesEpisode? ep = info.findEpisodeById(item.streamId);
+          ep = info.findEpisodeById(item.streamId);
           // Fallback caso o streamId/id tenha mudado no servidor, mas seasonNumber e episodeNum coincidam
-          if (ep == null && item.seasonNumber != null && item.episodeNum != null) {
-            ep = info.findEpisodeBySeasonAndNum(item.seasonNumber!, item.episodeNum!);
+          if (ep == null) {
+            ep = info.findEpisodeBySeasonAndNum(season, epNum);
             if (ep != null) {
               debugPrint('[HOME] Episódio recuperado por fallback de temporada/número: S${ep.seasonNumber}E${ep.episodeNum} (novo ID: ${ep.id})');
             }
           }
-
-          if (ep != null) {
-            final targetEpisode = ep;
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => SeriesPlayerScreen(
-                  series: series,
-                  seriesInfo: info,
-                  initialEpisode: targetEpisode,
-                  catalogService: service,
-                  accountKey: accKey,
-                  initialPosition: item.position,
-                ),
-              ),
-            ).then((_) {
-              DeviceUtils.restoreOrientation();
-              _loadHomeData();
-            });
-            return;
-          }
-        } else {
-          _showNotice('Não foi possível obter detalhes da série no momento.');
-          return;
         }
+
+        // Se não localizado no catálogo da série ou catálogo indisponível no momento,
+        // sintetiza o episódio com os metadados preservados do histórico
+        final targetEpisode = ep ?? XtreamSeriesEpisode(
+          id: item.streamId,
+          episodeNum: epNum,
+          seasonNumber: season,
+          title: epTitle,
+          containerExtension: item.containerExtension ?? 'mp4',
+          cover: item.coverUrl,
+        );
+
+        // Se info for nulo, sintetiza estrutura mínima para que o player opere de forma totalmente transparente
+        final effectiveInfo = info ?? XtreamSeriesInfo(
+          name: item.title,
+          cover: item.coverUrl,
+          seasons: [
+            XtreamSeriesSeason(
+              seasonNumber: season,
+              name: 'Temporada $season',
+            ),
+          ],
+          episodesBySeason: {
+            season: [targetEpisode],
+          },
+        );
 
         Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => SeriesDetailScreen(
+            builder: (_) => SeriesPlayerScreen(
               series: series,
+              seriesInfo: effectiveInfo,
+              initialEpisode: targetEpisode,
               catalogService: service,
               accountKey: accKey,
+              initialPosition: item.position,
             ),
           ),
-        ).then((_) => _loadHomeData());
+        ).then((_) {
+          DeviceUtils.restoreOrientation();
+          _loadHomeData();
+        });
+      }
+    } catch (e, stack) {
+      debugPrint('[HOME] Falha ao abrir Continuar Assistindo: $e\n$stack');
+      if (mounted) {
+        _showNotice('Não foi possível retomar este conteúdo no momento.');
       }
     } finally {
       if (mounted) {

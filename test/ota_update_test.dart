@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -7,7 +7,7 @@ import 'package:projeto_tv/services/ota_update_service.dart';
 
 void main() {
   group('Manifesto de Atualização OTA (UpdateManifest)', () {
-    const validJson = {
+    final validJson = {
       'version': '1.1.0',
       'versionCode': OtaUpdateService.currentVersionCode + 1,
       'minSupportedVersion': '1.0.0',

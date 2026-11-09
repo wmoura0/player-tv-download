@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:projeto_tv/models/live_mini_channel.dart';
 import 'package:projeto_tv/models/xtream_series_info.dart';
-import 'package:projeto_tv/services/account_manager_service.dart';
 import 'package:projeto_tv/services/pin_service.dart';
 import 'package:projeto_tv/services/smart_source_resolver.dart';
 import 'package:projeto_tv/services/user_profile_service.dart';

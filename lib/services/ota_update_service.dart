@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -94,9 +94,9 @@ class OtaUpdateService extends ChangeNotifier {
   static const Duration _minCheckInterval = Duration(hours: 2);
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
-  // Versão instalada corrente (1.2.6+9)
-  static const String currentVersionName = '1.2.6';
-  static const int currentVersionCode = 9;
+  // Versão instalada corrente (obtida dinamicamente do sistema nativo, com fallback para 1.2.9+12)
+  static String get currentVersionName => DeviceUtils.installedVersionName;
+  static int get currentVersionCode => DeviceUtils.installedVersionCode;
 
   final http.Client _client;
   http.Client? _activeDownloadClient;
@@ -230,6 +230,9 @@ class OtaUpdateService extends ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
 
+    // Sincroniza a versão real do app instalada antes de comparar
+    await DeviceUtils.loadAppVersion();
+
     final manifestUrl = customUrl ?? await getManifestUrl();
 
     try {
@@ -355,10 +358,16 @@ class OtaUpdateService extends ChangeNotifier {
         _status = UpdateStatus.verifying;
         _downloadProgress = 1.0;
       } else if (nativeStatus == 'READY_TO_INSTALL') {
-        _status = UpdateStatus.readyToInstall;
-        _downloadProgress = 1.0;
-        if (apkPath != null) {
-          _downloadedApkFile = File(apkPath);
+        if (_latestManifest != null && _latestManifest!.versionCode <= currentVersionCode) {
+          _status = UpdateStatus.upToDate;
+          _downloadedApkFile = null;
+          cleanOldApks();
+        } else {
+          _status = UpdateStatus.readyToInstall;
+          _downloadProgress = 1.0;
+          if (apkPath != null) {
+            _downloadedApkFile = File(apkPath);
+          }
         }
         _stopNativeSync();
       } else if (nativeStatus == 'ERROR') {

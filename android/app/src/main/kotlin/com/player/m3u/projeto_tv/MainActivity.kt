@@ -114,6 +114,30 @@ class MainActivity : FlutterActivity() {
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "getAppVersion" -> {
+                        try {
+                            val pInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+                            } else {
+                                @Suppress("DEPRECATION")
+                                packageManager.getPackageInfo(packageName, 0)
+                            }
+                            val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                pInfo.longVersionCode.toInt()
+                            } else {
+                                @Suppress("DEPRECATION")
+                                pInfo.versionCode
+                            }
+                            val vName = pInfo.versionName ?: "1.2.9"
+                            result.success(mapOf(
+                                "versionName" to vName,
+                                "versionCode" to vCode,
+                                "packageName" to packageName
+                            ))
+                        } catch (e: Exception) {
+                            result.error("VERSION_ERROR", e.localizedMessage, null)
+                        }
+                    }
                     "isTvDevice" -> {
                         result.success(isTvDevice())
                     }
