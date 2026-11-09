@@ -162,22 +162,10 @@ class OtaDownloadWorker(
         var outputStream: FileOutputStream? = null
 
         try {
-            val url = URL(apkUrl)
-            connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
-                readTimeout = 30000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "JessFlix-Updater/$targetVersionCode")
-                setRequestProperty("Accept-Encoding", "identity") // Evita gzip para Range exato
-            }
-
+            var currentUrl = apkUrl
             var startByte = 0L
             if (partFile.exists() && partFile.length() > 0 && partFile.length() < expectedSize) {
                 startByte = partFile.length()
-                connection.setRequestProperty("Range", "bytes=$startByte-")
-                if (!savedEtag.isNullOrBlank()) {
-                    connection.setRequestProperty("If-Range", savedEtag)
-                }
                 saveState(
                     context,
                     status = "RESUMING",
@@ -187,8 +175,56 @@ class OtaDownloadWorker(
                 )
             }
 
-            connection.connect()
-            val responseCode = connection.responseCode
+            var redirects = 0
+            val maxRedirects = 6
+            var responseCode = -1
+
+            while (redirects < maxRedirects) {
+                val u = URL(currentUrl)
+                val conn = (u.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 30000
+                    instanceFollowRedirects = false
+                    setRequestProperty("User-Agent", "JessFlix-Updater/$targetVersionCode")
+                    setRequestProperty("Accept-Encoding", "identity") // Evita gzip para Range exato
+                }
+
+                if (startByte > 0L) {
+                    conn.setRequestProperty("Range", "bytes=$startByte-")
+                    if (!savedEtag.isNullOrBlank()) {
+                        conn.setRequestProperty("If-Range", savedEtag)
+                    }
+                }
+
+                conn.connect()
+                responseCode = conn.responseCode
+
+                if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                    responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    responseCode == HttpURLConnection.HTTP_SEE_OTHER ||
+                    responseCode == 307 ||
+                    responseCode == 308
+                ) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (location.isNullOrBlank()) {
+                        throw Exception("Redirecionamento HTTP $responseCode sem cabeçalho Location.")
+                    }
+                    currentUrl = if (location.startsWith("http://") || location.startsWith("https://")) {
+                        location
+                    } else {
+                        URL(u, location).toString()
+                    }
+                    redirects++
+                } else {
+                    connection = conn
+                    break
+                }
+            }
+
+            if (connection == null) {
+                throw Exception("Falha ao estabelecer conexão após redirecionamentos.")
+            }
 
             val isPartial = (responseCode == HttpURLConnection.HTTP_PARTIAL)
             val isOk = (responseCode == HttpURLConnection.HTTP_OK)

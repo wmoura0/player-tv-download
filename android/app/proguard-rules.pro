@@ -5,6 +5,10 @@
     *;
 }
 
+# AndroidX WorkManager (Keep all classes, InputMergers, DAOs, Workers and reflective constructors)
+-keep class androidx.work.** { *; }
+-keep interface androidx.work.** { *; }
+
 # AndroidX Room & WorkDatabase (Prevents R8 full mode from stripping WorkDatabase_Impl.<init>())
 -keep class * extends androidx.room.RoomDatabase {
     public <init>();
@@ -28,6 +32,7 @@
 # AndroidX WorkManager Workers
 -keep class * extends androidx.work.ListenableWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
+    *;
 }
 -keep class * extends androidx.work.CoroutineWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);

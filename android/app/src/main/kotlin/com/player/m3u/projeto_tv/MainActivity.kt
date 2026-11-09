@@ -218,6 +218,14 @@ class MainActivity : FlutterActivity() {
                         if (apkUrl.isBlank() || fileSize <= 0L || sha256.isBlank()) {
                             result.error("INVALID_PARAMS", "Parâmetros do APK inválidos", null)
                         } else {
+                            OtaDownloadWorker.saveState(
+                                context = applicationContext,
+                                status = "DOWNLOADING",
+                                progress = 0f,
+                                bytesDownloaded = 0L,
+                                totalBytes = fileSize
+                            )
+
                             val data = Data.Builder()
                                 .putString("apkUrl", apkUrl)
                                 .putLong("fileSize", fileSize)
@@ -237,7 +245,7 @@ class MainActivity : FlutterActivity() {
 
                             WorkManager.getInstance(applicationContext).enqueueUniqueWork(
                                 OtaDownloadWorker.WORK_NAME,
-                                ExistingWorkPolicy.KEEP,
+                                ExistingWorkPolicy.REPLACE,
                                 request
                             )
                             result.success(true)

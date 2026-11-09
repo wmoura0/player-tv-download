@@ -399,6 +399,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
             child: const Text('Mais Tarde'),
           ),
           ElevatedButton.icon(
+            autofocus: true,
             onPressed: _installApk,
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.focusCyan,
@@ -415,6 +416,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
             child: const Text('Fechar'),
           ),
           ElevatedButton.icon(
+            autofocus: true,
             onPressed: _startDownload,
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
@@ -431,6 +433,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
             child: const Text('Lembrar Mais Tarde'),
           ),
           ElevatedButton.icon(
+            autofocus: true,
             onPressed: _startDownload,
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
