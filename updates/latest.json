@@ -1,11 +1,11 @@
 {
-  "version": "1.2.8",
-  "versionCode": 11,
+  "version": "1.2.9",
+  "versionCode": 12,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.8/JessFlix-v1.2.8.apk",
-  "fileSize": 58783821,
-  "sha256": "a79bf2038b7e8850a6576f3e70aff237832244a33980b396be7b259bc632eb97",
-  "releaseNotes": "• Smart Source Resolver: Resolução inteligente multi-container (.mp4, .mkv, .ts) e contingência para séries longas sem erro 404.\n• Controle Parental por PIN: Bloqueio por PIN criptografado (SHA-256 + salt), proteção contra força bruta e ocultação de categorias adultas (+18).\n• Multi-Contas e Perfis de Usuário: Suporte a múltiplos acessos Xtream/M3U e perfis familiares com histórico e favoritos isolados por perfil.\n• Mini-Guia OSD Lateral na TV ao Vivo: Troca rápida de canais sem interromper a transmissão com navegação fluida via D-Pad (Seta Esquerda).\n• Recursos Avançados no Player: Botão 'Pular Abertura' (+85s) e card flutuante de Binge-Watching nos créditos finais com contagem regressiva para o próximo episódio.\n• Seleção de Áudio e Legendas: Menu nativo de trilhas de áudio e legendas embutidas com persistência de preferências de idioma.\n• Todas as correções críticas preservadas: WorkManager, estabilidade de inicialização e compatibilidade Fire TV / Android TV.",
-  "publishedAt": "2026-11-09T16:00:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.9/JessFlix-v1.2.9.apk",
+  "fileSize": 58734205,
+  "sha256": "5b6daaadeb4067a74580379d5a6b5a016e6aa7567b5dad09a7bfa15a57708ecc",
+  "releaseNotes": "• Prevenção do Loop OTA: Sincronização dinâmica de versionCode via PackageManager nativo do Android, eliminando verificações e popups repetitivos de atualização.\n• Resiliência do Continuar Assistindo: Abertura direta de episódios de séries com tolerância a IDs legados, parsing robusto de temporada/episódio e contingência transparente pelo Smart Source Resolver sem bloqueios de rede.\n• Player VOD Premium: Botão 'Pular Abertura' (+85s) aprimorado nos primeiros 180 segundos com ocultação automática e transição suave.\n• Interface Otimizada para Fire TV: Remoção de controles redundantes de áudio e legendas na barra de controle e decodificação eficiente de posters para economia de memória.\n• Todas as correções críticas preservadas: Suporte ao Room/WorkManager, estabilidade R8/ProGuard e controle remoto D-Pad.",
+  "publishedAt": "2026-11-10T00:05:00.000Z",
   "mandatory": false
 }
