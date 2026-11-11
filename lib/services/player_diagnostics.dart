@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -24,9 +24,14 @@ class HttpProbeResult {
     required this.elapsedMs,
   });
 
-  bool get isSuccess => statusCode != null && statusCode! >= 200 && statusCode! < 300;
+  bool get isSuccess =>
+      statusCode != null &&
+      statusCode! >= 200 &&
+      statusCode! < 300 &&
+      (contentLength == null || contentLength! > 0);
   bool get isForbidden => statusCode == 401 || statusCode == 403;
   bool get isNotFound => statusCode == 404;
+  bool get isEmptyBody => statusCode == 200 && contentLength == 0;
   bool get isServerError => statusCode != null && statusCode! >= 500;
 }
 
@@ -73,6 +78,7 @@ class DiagnosticErrorDetails {
       (causeClass != null &&
           (causeClass!.contains('Decoder') ||
               causeClass!.contains('Parser') ||
+              causeClass!.contains('SourceError') ||
               causeClass!.contains('MediaCodec')));
 }
 
@@ -123,11 +129,11 @@ class PlayerDiagnostics {
       final request = http.Request('GET', uri)..headers.addAll(reqHeaders);
       var streamedResponse = await client.send(request).timeout(timeout);
 
-      // Se retornou 404, 405 ou 416 com Range header, tentar HEAD sem Range
-      // para evitar falsos 404/416 causados por proxies ou servidores que não suportam Range
-      if (streamedResponse.statusCode == 404 ||
-          streamedResponse.statusCode == 416 ||
-          streamedResponse.statusCode == 405) {
+      // Se retornou 405 (Method Not Allowed) ou 501 (Not Implemented) para Range GET,
+      // tenta HEAD sem Range caso algum proxy intermediário restrinja o método GET Range.
+      // NUNCA fazer fallback para HEAD se o código for 404 (Not Found), pois proxies e servidores
+      // Xtream frequentemente retornam HTTP 200 com 0 bytes para HEAD mesmo quando o arquivo não existe.
+      if (streamedResponse.statusCode == 405 || streamedResponse.statusCode == 501) {
         try {
           final fallbackHeaders = <String, String>{
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
@@ -135,7 +141,8 @@ class PlayerDiagnostics {
           };
           final headReq = http.Request('HEAD', uri)..headers.addAll(fallbackHeaders);
           final headRes = await client.send(headReq).timeout(const Duration(seconds: 3));
-          if (headRes.statusCode >= 200 && headRes.statusCode < 400) {
+          final headLen = headRes.contentLength;
+          if (headRes.statusCode >= 200 && headRes.statusCode < 400 && (headLen == null || headLen > 0)) {
             streamedResponse = headRes;
           }
         } catch (_) {}
@@ -270,6 +277,10 @@ class PlayerDiagnostics {
       causeClass = lower.contains('httpdatasource') ? 'HttpDataSource\$InvalidResponseCodeException' : 'HttpProbeNotFound';
       causeMsg = 'Sondagem HTTP retornou 404: Arquivo inexistente ou URL inválida';
       shortUi = 'Sondagem HTTP 404 (Arquivo inexistente)';
+    } else if (probe?.isEmptyBody == true) {
+      causeClass = 'HttpDataSource\$EmptyBodyResponseException';
+      causeMsg = 'Servidor respondeu HTTP 200 com corpo vazio (0 bytes) para a requisição de mídia';
+      shortUi = 'Conteúdo vazio (0 bytes) retornado pelo servidor';
     } else if (exoPlayerHttpStatus != null && exoPlayerHttpStatus >= 500) {
       causeClass = 'HttpDataSource\$InvalidResponseCodeException';
       causeMsg = 'Servidor de streaming com erro interno (HTTP $exoPlayerHttpStatus)';
@@ -298,6 +309,10 @@ class PlayerDiagnostics {
       causeClass = 'HttpDataSource\$HttpDataSourceException';
       causeMsg = 'Falha de conexão TCP/DNS com o servidor de streaming';
       shortUi = 'Erro de Conexão de Rede (Host inacessível)';
+    } else if (lower.contains('source error') || lower.contains('exoplaybackexception: source')) {
+      causeClass = 'ExoPlaybackException\$SourceError';
+      causeMsg = 'ExoPlayer encontrou falha ao abrir a fonte de mídia (container incompatível, extensão incorreta ou fluxo indisponível)';
+      shortUi = 'Falha no carregamento da fonte (Source error)';
     } else {
       causeClass = error.runtimeType.toString();
       causeMsg = UrlSanitizer.sanitizeErrorMessage(rawText);

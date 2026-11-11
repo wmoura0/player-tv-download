@@ -4,6 +4,7 @@ import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
+import '../services/smart_source_resolver.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
@@ -111,19 +112,22 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     try {
       var info = await widget.catalogService.fetchSeriesInfo(_currentSeries.seriesId);
 
-      // Se a série não retornou dados, tenta recuperar se foi reindexada com novo seriesId
-      if (info == null || info.seasons.isEmpty) {
+      // Se a série não retornou dados ou retornou apenas registros órfãos/stubs sem extensões válidas,
+      // tenta recuperar se foi reindexada com novo seriesId
+      if (info == null || info.seasons.isEmpty || info.isOrphanedOrStub) {
         try {
           final seriesList = await widget.catalogService.fetchSeries(
             categoryId: _currentSeries.categoryId,
+            forceRefresh: true,
           );
-          final cleanTargetTitle = _currentSeries.name.trim().toLowerCase();
+          final cleanTargetTitle = SmartSourceResolver.normalizeTitle(_currentSeries.name);
 
           // Validação robusta de metadados:
-          // Não confiar apenas no título. Exigir que categoria, rating ou cover coincida
-          // para nunca associar acidentalmente uma série diferente com o mesmo nome.
+          // Usa normalizeTitle para tolerar sufixos de anos duplicados como (2009) (2009)
           final matches = seriesList.where((s) {
-            final titleMatch = s.name.trim().toLowerCase() == cleanTargetTitle;
+            final norm = SmartSourceResolver.normalizeTitle(s.name);
+            final titleMatch = norm == cleanTargetTitle ||
+                (cleanTargetTitle.isNotEmpty && (norm.contains(cleanTargetTitle) || cleanTargetTitle.contains(norm)));
             if (!titleMatch) return false;
             final categoryMatch = s.categoryId == _currentSeries.categoryId;
             final coverMatch = s.cover != null && _currentSeries.cover != null && s.cover == _currentSeries.cover;
@@ -133,8 +137,8 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
           if (matches.isNotEmpty) {
             final matched = matches.first;
-            final recoveredInfo = await widget.catalogService.fetchSeriesInfo(matched.seriesId);
-            if (recoveredInfo != null && recoveredInfo.seasons.isNotEmpty) {
+            final recoveredInfo = await widget.catalogService.fetchSeriesInfo(matched.seriesId, forceRefresh: true);
+            if (recoveredInfo != null && recoveredInfo.seasons.isNotEmpty && !recoveredInfo.isOrphanedOrStub) {
               info = recoveredInfo;
               _currentSeries = matched;
               if (_isFavorite) {

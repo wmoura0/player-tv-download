@@ -23,6 +23,7 @@ import 'services/pin_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
+import 'services/smart_source_resolver.dart';
 import 'services/user_profile_service.dart';
 import 'services/xtream_catalog_service.dart';
 import 'theme/app_colors.dart';
@@ -335,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _loadHomeData();
         });
       } else if (item.type == ContinueWatchingType.series) {
-        final int effectiveSeriesId = (item.seriesId != null && item.seriesId! > 0)
+        int effectiveSeriesId = (item.seriesId != null && item.seriesId! > 0)
             ? item.seriesId!
             : item.streamId;
 
@@ -370,7 +371,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
         debugPrint('[HOME] Continuar assistindo série: seriesId=$effectiveSeriesId, epId=${item.streamId}, T$season:E$epNum, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
 
-        final series = XtreamSeriesItem(
+        var series = XtreamSeriesItem(
           seriesId: effectiveSeriesId,
           name: item.title,
           cover: item.coverUrl,
@@ -383,6 +384,37 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           info = await service.fetchSeriesInfo(effectiveSeriesId).timeout(const Duration(seconds: 8));
         } catch (_) {
           // Timeout ou erro de rede não impede a reprodução: usará contingência inteligente
+        }
+
+        // Se info for nulo ou se for uma série órfã/stub do provedor, tenta recuperar a série reindexada
+        if (info == null || info.isOrphanedOrStub) {
+          try {
+            List<XtreamSeriesItem> seriesList = [];
+            if (item.categoryId != null && item.categoryId != '0' && item.categoryId != 'all') {
+              seriesList = await service.fetchSeries(
+                categoryId: item.categoryId,
+                forceRefresh: true,
+              );
+            }
+            if (seriesList.isEmpty) {
+              seriesList = await service.fetchSeries(categoryId: 'all');
+            }
+            final cleanTitle = SmartSourceResolver.normalizeTitle(item.title);
+            final matches = seriesList.where((s) {
+              final norm = SmartSourceResolver.normalizeTitle(s.name);
+              return norm == cleanTitle ||
+                  (cleanTitle.isNotEmpty && (norm.contains(cleanTitle) || cleanTitle.contains(norm)));
+            }).toList();
+            if (matches.isNotEmpty) {
+              final matched = matches.first;
+              final recoveredInfo = await service.fetchSeriesInfo(matched.seriesId, forceRefresh: true);
+              if (recoveredInfo != null && !recoveredInfo.isOrphanedOrStub) {
+                info = recoveredInfo;
+                series = matched;
+                effectiveSeriesId = matched.seriesId;
+              }
+            }
+          } catch (_) {}
         }
 
         if (!mounted) return;

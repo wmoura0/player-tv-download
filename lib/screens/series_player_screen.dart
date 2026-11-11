@@ -234,11 +234,12 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       oldController.removeListener(_onControllerUpdate);
       try {
         if (oldController.value.isInitialized && oldController.value.isPlaying) {
-          await oldController.pause();
+          oldController.pause();
         }
       } catch (_) {}
       try {
-        await oldController.dispose();
+        // Dispara o descarte do controller de forma assíncrona sem travar a troca de rota
+        unawaited(oldController.dispose());
       } catch (_) {}
     }
   }
@@ -375,42 +376,43 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     required int epoch,
     Duration? initialPosition,
   }) async {
-    // Sondagem HTTP diagnóstica imediata para identificar com precisão o status do servidor
-    final probe = await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex]);
-    final details = PlayerDiagnostics.analyzeError(e, probe: probe);
+    final quickDetails = PlayerDiagnostics.analyzeError(e);
 
-    PlayerDiagnostics.log('ERROR', 'Falha na reprodução do episódio: ${details.technicalSummary}');
-    PlayerDiagnostics.logDiagnosticDetails(details);
-    PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
-    PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
-    PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
-    if (probe.statusCode != null) {
-      PlayerDiagnostics.log('HTTP_STATUS', '${probe.statusCode} | Content-Type: ${probe.contentType ?? 'N/D'}');
-    }
+    final isTimeout = e is TimeoutException ||
+        quickDetails.causeClass == 'TimeoutException' ||
+        quickDetails.shortUiMessage.contains('Timeout');
+    final isAuthOrForbidden = quickDetails.isAuthOrForbidden;
 
-    final userMessage = details.shortUiMessage;
-    _metrics.markError(userMessage);
-
-    // REGRA DE SEGURANÇA E FORMATO:
-    // 1. Nunca tentar contornar erros de autenticação ou permissão (HTTP 401/403).
-    // 2. Não tentar rotas alternativas para timeouts de rede puros.
-    // 3. Tenta contingência somente para recurso não encontrado (404) ou incompatibilidade de formato/container Media3 (3001, 3003, Parser/Decoder).
-    final isAuthOrForbidden = details.isAuthOrForbidden || probe.isForbidden;
-    final isResourceNotFound = probe.isNotFound || details.isResourceNotFound;
-    final isFormatOrContainerError = details.isFormatOrContainerError;
-
+    // REGRA DE SEGURANÇA E CONTINGÊNCIA:
+    // 1. Nunca tentar rotas alternativas em erros de autenticação ou permissão (HTTP 401/403).
+    // 2. Não tentar rotas alternativas para timeouts de rede puros (25s watchdog ou host inalcançável).
+    // 3. Para qualquer falha de reprodução (Source error, 404, container/codec incompatível, EOF, conexão resetada):
+    //    se existirem URLs alternativas na lista, avança IMEDIATAMENTE para a próxima rota.
     final canTryAlternative = !isAuthOrForbidden &&
-        (isResourceNotFound || isFormatOrContainerError) &&
+        !isTimeout &&
         (_currentUrlIndex + 1 < _streamUrls.length);
 
     if (canTryAlternative) {
       _currentUrlIndex++;
-      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando URL de contingência $_currentUrlIndex devido a erro de recurso ou container incompatível.');
+      PlayerDiagnostics.log(
+        'RETRY_ROUTE',
+        'Avançando imediatamente para URL de contingência $_currentUrlIndex/${_streamUrls.length} devido a erro: ${quickDetails.technicalSummary}',
+      );
+
+      // Sondagem assíncrona em background para telemetria sem bloquear a troca imediata
+      PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
+          .then((p) => PlayerDiagnostics.logDiagnosticDetails(PlayerDiagnostics.analyzeError(e, probe: p)))
+          .catchError((_) => null);
+
       await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
-    } else if (!_smartSourceAttempted &&
+      return;
+    }
+
+    // Se esgotou as rotas imediatas sem sucesso, tenta a recuperação profunda SmartSourceResolver
+    if (!_smartSourceAttempted &&
         SettingsService.instance.enableSmartSource &&
         !isAuthOrForbidden &&
-        (isResourceNotFound || isFormatOrContainerError)) {
+        !isTimeout) {
       _smartSourceAttempted = true;
       setState(() {
         _isLoading = true;
@@ -422,6 +424,8 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         catalogService: widget.catalogService,
         episode: _currentEpisode,
         seriesId: widget.series.seriesId,
+        seriesName: widget.series.name,
+        categoryId: widget.series.categoryId,
         onProgressMessage: (msg) {
           if (mounted && epoch == _connectionEpoch) {
             setState(() => _smartSourceStatusMessage = msg);
@@ -435,25 +439,70 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         setState(() {
           _smartSourceStatusMessage = null;
         });
+
+        if (result.recoveredEpisode != null) {
+          _currentEpisode = result.recoveredEpisode!;
+          debugPrint('[SERIES PLAYER] Atualizando episódio ativo para recuperado: ID=${_currentEpisode.id}, T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum}');
+          unawaited(
+            _progressService.saveContinueWatchingItem(
+              accountKey: widget.accountKey,
+              item: ContinueWatchingItem(
+                type: ContinueWatchingType.series,
+                streamId: _currentEpisode.id,
+                seriesId: result.recoveredSeriesId ?? widget.series.seriesId,
+                title: widget.series.name,
+                coverUrl: _currentEpisode.cover ?? widget.series.cover,
+                subtitle: 'T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} • ${_currentEpisode.title}',
+                position: initialPosition ?? Duration.zero,
+                duration: Duration.zero,
+                updatedAt: DateTime.now(),
+                seasonNumber: _currentEpisode.seasonNumber,
+                episodeNum: _currentEpisode.episodeNum,
+                containerExtension: _currentEpisode.containerExtension,
+                categoryId: widget.series.categoryId,
+              ),
+            ),
+          );
+        }
+
         PlayerDiagnostics.log('SMART_SOURCE', 'Fonte resolvida com sucesso: ${result.workingUrl}');
         await _connectToUrl(result.workingUrl!, initialPosition: initialPosition);
         return;
       }
 
+      final failureMsg = result.diagnosticMessage ?? quickDetails.shortUiMessage;
+      _metrics.markError(failureMsg);
       setState(() {
         _isLoading = false;
         _isBuffering = false;
         _smartSourceStatusMessage = null;
-        _errorMessage = result.diagnosticMessage ?? userMessage;
+        _errorMessage = failureMsg;
       });
-    } else {
-      setState(() {
-        _isLoading = false;
-        _isBuffering = false;
-        _smartSourceStatusMessage = null;
-        _errorMessage = userMessage;
-      });
+      return;
     }
+
+    // Diagnóstico final definitivo quando todas as alternativas falharam ou em erro de auth/timeout
+    final probe = await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex]);
+    final details = PlayerDiagnostics.analyzeError(e, probe: probe);
+
+    PlayerDiagnostics.log('ERROR', 'Falha definitiva na reprodução do episódio: ${details.technicalSummary}');
+    PlayerDiagnostics.logDiagnosticDetails(details);
+    PlayerDiagnostics.log('ERROR_CODE', '${details.errorCode ?? 'N/D'}');
+    PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
+    PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
+    if (probe.statusCode != null) {
+      PlayerDiagnostics.log('HTTP_STATUS', '${probe.statusCode} | Content-Type: ${probe.contentType ?? 'N/D'}');
+    }
+
+    final userMessage = details.shortUiMessage;
+    _metrics.markError(userMessage);
+
+    setState(() {
+      _isLoading = false;
+      _isBuffering = false;
+      _smartSourceStatusMessage = null;
+      _errorMessage = userMessage;
+    });
   }
 
   void _startInitialBufferingWatchdog(int epoch) {
@@ -482,11 +531,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     final c = _controller;
     if (c == null || !mounted) return;
 
+    // Erros durante a inicialização são tratados pelo try/catch de _connectToUrl
+    if (!c.value.isInitialized) return;
+
     // Se houver erro, cancela qualquer contagem regressiva e interrompe avanço automático
     if (c.value.hasError) {
       _cancelCountdown();
       _initialBufferingWatchdog?.cancel();
-      final details = PlayerDiagnostics.analyzeError(c.value.errorDescription ?? 'Erro interno de reprodução');
+      final errorDesc = c.value.errorDescription ?? 'Erro interno de reprodução';
+      final details = PlayerDiagnostics.analyzeError(errorDesc);
       PlayerDiagnostics.log('ERROR', 'Controller disparou erro durante reprodução do episódio: ${details.technicalSummary}');
       PlayerDiagnostics.logDiagnosticDetails(details);
       PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
@@ -494,15 +547,12 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${c.value.position}, isPlaying=${c.value.isPlaying}, isBuffering=${c.value.isBuffering}');
       _metrics.markError(details.shortUiMessage);
 
-      final isResourceNotFound = details.exoPlayerHttpStatus == 404 ||
-          details.shortUiMessage.contains('404') ||
-          details.shortUiMessage.contains('não encontrado') ||
-          details.errorCodeName == 'ERROR_CODE_PARSER_BAD_MEDIA_MANIFEST' ||
-          details.causeClass?.contains('Decoder') == true;
+      final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
+      final isAuthOrForbidden = details.isAuthOrForbidden;
 
-      if (!_isExiting && isResourceNotFound && (_currentUrlIndex + 1 < _streamUrls.length)) {
-        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
-        _handleConnectionError(c.value.errorDescription ?? 'Erro do player', epoch: _connectionEpoch, initialPosition: c.value.position);
+      if (!_isExiting && !isAuthOrForbidden && !isTimeout && (_currentUrlIndex + 1 < _streamUrls.length)) {
+        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
+        _handleConnectionError(errorDesc, epoch: _connectionEpoch, initialPosition: c.value.position);
         return;
       }
 

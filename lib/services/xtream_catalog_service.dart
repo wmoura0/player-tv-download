@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -128,10 +128,17 @@ class XtreamCatalogService extends ChangeNotifier {
     }
   }
 
-  Future<List<dynamic>?> _readDiskCache(String suffix) async {
+  Future<List<dynamic>?> _readDiskCache(String suffix, {Duration? maxAge}) async {
     try {
       final file = await _getCacheFile(suffix);
       if (file == null || !await file.exists()) return null;
+      if (maxAge != null) {
+        final lastMod = await file.lastModified();
+        if (DateTime.now().difference(lastMod) > maxAge) {
+          debugPrint('[CACHE] Cache em disco expirado ($suffix): mais de ${maxAge.inHours}h.');
+          return null;
+        }
+      }
       final content = await file.readAsString();
       if (content.isEmpty) return null;
       final decoded = content.length > 20 * 1024
@@ -1081,7 +1088,10 @@ class XtreamCatalogService extends ChangeNotifier {
       if (data.isEmpty) return null;
 
       final info = XtreamSeriesInfo.fromJson(data);
-      _seriesInfoCache[seriesId] = info;
+      // Não retém em cache séries órfãs ou stubs para permitir auto-recuperação
+      if (!info.isOrphanedOrStub) {
+        _seriesInfoCache[seriesId] = info;
+      }
       return info;
     } catch (e) {
       debugPrint('[SERIES INFO] Detalhes não disponíveis para series_id=$seriesId: $e');

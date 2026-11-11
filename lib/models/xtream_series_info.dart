@@ -1,4 +1,4 @@
-﻿// Modelos para informações detalhadas de séries, temporadas e episódios
+// Modelos para informações detalhadas de séries, temporadas e episódios
 // obtidos a partir do endpoint get_series_info da API Xtream Codes.
 
 class XtreamSeriesEpisode {
@@ -57,8 +57,22 @@ class XtreamSeriesEpisode {
     final rawEpisodeId = json['episode_id'] ?? info['episode_id'];
     final parsedEpisodeId = int.tryParse(rawEpisodeId?.toString() ?? '');
 
-    final rawId = json['id'] ?? info['id'];
-    final parsedId = int.tryParse(rawId?.toString() ?? '');
+    final rawJsonId = json['id'];
+    final parsedJsonId = int.tryParse(rawJsonId?.toString() ?? '');
+
+    final rawInfoId = info['id'];
+    final parsedInfoId = int.tryParse(rawInfoId?.toString() ?? '');
+
+    final rawCustomSid = json['custom_sid'] ?? info['custom_sid'];
+    final parsedCustomSid = int.tryParse(rawCustomSid?.toString() ?? '');
+
+    // Se json['id'] for apenas o índice ordinal do episódio e info['id'] for o ID global, prioriza o global
+    final int? parsedId;
+    if (parsedJsonId != null && parsedJsonId == episodeNum && parsedInfoId != null && parsedInfoId != episodeNum) {
+      parsedId = parsedInfoId;
+    } else {
+      parsedId = parsedJsonId ?? parsedInfoId;
+    }
 
     int resolvedId = 0;
     int? altId;
@@ -105,6 +119,16 @@ class XtreamSeriesEpisode {
       altId = (parsedEpisodeId != null && parsedEpisodeId != parsedId) ? parsedEpisodeId : null;
     } else if (parsedEpisodeId != null && parsedEpisodeId > 0) {
       resolvedId = parsedEpisodeId;
+    }
+
+    if (altId == null) {
+      if (parsedCustomSid != null && parsedCustomSid > 0 && parsedCustomSid != resolvedId) {
+        altId = parsedCustomSid;
+      } else if (parsedJsonId != null && parsedJsonId > 0 && parsedJsonId != resolvedId) {
+        altId = parsedJsonId;
+      } else if (parsedInfoId != null && parsedInfoId > 0 && parsedInfoId != resolvedId) {
+        altId = parsedInfoId;
+      }
     }
 
     final rawTitle = json['title']?.toString() ?? info['title']?.toString() ?? json['name']?.toString() ?? 'Episódio $episodeNum';
@@ -442,5 +466,23 @@ class XtreamSeriesInfo {
     }
 
     return null;
+  }
+
+  /// Indica se a série retornada pela API contém apenas registros órfãos ou stubs,
+  /// onde nenhum episódio possui extensão de container válida nem metadados reais (duração, capa, plot).
+  bool get isOrphanedOrStub {
+    if (episodesBySeason.isEmpty) return true;
+    for (final episodes in episodesBySeason.values) {
+      for (final ep in episodes) {
+        if ((ep.containerExtension != null && ep.containerExtension!.trim().isNotEmpty) ||
+            (ep.duration != null && ep.duration!.isNotEmpty) ||
+            (ep.durationSecs != null && ep.durationSecs! > 0) ||
+            (ep.plot != null && ep.plot!.isNotEmpty) ||
+            (ep.cover != null && ep.cover!.isNotEmpty)) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 }

@@ -202,7 +202,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         }
       } catch (_) {}
       try {
-        await oldController.dispose();
+        unawaited(oldController.dispose());
       } catch (_) {}
     }
   }
@@ -309,7 +309,33 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   }
 
   Future<void> _handleConnectionError(Object e, {required int epoch}) async {
-    // Sondagem HTTP diagnóstica imediata para identificar com precisão o status do servidor
+    final quickDetails = PlayerDiagnostics.analyzeError(e);
+
+    final isTimeout = e is TimeoutException ||
+        quickDetails.causeClass == 'TimeoutException' ||
+        quickDetails.shortUiMessage.contains('Timeout');
+    final isAuthOrForbidden = quickDetails.isAuthOrForbidden;
+
+    final canTryAlternative = !isAuthOrForbidden &&
+        !isTimeout &&
+        (_currentUrlIndex + 1 < widget.streamUrls.length);
+
+    if (canTryAlternative) {
+      _currentUrlIndex++;
+      PlayerDiagnostics.log(
+        'RETRY_ROUTE',
+        'Tentando rota de contingência index $_currentUrlIndex devido a erro: ${quickDetails.technicalSummary}',
+      );
+
+      // Sondagem assíncrona em background para telemetria
+      PlayerDiagnostics.probeStreamUrl(widget.streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
+          .then((p) => PlayerDiagnostics.logDiagnosticDetails(PlayerDiagnostics.analyzeError(e, probe: p)))
+          .catchError((_) => null);
+
+      await _connectToUrl(widget.streamUrls[_currentUrlIndex]);
+      return;
+    }
+
     final probe = await PlayerDiagnostics.probeStreamUrl(widget.streamUrls[_currentUrlIndex]);
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
@@ -325,25 +351,11 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     final userMessage = details.shortUiMessage;
     _metrics.markError(userMessage);
 
-    final isAuthOrForbidden = details.isAuthOrForbidden || probe.isForbidden;
-    final isResourceNotFound = probe.isNotFound || details.isResourceNotFound;
-    final isFormatOrContainerError = details.isFormatOrContainerError;
-
-    final canTryAlternative = !isAuthOrForbidden &&
-        (isResourceNotFound || isFormatOrContainerError) &&
-        (_currentUrlIndex + 1 < widget.streamUrls.length);
-
-    if (canTryAlternative) {
-      _currentUrlIndex++;
-      PlayerDiagnostics.log('RETRY_ROUTE', 'Tentando rota de contingência index $_currentUrlIndex devido a erro de recurso ou container.');
-      await _connectToUrl(widget.streamUrls[_currentUrlIndex]);
-    } else {
-      setState(() {
-        _isLoading = false;
-        _isBuffering = false;
-        _errorMessage = userMessage;
-      });
-    }
+    setState(() {
+      _isLoading = false;
+      _isBuffering = false;
+      _errorMessage = userMessage;
+    });
   }
 
   void _startInitialBufferingWatchdog(int epoch) {
@@ -373,15 +385,29 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     if (c == null || !mounted) return;
     final val = c.value;
 
+    // Erros durante a inicialização são tratados pelo try/catch de _connectToUrl
+    if (!val.isInitialized) return;
+
     if (val.hasError && _errorMessage == null) {
       _initialBufferingWatchdog?.cancel();
-      final details = PlayerDiagnostics.analyzeError(val.errorDescription ?? 'Erro interno de reprodução');
+      final errorDesc = val.errorDescription ?? 'Erro interno de reprodução';
+      final details = PlayerDiagnostics.analyzeError(errorDesc);
       PlayerDiagnostics.log('ERROR', 'Controller disparou erro durante reprodução: ${details.technicalSummary}');
       PlayerDiagnostics.logDiagnosticDetails(details);
       PlayerDiagnostics.log('ERROR_NAME', details.errorCodeName ?? 'N/D');
       PlayerDiagnostics.log('CAUSE', '${details.causeClass ?? 'N/D'}: ${details.causeMessage ?? 'N/D'}');
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${val.position}, isPlaying=${val.isPlaying}, isBuffering=${val.isBuffering}');
       _metrics.markError(details.shortUiMessage);
+
+      final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
+      final isAuthOrForbidden = details.isAuthOrForbidden;
+
+      if (!isAuthOrForbidden && !isTimeout && (_currentUrlIndex + 1 < widget.streamUrls.length)) {
+        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller do filme; tentando URL de contingência ${_currentUrlIndex + 1}.');
+        _handleConnectionError(errorDesc, epoch: _connectionEpoch);
+        return;
+      }
+
       setState(() {
         _errorMessage = details.shortUiMessage;
         _isLoading = false;
