@@ -39,7 +39,7 @@
     *;
 }
 
-# JessFlix Native Classes (MainActivity & OtaDownloadWorker)
+# JessFlix Native Classes (MainActivity, OtaDownloadWorker & WebViewPlayerActivity)
 -keep class com.player.m3u.projeto_tv.MainActivity {
     public <init>();
     *;
@@ -47,6 +47,16 @@
 -keep class com.player.m3u.projeto_tv.OtaDownloadWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
     *;
+}
+-keep class com.player.m3u.projeto_tv.WebViewPlayerActivity {
+    public <init>();
+    *;
+}
+-keep class com.player.m3u.projeto_tv.WebViewPlayerActivity$** {
+    *;
+}
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
 }
 
 # Optional Play Core classes not used on Fire TV / direct APK builds

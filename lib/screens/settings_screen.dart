@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import '../models/update_manifest.dart';
 import '../models/xtream_account.dart';
 import '../services/ota_update_service.dart';
@@ -18,6 +18,7 @@ import '../services/account_manager_service.dart';
 import '../services/pin_service.dart';
 import '../services/settings_service.dart';
 import '../services/user_profile_service.dart';
+import '../services/webview_player_service.dart';
 import '../widgets/pin_entry_dialog.dart';
 
 enum SettingsMenuSection {
@@ -777,6 +778,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                 ],
+              ),
+              const SizedBox(height: 24),
+              const Divider(color: AppColors.borderSubtle, height: 1),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBackground.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.science_outlined, color: Colors.amber, size: 28),
+                    const SizedBox(width: 14),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Laboratório: Prova de Conceito WebView (PoC)',
+                            style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Validação experimental de segundo mecanismo HTML5 isolado para Fire TV (Big Buck Bunny)',
+                            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.amber.shade800,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      ),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                      label: const Text('Testar WebView', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () async {
+                        final ok = await WebViewPlayerService.openPocPlayer();
+                        if (!ok && context.mounted) {
+                          _showSnackbar('Não foi possível abrir o player WebView.');
+                        }
+                      },
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

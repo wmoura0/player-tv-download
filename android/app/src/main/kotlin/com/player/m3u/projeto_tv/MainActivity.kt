@@ -309,6 +309,23 @@ class MainActivity : FlutterActivity() {
                         OtaDownloadWorker.clearState(applicationContext)
                         result.success(true)
                     }
+                    "openWebViewPoc" -> {
+                        try {
+                            val url = call.argument<String>("url") ?: "file:///android_asset/poc_player.html"
+                            val title = call.argument<String>("title") ?: "JessFlix WebView PoC"
+                            val intent = Intent(this@MainActivity, WebViewPlayerActivity::class.java).apply {
+                                putExtra("EXTRA_URL", url)
+                                putExtra("EXTRA_TITLE", title)
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("WEBVIEW_POC_ERROR", e.localizedMessage, null)
+                        }
+                    }
+                    "isWebViewPocSupported" -> {
+                        result.success(true)
+                    }
                     else -> {
                         result.notImplemented()
                     }
