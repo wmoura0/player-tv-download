@@ -1,11 +1,11 @@
 {
-  "version": "1.2.9",
-  "versionCode": 12,
+  "version": "1.2.10",
+  "versionCode": 13,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.9/JessFlix-v1.2.9.apk",
-  "fileSize": 58734205,
-  "sha256": "5b6daaadeb4067a74580379d5a6b5a016e6aa7567b5dad09a7bfa15a57708ecc",
-  "releaseNotes": "• Prevenção do Loop OTA: Sincronização dinâmica de versionCode via PackageManager nativo do Android, eliminando verificações e popups repetitivos de atualização.\n• Resiliência do Continuar Assistindo: Abertura direta de episódios de séries com tolerância a IDs legados, parsing robusto de temporada/episódio e contingência transparente pelo Smart Source Resolver sem bloqueios de rede.\n• Player VOD Premium: Botão 'Pular Abertura' (+85s) aprimorado nos primeiros 180 segundos com ocultação automática e transição suave.\n• Interface Otimizada para Fire TV: Remoção de controles redundantes de áudio e legendas na barra de controle e decodificação eficiente de posters para economia de memória.\n• Todas as correções críticas preservadas: Suporte ao Room/WorkManager, estabilidade R8/ProGuard e controle remoto D-Pad.",
-  "publishedAt": "2026-11-10T00:05:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.10/JessFlix-v1.2.10.apk",
+  "fileSize": 58770329,
+  "sha256": "016383e0ef2c198c549516df19d37fc4ed145611162d04ae8abb884cb45397ad",
+  "releaseNotes": "• Hotfix P0.3 — Correção Definitiva na Reprodução de Séries: Resolução da divergência de sondagem HTTP (eliminação de falso 200 len=0 quando servidor responde 404 no Media3) e recuperação inteligente de episódios reindexados no provedor.\n• Resiliência do Continuar Assistindo: Abertura instantânea de episódios a partir do histórico com fallback resiliente por temporada/episódio.\n• Laboratório Experimental: Integração nativa de Android WebView Player para testes de fontes compatíveis sem interferência no Media3/ExoPlayer.\n• Estabilidade e Desempenho Fire TV: Sincronização nativa do ciclo de vida, D-Pad otimizado e prevenção contra vazamentos de memória.",
+  "publishedAt": "2026-11-11T16:05:00.000Z",
   "mandatory": false
 }

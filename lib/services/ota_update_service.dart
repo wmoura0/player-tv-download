@@ -94,7 +94,7 @@ class OtaUpdateService extends ChangeNotifier {
   static const Duration _minCheckInterval = Duration(hours: 2);
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
-  // Versão instalada corrente (obtida dinamicamente do sistema nativo, com fallback para 1.2.9+12)
+  // Versão instalada corrente (obtida dinamicamente do sistema nativo, com fallback para 1.2.10+13)
   static String get currentVersionName => DeviceUtils.installedVersionName;
   static int get currentVersionCode => DeviceUtils.installedVersionCode;
 

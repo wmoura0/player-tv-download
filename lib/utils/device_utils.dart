@@ -8,9 +8,9 @@ class DeviceUtils {
   static bool? _cachedIsTv;
   static bool? _mockIsPipSupported;
 
-  // Versão instalada real (padrão v1.2.9+12 com sincronização dinâmica via MainActivity)
-  static int _installedVersionCode = 12;
-  static String _installedVersionName = '1.2.9';
+  // Versão instalada real (padrão v1.2.10+13 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 13;
+  static String _installedVersionName = '1.2.10';
 
   /// Versão de build (versionCode) da aplicação instalada no dispositivo.
   static int get installedVersionCode => _installedVersionCode;
