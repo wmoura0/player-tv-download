@@ -218,8 +218,10 @@ class SmartSourceResolver {
             });
           final headRes = await httpClient.send(headReq).timeout(const Duration(seconds: 2));
           final headCode = headRes.statusCode;
+          final headClHeader = headRes.headers['content-length'];
+          final isExplicitZeroHead = headClHeader != null && int.tryParse(headClHeader) == 0;
           headRes.stream.listen((_) {}).cancel().catchError((_) {});
-          if (headCode >= 200 && headCode < 400) {
+          if (headCode >= 200 && headCode < 400 && !isExplicitZeroHead) {
             return true;
           }
           return false;
@@ -230,8 +232,10 @@ class SmartSourceResolver {
         streamedResponse.stream.listen((_) {}).cancel().catchError((_) {});
       }
 
-      // Status 200..399 confirmam recurso existente
-      final isValid = (code >= 200 && code < 400);
+      // Status 200..399 confirmam recurso existente, exceto se Content-Length for explicitamente 0
+      final clHeader = streamedResponse.headers['content-length'];
+      final isExplicitZero = clHeader != null && int.tryParse(clHeader) == 0;
+      final isValid = (code >= 200 && code < 400) && !isExplicitZero;
       return isValid;
     } catch (_) {
       return false;
@@ -242,7 +246,8 @@ class SmartSourceResolver {
     }
   }
 
-  /// Tenta recuperar um episódio cuja série tenha sido reindexada pelo provedor sob um novo seriesId.
+  /// Tenta recuperar um episódio cuja série tenha sido reindexada pelo provedor sob um novo seriesId
+  /// ou cujos episódios tenham recebido novos IDs de transmissão dentro da mesma série.
   Future<SmartSourceResult?> tryRecoverReindexedEpisode({
     required XtreamCatalogService catalogService,
     required int oldSeriesId,
@@ -252,6 +257,40 @@ class SmartSourceResolver {
     http.Client? probeClient,
     Duration? timeout,
   }) async {
+    final timeoutDur = timeout ?? const Duration(seconds: 4);
+
+    // 1. PRIMEIRO PASSO: Verificar se os episódios foram reindexados dentro da própria série existente
+    if (oldSeriesId > 0) {
+      try {
+        debugPrint('[SMART SOURCE] [REINDEX] Verificando se a própria série ID=$oldSeriesId recebeu novos IDs de episódios no provedor...');
+        final freshInfo = await catalogService.fetchSeriesInfo(oldSeriesId, forceRefresh: true);
+        if (freshInfo != null && !freshInfo.isOrphanedOrStub) {
+          final refreshedEp = freshInfo.findEpisodeBySeasonAndNum(episode.seasonNumber, episode.episodeNum);
+          if (refreshedEp != null && refreshedEp.id != episode.id) {
+            final candidateUrls = generateCandidateUrls(
+              catalogService: catalogService,
+              episode: refreshedEp,
+            );
+            for (final u in candidateUrls) {
+              final ok = await probeUrl(u, client: probeClient, timeout: timeoutDur);
+              if (ok) {
+                final ext = u.split('.').last.split('?').first.toLowerCase();
+                debugPrint('[SMART SOURCE] [REINDEX SUCESSO] Episódio recuperado na mesma série! SeriesID=$oldSeriesId, Novo EpID=${refreshedEp.id}: ${UrlSanitizer.sanitize(u)}');
+                return SmartSourceResult(
+                  status: SmartSourceStatus.resolved,
+                  workingUrl: u,
+                  containerExtension: ext,
+                  recoveredEpisode: refreshedEp,
+                  recoveredSeriesId: oldSeriesId,
+                  diagnosticMessage: 'Episódio recuperado por reindexação interna na série (Novo ID: ${refreshedEp.id}).',
+                );
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     if (seriesTitle == null || seriesTitle.trim().isEmpty) return null;
 
     final targetClean = normalizeTitle(seriesTitle);
@@ -259,14 +298,14 @@ class SmartSourceResolver {
 
     debugPrint('[SMART SOURCE] Tentando recuperar episódio por reindexação da série: "$seriesTitle" (ID antigo: $oldSeriesId, S${episode.seasonNumber}:E${episode.episodeNum})');
 
-    // 1. Obtém lista atualizada da categoria (com forceRefresh para expirar cache antigo)
+    // 2. SEGUNDO PASSO: Se a série mudou de seriesId no provedor, busca por título aproximado/normalizado
     List<XtreamSeriesItem> candidateSeries = [];
     try {
       if (categoryId != null && categoryId != '0' && categoryId != 'all') {
         candidateSeries = await catalogService.fetchSeries(categoryId: categoryId, forceRefresh: true);
       }
       if (candidateSeries.isEmpty) {
-        candidateSeries = await catalogService.fetchSeries(categoryId: 'all');
+        candidateSeries = await catalogService.fetchSeries(categoryId: 'all', forceRefresh: true);
       }
     } catch (_) {}
 
@@ -291,10 +330,10 @@ class SmartSourceResolver {
         );
 
         for (final u in candidateUrls) {
-          final ok = await probeUrl(u, client: probeClient, timeout: timeout ?? const Duration(seconds: 4));
+          final ok = await probeUrl(u, client: probeClient, timeout: timeoutDur);
           if (ok) {
             final ext = u.split('.').last.split('?').first.toLowerCase();
-            debugPrint('[SMART SOURCE] [REINDEX SUCESSO] Episódio recuperado com sucesso! Novo SeriesID=${matched.seriesId}, Novo EpID=${newEp.id}: ${UrlSanitizer.sanitize(u)}');
+            debugPrint('[SMART SOURCE] [REINDEX SUCESSO] Episódio recuperado em série reindexada! Novo SeriesID=${matched.seriesId}, Novo EpID=${newEp.id}: ${UrlSanitizer.sanitize(u)}');
             return SmartSourceResult(
               status: SmartSourceStatus.resolved,
               workingUrl: u,

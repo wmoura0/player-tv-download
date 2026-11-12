@@ -214,6 +214,37 @@ class MainActivity : FlutterActivity() {
                                 result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado em $filePath", null)
                             } else {
                                 try {
+                                    // Validação forense preventiva contra downgrade ou APK corrompido
+                                    val archiveInfo = packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+                                    if (archiveInfo == null) {
+                                        file.delete()
+                                        OtaDownloadWorker.clearState(applicationContext)
+                                        result.error("CORRUPT_APK", "O arquivo APK baixado está corrompido ou é inválido.", null)
+                                        return@setMethodCallHandler
+                                    }
+
+                                    val currentCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                        packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        packageManager.getPackageInfo(packageName, 0).versionCode
+                                    }
+
+                                    val apkCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                        archiveInfo.longVersionCode.toInt()
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        archiveInfo.versionCode
+                                    }
+
+                                    if (apkCode <= currentCode) {
+                                        android.util.Log.w("JessFlix_OTA", "Tentativa de instalar APK com versionCode ($apkCode) <= atual ($currentCode). Descartando arquivo legado.")
+                                        file.delete()
+                                        OtaDownloadWorker.clearState(applicationContext)
+                                        result.error("DOWNGRADE_PREVENTED", "APK com versão ($apkCode) igual ou inferior à instalada ($currentCode).", null)
+                                        return@setMethodCallHandler
+                                    }
+
                                     val uri = FileProvider.getUriForFile(
                                         this@MainActivity,
                                         "${packageName}.fileprovider",
@@ -247,7 +278,9 @@ class MainActivity : FlutterActivity() {
                                 status = "DOWNLOADING",
                                 progress = 0f,
                                 bytesDownloaded = 0L,
-                                totalBytes = fileSize
+                                totalBytes = fileSize,
+                                versionCode = versionCode,
+                                versionName = versionName
                             )
 
                             val data = Data.Builder()
@@ -277,12 +310,53 @@ class MainActivity : FlutterActivity() {
                     }
                     "getOtaDownloadStatus" -> {
                         val prefs = getSharedPreferences(OtaDownloadWorker.PREFS_NAME, Context.MODE_PRIVATE)
-                        val status = prefs.getString(OtaDownloadWorker.KEY_STATUS, "IDLE") ?: "IDLE"
+                        var status = prefs.getString(OtaDownloadWorker.KEY_STATUS, "IDLE") ?: "IDLE"
                         val progress = prefs.getFloat(OtaDownloadWorker.KEY_PROGRESS, 0f).toDouble()
                         val bytesDownloaded = prefs.getLong(OtaDownloadWorker.KEY_BYTES_DOWNLOADED, 0L)
                         val totalBytes = prefs.getLong(OtaDownloadWorker.KEY_TOTAL_BYTES, 0L)
-                        val apkPath = prefs.getString(OtaDownloadWorker.KEY_APK_PATH, null)
+                        var apkPath = prefs.getString(OtaDownloadWorker.KEY_APK_PATH, null)
                         val errorMessage = prefs.getString(OtaDownloadWorker.KEY_ERROR_MESSAGE, null)
+                        val targetVersionCode = prefs.getInt(OtaDownloadWorker.KEY_VERSION_CODE, 0)
+                        val targetVersionName = prefs.getString(OtaDownloadWorker.KEY_VERSION_NAME, null)
+
+                        // Se o status nativo persistido for READY_TO_INSTALL, inspeciona o APK real em disco
+                        if (status == "READY_TO_INSTALL" && apkPath != null) {
+                            val f = File(apkPath)
+                            if (!f.exists()) {
+                                OtaDownloadWorker.clearState(applicationContext)
+                                status = "IDLE"
+                                apkPath = null
+                            } else {
+                                val currentCode = try {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                        packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        packageManager.getPackageInfo(packageName, 0).versionCode
+                                    }
+                                } catch (_: Exception) { 0 }
+
+                                val archiveInfo = packageManager.getPackageArchiveInfo(f.absolutePath, 0)
+                                val apkCode = if (archiveInfo != null) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                        archiveInfo.longVersionCode.toInt()
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        archiveInfo.versionCode
+                                    }
+                                } else {
+                                    0
+                                }
+
+                                if (apkCode <= currentCode) {
+                                    // Arquivo legado/antigo! Exclui do disco e reseta estado para IDLE
+                                    f.delete()
+                                    OtaDownloadWorker.clearState(applicationContext)
+                                    status = "IDLE"
+                                    apkPath = null
+                                }
+                            }
+                        }
 
                         val map = mapOf(
                             "status" to status,
@@ -290,7 +364,9 @@ class MainActivity : FlutterActivity() {
                             "bytesDownloaded" to bytesDownloaded,
                             "totalBytes" to totalBytes,
                             "apkPath" to apkPath,
-                            "errorMessage" to errorMessage
+                            "errorMessage" to errorMessage,
+                            "versionCode" to targetVersionCode,
+                            "versionName" to targetVersionName
                         )
                         result.success(map)
                     }

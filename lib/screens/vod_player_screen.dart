@@ -402,8 +402,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
       final isAuthOrForbidden = details.isAuthOrForbidden;
 
-      if (!isAuthOrForbidden && !isTimeout && (_currentUrlIndex + 1 < widget.streamUrls.length)) {
-        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller do filme; tentando URL de contingência ${_currentUrlIndex + 1}.');
+      if (!isAuthOrForbidden && !isTimeout) {
+        if (_currentUrlIndex + 1 < widget.streamUrls.length) {
+          PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller do filme; tentando URL de contingência ${_currentUrlIndex + 1}.');
+        }
         _handleConnectionError(errorDesc, epoch: _connectionEpoch);
         return;
       }

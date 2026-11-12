@@ -550,9 +550,12 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
       final isAuthOrForbidden = details.isAuthOrForbidden;
 
-      if (!_isExiting && !isAuthOrForbidden && !isTimeout && (_currentUrlIndex + 1 < _streamUrls.length)) {
-        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
-        _handleConnectionError(errorDesc, epoch: _connectionEpoch, initialPosition: c.value.position);
+      if (!_isExiting && !isAuthOrForbidden && !isTimeout) {
+        final effectiveResumption = _resumptionTarget ?? (c.value.position > Duration.zero ? c.value.position : null);
+        if (_currentUrlIndex + 1 < _streamUrls.length) {
+          PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
+        }
+        _handleConnectionError(errorDesc, epoch: _connectionEpoch, initialPosition: effectiveResumption);
         return;
       }
 

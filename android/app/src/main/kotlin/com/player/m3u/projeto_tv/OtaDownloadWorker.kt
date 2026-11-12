@@ -74,7 +74,9 @@ class OtaDownloadWorker(
             bytesDownloaded: Long = 0L,
             totalBytes: Long = 0L,
             apkPath: String? = null,
-            errorMessage: String? = null
+            errorMessage: String? = null,
+            versionCode: Int? = null,
+            versionName: String? = null
         ) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().apply {
@@ -84,6 +86,8 @@ class OtaDownloadWorker(
                 putLong(KEY_TOTAL_BYTES, totalBytes)
                 if (apkPath != null) putString(KEY_APK_PATH, apkPath)
                 if (errorMessage != null) putString(KEY_ERROR_MESSAGE, errorMessage) else remove(KEY_ERROR_MESSAGE)
+                if (versionCode != null && versionCode > 0) putInt(KEY_VERSION_CODE, versionCode)
+                if (versionName != null && versionName.isNotBlank()) putString(KEY_VERSION_NAME, versionName)
                 apply()
             }
         }
@@ -125,7 +129,9 @@ class OtaDownloadWorker(
                     progress = 1.0f,
                     bytesDownloaded = expectedSize,
                     totalBytes = expectedSize,
-                    apkPath = finalApkFile.absolutePath
+                    apkPath = finalApkFile.absolutePath,
+                    versionCode = targetVersionCode,
+                    versionName = targetVersionName
                 )
                 return@withContext Result.success()
             }
@@ -349,7 +355,9 @@ class OtaDownloadWorker(
                 progress = 1.0f,
                 bytesDownloaded = expectedSize,
                 totalBytes = expectedSize,
-                apkPath = finalApkFile.absolutePath
+                apkPath = finalApkFile.absolutePath,
+                versionCode = targetVersionCode,
+                versionName = targetVersionName
             )
 
             showReadyNotification(targetVersionName)

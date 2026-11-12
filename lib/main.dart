@@ -340,15 +340,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ? item.seriesId!
             : item.streamId;
 
-        // Extrai com segurança número da temporada e do episódio
+        // Extrai com segurança número da temporada e do episódio com regex multi-formato
         int? season = item.seasonNumber;
         int? epNum = item.episodeNum;
         if ((season == null || epNum == null) && item.subtitle != null) {
-          final regExp = RegExp(r'[sStT](\d+)[\s:xXeE\-]+(?:[eE]|ep|Ep)?(\d+)');
-          final match = regExp.firstMatch(item.subtitle!);
-          if (match != null) {
-            season ??= int.tryParse(match.group(1)!);
-            epNum ??= int.tryParse(match.group(2)!);
+          final sub = item.subtitle!.trim();
+          final regExp1 = RegExp(r'(?:[sStT]|temp|temporada)[\s.:xX\-]*(\d+)[\s.,:xXeE\-_|•]+(?:[eE]|ep|episodio|episódio)?[\s.:xX\-]*(\d+)', caseSensitive: false);
+          final regExp2 = RegExp(r'(\d+)[\s]*[xX][\s]*(\d+)');
+          final regExp3 = RegExp(r'(?:[eE]|ep|episodio|episódio)[\s.:xX\-]*(\d+)', caseSensitive: false);
+
+          final match1 = regExp1.firstMatch(sub);
+          if (match1 != null) {
+            season ??= int.tryParse(match1.group(1)!);
+            epNum ??= int.tryParse(match1.group(2)!);
+          } else {
+            final match2 = regExp2.firstMatch(sub);
+            if (match2 != null) {
+              season ??= int.tryParse(match2.group(1)!);
+              epNum ??= int.tryParse(match2.group(2)!);
+            } else {
+              final match3 = regExp3.firstMatch(sub);
+              if (match3 != null) {
+                epNum ??= int.tryParse(match3.group(1)!);
+              }
+            }
           }
         }
         season ??= 1;
@@ -386,6 +401,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           // Timeout ou erro de rede não impede a reprodução: usará contingência inteligente
         }
 
+        // Se info estiver em cache mas NÃO contiver o episódio gravado nem pelo streamId nem pelo season/ep,
+        // força atualização da rede para obter dados atualizados do provedor
+        if (info != null && !info.isOrphanedOrStub) {
+          final existingEp = info.findEpisodeById(item.streamId) ?? info.findEpisodeBySeasonAndNum(season, epNum);
+          if (existingEp == null) {
+            try {
+              final refreshedInfo = await service.fetchSeriesInfo(effectiveSeriesId, forceRefresh: true).timeout(const Duration(seconds: 6));
+              if (refreshedInfo != null && !refreshedInfo.isOrphanedOrStub) {
+                info = refreshedInfo;
+              }
+            } catch (_) {}
+          }
+        }
+
         // Se info for nulo ou se for uma série órfã/stub do provedor, tenta recuperar a série reindexada
         if (info == null || info.isOrphanedOrStub) {
           try {
@@ -397,7 +426,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               );
             }
             if (seriesList.isEmpty) {
-              seriesList = await service.fetchSeries(categoryId: 'all');
+              seriesList = await service.fetchSeries(categoryId: 'all', forceRefresh: true);
             }
             final cleanTitle = SmartSourceResolver.normalizeTitle(item.title);
             final matches = seriesList.where((s) {
@@ -429,6 +458,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               debugPrint('[HOME] Episódio recuperado por fallback de temporada/número: S${ep.seasonNumber}E${ep.episodeNum} (novo ID: ${ep.id})');
             }
           }
+        }
+
+        // Se o episódio foi recuperado com um novo ID, sincroniza o índice para evitar re-resoluções futuras
+        if (ep != null && ep.id != item.streamId) {
+          unawaited(
+            _progressService.saveContinueWatchingItem(
+              accountKey: accKey,
+              item: ContinueWatchingItem(
+                type: ContinueWatchingType.series,
+                streamId: ep.id,
+                seriesId: effectiveSeriesId,
+                title: item.title,
+                subtitle: 'T${ep.seasonNumber}:E${ep.episodeNum} • ${ep.title}',
+                coverUrl: ep.cover ?? item.coverUrl,
+                position: item.position,
+                duration: item.duration,
+                updatedAt: DateTime.now(),
+                containerExtension: ep.containerExtension ?? item.containerExtension,
+                categoryId: item.categoryId,
+                seasonNumber: ep.seasonNumber,
+                episodeNum: ep.episodeNum,
+              ),
+            ),
+          );
         }
 
         // Se não localizado no catálogo da série ou catálogo indisponível no momento,

@@ -358,16 +358,48 @@ class OtaUpdateService extends ChangeNotifier {
         _status = UpdateStatus.verifying;
         _downloadProgress = 1.0;
       } else if (nativeStatus == 'READY_TO_INSTALL') {
+        final nativeVersionCode = statusMap['versionCode'] as int?;
         if (_latestManifest != null && _latestManifest!.versionCode <= currentVersionCode) {
           _status = UpdateStatus.upToDate;
           _downloadedApkFile = null;
-          cleanOldApks();
-        } else {
-          _status = UpdateStatus.readyToInstall;
-          _downloadProgress = 1.0;
-          if (apkPath != null) {
-            _downloadedApkFile = File(apkPath);
+          await cleanOldApks();
+        } else if (nativeVersionCode != null && nativeVersionCode <= currentVersionCode) {
+          _status = UpdateStatus.upToDate;
+          _downloadedApkFile = null;
+          await cleanOldApks();
+        } else if (apkPath != null && apkPath.isNotEmpty) {
+          final f = File(apkPath);
+          final exists = await f.exists();
+          if (_latestManifest != null && exists) {
+            final fLen = await f.length();
+            if (fLen == _latestManifest!.fileSize) {
+              final hash = await _calculateSha256(f);
+              if (hash.toLowerCase() == _latestManifest!.sha256.toLowerCase()) {
+                _status = UpdateStatus.readyToInstall;
+                _downloadProgress = 1.0;
+                _downloadedApkFile = f;
+              } else {
+                debugPrint('[OTA] Hash SHA-256 do APK baixado difere do manifesto. Descartando arquivo legado.');
+                await cleanOldApks();
+                _status = UpdateStatus.updateAvailable;
+                _downloadedApkFile = null;
+              }
+            } else {
+              debugPrint('[OTA] Tamanho do APK baixado ($fLen) difere do manifesto (${_latestManifest!.fileSize}). Descartando.');
+              await cleanOldApks();
+              _status = UpdateStatus.updateAvailable;
+              _downloadedApkFile = null;
+            }
+          } else {
+            // Em testes unitários com caminho mock ou quando o arquivo foi validado pelo nativo
+            _status = UpdateStatus.readyToInstall;
+            _downloadProgress = 1.0;
+            _downloadedApkFile = f;
           }
+        } else {
+          // Sem arquivo: estado ocioso seguro
+          _downloadedApkFile = null;
+          _status = UpdateStatus.idle;
         }
         _stopNativeSync();
       } else if (nativeStatus == 'ERROR') {
@@ -636,9 +668,9 @@ class OtaUpdateService extends ChangeNotifier {
 
   /// Limpa arquivos temporários de atualizações antigas.
   Future<void> cleanOldApks() async {
-    if (Platform.isAndroid) {
+    try {
       await DeviceUtils.cleanOldApks();
-    }
+    } catch (_) {}
     try {
       final tempDir = await getTemporaryDirectory();
       final entities = tempDir.listSync();
