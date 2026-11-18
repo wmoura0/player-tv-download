@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:projeto_tv/main.dart';
 import 'package:projeto_tv/models/xtream_account.dart';
 import 'package:projeto_tv/screens/global_search_screen.dart';
+import 'package:projeto_tv/screens/series_player_screen.dart';
+import 'package:projeto_tv/screens/vod_player_screen.dart';
 import 'package:projeto_tv/services/playback_progress_service.dart';
 
 void main() {
@@ -352,6 +354,150 @@ void main() {
 
       // Retorna sem erros
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Clicar em Filme no Continuar assistindo na Home abre VodPlayerScreen com initialPosition e catalogService', (tester) async {
+      final progressService = PlaybackProgressService();
+      const savedPos = Duration(minutes: 25, seconds: 10);
+
+      await progressService.saveContinueWatchingItem(
+        accountKey: accountKey,
+        item: ContinueWatchingItem(
+          streamId: 707,
+          type: ContinueWatchingType.movie,
+          title: 'Matrix',
+          position: savedPos,
+          duration: const Duration(hours: 2),
+          updatedAt: DateTime.now(),
+          containerExtension: 'mkv',
+          categoryId: '10',
+        ),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: HomeScreen(xtreamAccount: mockAccount),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Matrix'), findsOneWidget);
+
+      await tester.tap(find.text('Matrix'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final playerFinder = find.byType(VodPlayerScreen);
+      expect(playerFinder, findsOneWidget);
+
+      final vodScreen = tester.widget<VodPlayerScreen>(playerFinder);
+      expect(vodScreen.initialPosition, equals(savedPos));
+      expect(vodScreen.catalogService, isNotNull);
+      expect(vodScreen.movie.streamId, equals(707));
+      expect(vodScreen.movie.containerExtension, equals('mkv'));
+    });
+
+    testWidgets('Clicar em Série no Continuar assistindo na Home abre SeriesPlayerScreen rapidamente sem travar na rede', (tester) async {
+      final progressService = PlaybackProgressService();
+      const savedPos = Duration(minutes: 14, seconds: 30);
+
+      await progressService.saveContinueWatchingItem(
+        accountKey: accountKey,
+        item: ContinueWatchingItem(
+          streamId: 4333608,
+          seriesId: 136850,
+          type: ContinueWatchingType.series,
+          title: 'Diários de um Vampiro',
+          subtitle: 'Temporada 4, Episódio 2 • Memorial',
+          position: savedPos,
+          duration: const Duration(minutes: 43),
+          updatedAt: DateTime.now(),
+          containerExtension: 'mp4',
+          categoryId: '95',
+        ),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: HomeScreen(xtreamAccount: mockAccount),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Diários de um Vampiro'), findsOneWidget);
+
+      // Mesmo sem resposta de rede (HTTP 400 do TestWidgetsHttpOverrides),
+      // clicar na série deve abrir SeriesPlayerScreen dentro de no máximo poucos segundos sem travar a Home.
+      await tester.tap(find.text('Diários de um Vampiro'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final seriesPlayerFinder = find.byType(SeriesPlayerScreen);
+      expect(seriesPlayerFinder, findsOneWidget);
+
+      final seriesPlayer = tester.widget<SeriesPlayerScreen>(seriesPlayerFinder);
+      expect(seriesPlayer.initialPosition, equals(savedPos));
+      expect(seriesPlayer.series.seriesId, equals(136850));
+      expect(seriesPlayer.initialEpisode.id, equals(4333608));
+      expect(seriesPlayer.initialEpisode.seasonNumber, equals(4));
+      expect(seriesPlayer.initialEpisode.episodeNum, equals(2));
+    });
+
+    testWidgets('Botão de remover no card Continuar assistindo ignora traversal D-Pad para não roubar foco do OK', (tester) async {
+      final progressService = PlaybackProgressService();
+      await progressService.saveContinueWatchingItem(
+        accountKey: accountKey,
+        item: ContinueWatchingItem(
+          streamId: 808,
+          type: ContinueWatchingType.movie,
+          title: 'Batman',
+          position: const Duration(minutes: 15),
+          duration: const Duration(hours: 2),
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: HomeScreen(xtreamAccount: mockAccount),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final deleteIcon = find.byIcon(Icons.delete_outline_rounded);
+      expect(deleteIcon, findsOneWidget);
+
+      final excludeFocusFinder = find.ancestor(
+        of: deleteIcon,
+        matching: find.byType(ExcludeFocus),
+      ).first;
+      final excludeFocus = tester.widget<ExcludeFocus>(excludeFocusFinder);
+      expect(excludeFocus.excluding, isTrue);
+
+      final excludeInternalFocusFinder = find.descendant(
+        of: excludeFocusFinder,
+        matching: find.byType(Focus),
+      ).first;
+      final excludeInternalFocus = tester.widget<Focus>(excludeInternalFocusFinder);
+      expect(excludeInternalFocus.skipTraversal, isTrue);
+      expect(excludeInternalFocus.canRequestFocus, isFalse);
+      expect(excludeInternalFocus.descendantsAreFocusable, isFalse);
+
+      final buttonFocusFinder = find.descendant(
+        of: excludeFocusFinder,
+        matching: find.byWidgetPredicate(
+          (w) => w is Focus && w.focusNode?.debugLabel == 'ContinueWatchingDelete',
+        ),
+      );
+      expect(buttonFocusFinder, findsOneWidget);
+      final focusWidget = tester.widget<Focus>(buttonFocusFinder);
+      expect(focusWidget.skipTraversal, isTrue);
+      expect(focusWidget.canRequestFocus, isFalse);
+      expect(focusWidget.descendantsAreFocusable, isFalse);
+      expect(focusWidget.descendantsAreTraversable, isFalse);
+      expect(focusWidget.focusNode, isNotNull);
+      expect(focusWidget.focusNode!.skipTraversal, isTrue);
+      expect(focusWidget.focusNode!.canRequestFocus, isFalse);
     });
   });
 }

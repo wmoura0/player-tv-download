@@ -6,7 +6,9 @@ import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
 import '../services/settings_service.dart';
+import '../services/smart_source_resolver.dart';
 import '../services/url_sanitizer.dart';
+import '../services/xtream_catalog_service.dart';
 import '../utils/device_utils.dart';
 import '../widgets/live_player_view.dart'; // Para reutilizar LiveVideoFitMode
 import '../widgets/vod_player_view.dart';
@@ -20,6 +22,7 @@ class VodPlayerScreen extends StatefulWidget {
   final String accountKey;
   final Duration? initialPosition;
   final VideoPlayerController? testController;
+  final XtreamCatalogService? catalogService;
 
   const VodPlayerScreen({
     super.key,
@@ -28,6 +31,7 @@ class VodPlayerScreen extends StatefulWidget {
     required this.accountKey,
     this.initialPosition,
     this.testController,
+    this.catalogService,
   });
 
   @override
@@ -36,6 +40,8 @@ class VodPlayerScreen extends StatefulWidget {
 
 class _VodPlayerScreenState extends State<VodPlayerScreen>
     with WidgetsBindingObserver {
+  late XtreamVodStream _currentMovie;
+  late List<String> _streamUrls;
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
   late final PlaybackMetrics _metrics;
@@ -45,6 +51,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   bool _isSeekingToInitial = false;
   bool _isExiting = false;
   String? _errorMessage;
+  String? _smartSourceStatusMessage;
+  bool _smartSourceAttempted = false;
   int _currentUrlIndex = 0;
   Timer? _initialBufferingWatchdog;
   int _connectionEpoch = 0;
@@ -59,6 +67,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _currentMovie = widget.movie;
+    _streamUrls = List<String>.from(widget.streamUrls);
     DeviceUtils.setVideoOrientation();
     DeviceUtils.setKeepScreenOn(true);
 
@@ -67,7 +77,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
     _metrics = PlaybackMetrics(
       mediaType: PlaybackMediaType.movie,
-      title: widget.movie.name,
+      title: _currentMovie.name,
     );
     _metrics.markRequestStart();
 
@@ -157,18 +167,19 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
     // Proteção absoluta: NUNCA sobrescrever posição anterior válida se a reprodução atual não avançou (menos de 5s).
     // Preserva o progresso salvo mesmo quando force == true (saída rápida ou falha de inicialização).
-    if (widget.initialPosition != null &&
-        widget.initialPosition!.inSeconds >= 10 &&
+    final resumptionRef = _resumptionTarget ?? widget.initialPosition;
+    if (resumptionRef != null &&
+        resumptionRef.inSeconds >= 10 &&
         pos.inSeconds < 5) {
-      debugPrint('[VOD PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(widget.initialPosition!)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
+      debugPrint('[VOD PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(resumptionRef)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
       return;
     }
 
     if (dur > Duration.zero && (pos.inSeconds >= 5 || force)) {
-      debugPrint('[VOD PLAYER] [PROGRESSO] Salvando progresso: streamId=${widget.movie.streamId}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
+      debugPrint('[VOD PLAYER] [PROGRESSO] Salvando progresso: streamId=${_currentMovie.streamId}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveProgress(
         accountKey: widget.accountKey,
-        streamId: widget.movie.streamId,
+        streamId: _currentMovie.streamId,
         position: pos,
         duration: dur,
       );
@@ -176,15 +187,15 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       await _progressService.saveContinueWatchingItem(
         accountKey: widget.accountKey,
         item: ContinueWatchingItem(
-          streamId: widget.movie.streamId,
+          streamId: _currentMovie.streamId,
           type: ContinueWatchingType.movie,
-          title: widget.movie.name,
-          coverUrl: widget.movie.streamIcon,
+          title: _currentMovie.name,
+          coverUrl: _currentMovie.streamIcon,
           position: pos,
           duration: dur,
           updatedAt: DateTime.now(),
-          containerExtension: widget.movie.containerExtension,
-          categoryId: widget.movie.categoryId,
+          containerExtension: _currentMovie.containerExtension,
+          categoryId: _currentMovie.categoryId,
         ),
       );
     }
@@ -208,13 +219,19 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   }
 
   Future<void> _initPlayer() async {
-    _resumptionTarget = widget.initialPosition;
+    _resumptionTarget ??= widget.initialPosition;
     _seekAttempted = false;
+    _smartSourceAttempted = false;
+    _smartSourceStatusMessage = null;
 
-    debugPrint('[VOD PLAYER] Início de fluxo: streamId=${widget.movie.streamId}, título="${widget.movie.name}"');
-    debugPrint('[VOD PLAYER] Posição de retomada solicitada: ${widget.initialPosition != null ? PlaybackProgressService.formatDuration(widget.initialPosition!) : 'Início (00:00)'}');
+    if (_streamUrls.isEmpty && widget.catalogService != null) {
+      _streamUrls = widget.catalogService!.buildVodStreamUrls(_currentMovie);
+    }
 
-    if (widget.streamUrls.isEmpty) {
+    debugPrint('[VOD PLAYER] Início de fluxo: streamId=${_currentMovie.streamId}, título="${_currentMovie.name}"');
+    debugPrint('[VOD PLAYER] Posição de retomada solicitada: ${_resumptionTarget != null ? PlaybackProgressService.formatDuration(_resumptionTarget!) : 'Início (00:00)'}');
+
+    if (_streamUrls.isEmpty) {
       setState(() {
         _isLoading = false;
         _errorMessage = 'Nenhum endereço de transmissão disponível para este filme.';
@@ -222,7 +239,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       return;
     }
 
-    await _connectToUrl(widget.streamUrls[_currentUrlIndex]);
+    await _connectToUrl(_streamUrls[_currentUrlIndex]);
   }
 
   Future<void> _connectToUrl(String url) async {
@@ -237,7 +254,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     });
 
     final sanitizedUrl = UrlSanitizer.sanitize(url);
-    PlayerDiagnostics.log('REQUEST', 'Tipo=FILME, ID=${widget.movie.streamId}, Nome="${widget.movie.name}", Extensão="${widget.movie.containerExtension}", Rota=${_currentUrlIndex + 1}/${widget.streamUrls.length}');
+    PlayerDiagnostics.log('REQUEST', 'Tipo=FILME, ID=${_currentMovie.streamId}, Nome="${_currentMovie.name}", Extensão="${_currentMovie.containerExtension}", Rota=${_currentUrlIndex + 1}/${_streamUrls.length}');
     PlayerDiagnostics.log('MEDIA_ITEM', 'URL: $sanitizedUrl');
     PlayerDiagnostics.log('PREPARE', 'Iniciando controller.initialize() [timeout=25s]');
 
@@ -260,6 +277,16 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
       if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
 
+      // Atualiza extensão real conectada para futuras retomadas na Home
+      final pathPart = Uri.tryParse(url)?.path ?? url;
+      final extMatch = RegExp(r'\.(mp4|mkv|ts|avi|m3u8)$', caseSensitive: false).firstMatch(pathPart);
+      if (extMatch != null) {
+        final activeExt = extMatch.group(1)!.toLowerCase();
+        if (_currentMovie.containerExtension != activeExt) {
+          _currentMovie = _currentMovie.copyWith(containerExtension: activeExt);
+        }
+      }
+
       _metrics.markConnectionEstablished();
       _metrics.markPlayerInitialized();
 
@@ -274,19 +301,24 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
 
       // 3. Aplica seekTo se houver posição inicial para continuar de onde parou
-      if (widget.initialPosition != null && widget.initialPosition! > Duration.zero) {
-        Duration target = widget.initialPosition!;
+      final effectiveInitialPos = _resumptionTarget ?? widget.initialPosition;
+      if (effectiveInitialPos != null && effectiveInitialPos > Duration.zero) {
+        Duration target = effectiveInitialPos;
         if (detectedDur > Duration.zero && target >= detectedDur) {
           final safeTarget = detectedDur - const Duration(seconds: 10);
           target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
         }
+        _resumptionTarget = target;
 
         if (target > Duration.zero) {
           _isSeekingToInitial = true;
           _seekAttempted = true;
-          debugPrint('[VOD PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(widget.initialPosition!)})...');
+          debugPrint('[VOD PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(effectiveInitialPos)})...');
           try {
             await controller.seekTo(target);
+            if (!controller.value.isPlaying) {
+              await controller.play();
+            }
             debugPrint('[VOD PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[VOD PLAYER] [SEEK] Aviso: erro no seek inicial ($seekError). Reproduzindo do início.');
@@ -318,7 +350,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
     final canTryAlternative = !isAuthOrForbidden &&
         !isTimeout &&
-        (_currentUrlIndex + 1 < widget.streamUrls.length);
+        (_currentUrlIndex + 1 < _streamUrls.length);
 
     if (canTryAlternative) {
       _currentUrlIndex++;
@@ -328,15 +360,94 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       );
 
       // Sondagem assíncrona em background para telemetria
-      PlayerDiagnostics.probeStreamUrl(widget.streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
+      PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
           .then((p) => PlayerDiagnostics.logDiagnosticDetails(PlayerDiagnostics.analyzeError(e, probe: p)))
           .catchError((_) => null);
 
-      await _connectToUrl(widget.streamUrls[_currentUrlIndex]);
+      await _connectToUrl(_streamUrls[_currentUrlIndex]);
       return;
     }
 
-    final probe = await PlayerDiagnostics.probeStreamUrl(widget.streamUrls[_currentUrlIndex]);
+    // Recuperação inteligente de filme via SmartSourceResolver (descobre extensão via get_vod_info ou filme reindexado)
+    if (!_smartSourceAttempted &&
+        widget.catalogService != null &&
+        SettingsService.instance.enableSmartSource &&
+        !isAuthOrForbidden &&
+        !isTimeout) {
+      _smartSourceAttempted = true;
+      setState(() {
+        _isLoading = true;
+        _smartSourceStatusMessage = 'Recuperando fonte do filme (Smart Source)...';
+      });
+
+      PlayerDiagnostics.log('SMART_SOURCE', 'Iniciando resolução inteligente VOD para "${_currentMovie.name}" (streamId=${_currentMovie.streamId}).');
+      final result = await SmartSourceResolver.instance.resolveBestVodSource(
+        catalogService: widget.catalogService!,
+        movie: _currentMovie,
+        onProgressMessage: (msg) {
+          if (mounted && epoch == _connectionEpoch) {
+            setState(() => _smartSourceStatusMessage = msg);
+          }
+        },
+      );
+
+      if (!mounted || epoch != _connectionEpoch) return;
+
+      if (result.isSuccess && result.workingUrl != null) {
+        setState(() {
+          _smartSourceStatusMessage = null;
+        });
+
+        final recoveredId = (result.recoveredSeriesId != null && result.recoveredSeriesId! > 0)
+            ? result.recoveredSeriesId!
+            : _currentMovie.streamId;
+        final recoveredExt = result.containerExtension ?? _currentMovie.containerExtension;
+
+        if (recoveredId != _currentMovie.streamId || recoveredExt != _currentMovie.containerExtension) {
+          _currentMovie = _currentMovie.copyWith(
+            streamId: recoveredId,
+            containerExtension: recoveredExt,
+          );
+          final posToKeep = _resumptionTarget ?? widget.initialPosition ?? Duration.zero;
+          if (posToKeep.inSeconds >= 10) {
+            unawaited(
+              _progressService.saveContinueWatchingItem(
+                accountKey: widget.accountKey,
+                item: ContinueWatchingItem(
+                  streamId: _currentMovie.streamId,
+                  type: ContinueWatchingType.movie,
+                  title: _currentMovie.name,
+                  coverUrl: _currentMovie.streamIcon,
+                  position: posToKeep,
+                  duration: const Duration(hours: 2),
+                  updatedAt: DateTime.now(),
+                  containerExtension: _currentMovie.containerExtension,
+                  categoryId: _currentMovie.categoryId,
+                ),
+              ),
+            );
+          }
+        }
+
+        PlayerDiagnostics.log('SMART_SOURCE', 'Fonte VOD resolvida com sucesso: ${UrlSanitizer.sanitize(result.workingUrl!)}');
+        await _connectToUrl(result.workingUrl!);
+        return;
+      }
+
+      final failureMsg = result.diagnosticMessage ?? quickDetails.shortUiMessage;
+      _metrics.markError(failureMsg);
+      setState(() {
+        _isLoading = false;
+        _isBuffering = false;
+        _smartSourceStatusMessage = null;
+        _errorMessage = failureMsg;
+      });
+      return;
+    }
+
+    final probe = _streamUrls.isNotEmpty
+        ? await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)])
+        : const HttpProbeResult(elapsedMs: 0);
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
     PlayerDiagnostics.log('ERROR', 'Falha na reprodução do filme: ${details.technicalSummary}');
@@ -354,6 +465,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     setState(() {
       _isLoading = false;
       _isBuffering = false;
+      _smartSourceStatusMessage = null;
       _errorMessage = userMessage;
     });
   }
@@ -403,7 +515,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       final isAuthOrForbidden = details.isAuthOrForbidden;
 
       if (!isAuthOrForbidden && !isTimeout) {
-        if (_currentUrlIndex + 1 < widget.streamUrls.length) {
+        if (_currentUrlIndex + 1 < _streamUrls.length) {
           PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller do filme; tentando URL de contingência ${_currentUrlIndex + 1}.');
         }
         _handleConnectionError(errorDesc, epoch: _connectionEpoch);
@@ -419,10 +531,14 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       // Confirmação segura de primeiro quadro / avanço real de reprodução
       bool hasAdvanced = false;
       if (_seekAttempted && _resumptionTarget != null && _resumptionTarget! > Duration.zero) {
+        final minExpectedPos = _resumptionTarget! > const Duration(seconds: 12)
+            ? _resumptionTarget! - const Duration(seconds: 12)
+            : Duration.zero;
         hasAdvanced = val.isPlaying &&
                       !val.isBuffering &&
                       !_isSeekingToInitial &&
-                      val.position >= _resumptionTarget!;
+                      val.position >= minExpectedPos &&
+                      val.position > Duration.zero;
       } else {
         hasAdvanced = val.isPlaying &&
                       !val.isBuffering &&
@@ -502,20 +618,24 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         backgroundColor: Colors.black,
         body: VodPlayerView(
           controller: _controller,
-          title: widget.movie.name,
-          coverUrl: widget.movie.streamIcon,
+          title: _currentMovie.name,
+          coverUrl: _currentMovie.streamIcon,
           isSeriesEpisode: false,
+          loadingMessage: _smartSourceStatusMessage ?? 'Carregando filme...',
           fitMode: _fitMode,
           onFitModeChanged: (mode) => setState(() => _fitMode = mode),
           onTogglePlayPause: _togglePlayPause,
           onSeekRelative: _seekRelative,
           onSeekFraction: _seekToFraction,
           onBack: _handleExit,
-          isLoading: _isLoading,
+          isLoading: _isLoading || _smartSourceStatusMessage != null,
           isBuffering: _isBuffering,
           errorMessage: _errorMessage,
           onRetry: () {
             _currentUrlIndex = 0;
+            _smartSourceAttempted = false;
+            _smartSourceStatusMessage = null;
+            _resumptionTarget ??= widget.initialPosition;
             _initPlayer();
           },
         ),

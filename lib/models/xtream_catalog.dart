@@ -153,6 +153,7 @@ class XtreamVodStream {
     double? rating5based,
     String? categoryId,
     String? containerExtension,
+    String? directSource,
     DateTime? addedDate,
   }) {
     return XtreamVodStream(
@@ -164,6 +165,7 @@ class XtreamVodStream {
       rating5based: rating5based ?? this.rating5based,
       categoryId: categoryId ?? this.categoryId,
       containerExtension: containerExtension ?? this.containerExtension,
+      directSource: directSource ?? this.directSource,
       addedDate: addedDate ?? this.addedDate,
     );
   }

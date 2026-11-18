@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
+import '../models/xtream_vod_info.dart';
 import 'settings_service.dart';
 import 'url_sanitizer.dart';
 import 'xtream_auth_service.dart';
@@ -437,6 +438,144 @@ class SmartSourceResolver {
       attemptsCount: candidates.length,
       testedUrls: tested,
       diagnosticMessage: 'Episódio indisponível no servidor (HTTP 404). O arquivo foi removido pelo provedor.',
+    );
+  }
+
+  /// Resolve a melhor fonte funcional para um filme (VOD), descobrindo a extensão real
+  /// via `get_vod_info` e recuperando filmes cujo `streamId` foi reindexado no provedor.
+  Future<SmartSourceResult> resolveBestVodSource({
+    required XtreamCatalogService catalogService,
+    required XtreamVodStream movie,
+    void Function(String message)? onProgressMessage,
+    http.Client? probeClient,
+    Duration? perProbeTimeout,
+  }) async {
+    if (!SettingsService.instance.enableSmartSource) {
+      return const SmartSourceResult(
+        status: SmartSourceStatus.skippedDisabled,
+        diagnosticMessage: 'Smart Source desativado nas configurações.',
+      );
+    }
+
+    final cacheKey = 'vod-${movie.streamId}';
+    final cached = _validatedSourceCache[cacheKey];
+    if (cached != null) {
+      final cachedExt = cached.split('.').last.split('?').first.toLowerCase();
+      debugPrint('[SMART SOURCE] [CACHE HIT] Fonte VOD recuperada do cache: ${UrlSanitizer.sanitize(cached)}');
+      return SmartSourceResult(
+        status: SmartSourceStatus.resolved,
+        workingUrl: cached,
+        containerExtension: cachedExt,
+        recoveredSeriesId: movie.streamId,
+        attemptsCount: 0,
+        diagnosticMessage: 'Fonte do filme recuperada do cache local.',
+      );
+    }
+
+    final timeout = perProbeTimeout ??
+        Duration(seconds: SettingsService.instance.smartSourceTimeoutSecs);
+    final tested = <String>[];
+
+    // 1. Tenta consultar get_vod_info para obter extensão atualizada e metadados reais
+    onProgressMessage?.call('Verificando informações reais do filme no servidor...');
+    XtreamVodInfo? vodInfo;
+    try {
+      vodInfo = await catalogService.fetchVodInfo(movie.streamId, forceRefresh: true).timeout(timeout);
+    } catch (_) {}
+
+    final effectiveExt = (vodInfo?.containerExtension != null && vodInfo!.containerExtension!.trim().isNotEmpty)
+        ? vodInfo.containerExtension
+        : movie.containerExtension;
+
+    final candidates = catalogService.buildVodStreamUrlsById(
+      movie.streamId,
+      extension: effectiveExt,
+      directSource: movie.directSource,
+    );
+
+    for (var i = 0; i < candidates.length; i++) {
+      final candidateUrl = candidates[i];
+      tested.add(candidateUrl);
+      final ext = candidateUrl.split('.').last.split('?').first.toLowerCase();
+      onProgressMessage?.call('Testando fonte do filme... (Tentativa ${i + 1}/${candidates.length} - Formato ${ext.toUpperCase()})');
+
+      final success = await probeUrl(candidateUrl, client: probeClient, timeout: timeout);
+      if (success) {
+        debugPrint('[SMART SOURCE] [VOD SUCESSO] Fonte funcional validada: ${UrlSanitizer.sanitize(candidateUrl)}');
+        _validatedSourceCache[cacheKey] = candidateUrl;
+        return SmartSourceResult(
+          status: SmartSourceStatus.resolved,
+          workingUrl: candidateUrl,
+          containerExtension: ext,
+          recoveredSeriesId: movie.streamId,
+          attemptsCount: i + 1,
+          testedUrls: tested,
+          diagnosticMessage: 'Fonte do filme validada no formato ${ext.toUpperCase()}.',
+        );
+      }
+    }
+
+    // 2. Se todas as rotas do streamId antigo falharem, procura filme reindexado pelo título normalizado
+    final targetClean = normalizeTitle(movie.name);
+    if (targetClean.isNotEmpty) {
+      onProgressMessage?.call('Verificando se o filme foi reindexado no catálogo...');
+      List<XtreamVodStream> candidateMovies = [];
+      try {
+        if (movie.categoryId.isNotEmpty && movie.categoryId != '0' && movie.categoryId != 'all') {
+          candidateMovies = await catalogService.fetchVodStreams(
+            categoryId: movie.categoryId,
+            forceRefresh: true,
+          );
+        }
+      } catch (_) {}
+
+      List<XtreamVodStream> matching = candidateMovies.where((m) {
+        if (m.streamId == movie.streamId) return false;
+        return normalizeTitle(m.name) == targetClean;
+      }).toList();
+
+      if (matching.isEmpty) {
+        try {
+          final allMovies = await catalogService.fetchVodStreams(
+            categoryId: 'all',
+            forceRefresh: true,
+          );
+          matching = allMovies.where((m) {
+            if (m.streamId == movie.streamId) return false;
+            return normalizeTitle(m.name) == targetClean;
+          }).toList();
+        } catch (_) {}
+      }
+
+      for (final matched in matching) {
+        final matchedCandidates = catalogService.buildVodStreamUrls(matched);
+        for (final u in matchedCandidates) {
+          tested.add(u);
+          final ok = await probeUrl(u, client: probeClient, timeout: timeout);
+          if (ok) {
+            final ext = u.split('.').last.split('?').first.toLowerCase();
+            debugPrint('[SMART SOURCE] [VOD REINDEX SUCESSO] Filme recuperado! Antigo ID=${movie.streamId}, Novo ID=${matched.streamId}: ${UrlSanitizer.sanitize(u)}');
+            _validatedSourceCache[cacheKey] = u;
+            return SmartSourceResult(
+              status: SmartSourceStatus.resolved,
+              workingUrl: u,
+              containerExtension: ext,
+              recoveredSeriesId: matched.streamId,
+              attemptsCount: tested.length,
+              testedUrls: tested,
+              diagnosticMessage: 'Filme recuperado por reindexação no servidor (Novo ID: ${matched.streamId}).',
+            );
+          }
+        }
+      }
+    }
+
+    debugPrint('[SMART SOURCE] [VOD FALHA] Nenhum candidato respondeu com status 200/206 após ${tested.length} tentativas.');
+    return SmartSourceResult(
+      status: SmartSourceStatus.allFailed,
+      attemptsCount: tested.length,
+      testedUrls: tested,
+      diagnosticMessage: 'Filme indisponível no servidor (HTTP 404). O arquivo foi removido ou movido pelo provedor.',
     );
   }
 }

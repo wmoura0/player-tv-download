@@ -101,6 +101,7 @@ class XtreamCatalogService extends ChangeNotifier {
 
   Future<Directory?> _getCacheDirectory() async {
     if (cacheDirectoryOverride != null) return cacheDirectoryOverride;
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return null;
     try {
       return await getApplicationDocumentsDirectory();
     } catch (_) {
@@ -148,6 +149,41 @@ class XtreamCatalogService extends ChangeNotifier {
       return null;
     } catch (e) {
       debugPrint('[CACHE] Falha ao ler cache em disco ($suffix): $e');
+      return null;
+    }
+  }
+
+  Future<void> _writeDiskCacheMap(String suffix, Map<String, dynamic> data) async {
+    try {
+      final file = await _getCacheFile(suffix);
+      if (file == null) return;
+      final jsonStr = jsonEncode(data);
+      await file.writeAsString(jsonStr);
+    } catch (e) {
+      debugPrint('[CACHE] Falha ao gravar cache map em disco ($suffix): $e');
+    }
+  }
+
+  Future<Map<String, dynamic>?> _readDiskCacheMap(String suffix, {Duration? maxAge}) async {
+    try {
+      final file = await _getCacheFile(suffix);
+      if (file == null || !await file.exists()) return null;
+      if (maxAge != null) {
+        final lastMod = await file.lastModified();
+        if (DateTime.now().difference(lastMod) > maxAge) {
+          return null;
+        }
+      }
+      final content = await file.readAsString();
+      if (content.isEmpty) return null;
+      final decoded = content.length > 20 * 1024
+          ? await Isolate.run(() => jsonDecode(content))
+          : jsonDecode(content);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      return null;
+    } catch (e) {
+      debugPrint('[CACHE] Falha ao ler cache map em disco ($suffix): $e');
       return null;
     }
   }
@@ -1079,6 +1115,21 @@ class XtreamCatalogService extends ChangeNotifier {
       return _seriesInfoCache[seriesId];
     }
 
+    if (!forceRefresh) {
+      final diskData = await _readDiskCacheMap(
+        'series_info_$seriesId',
+        maxAge: const Duration(hours: 24),
+      );
+      if (diskData != null && diskData.isNotEmpty) {
+        final diskInfo = XtreamSeriesInfo.fromJson(diskData);
+        if (!diskInfo.isOrphanedOrStub) {
+          _seriesInfoCache[seriesId] = diskInfo;
+          debugPrint('[PERF] [CACHE HIT DISK] get_series_info (series_id: $seriesId)');
+          return diskInfo;
+        }
+      }
+    }
+
     try {
       final data = await _fetchApiMap(
         'get_series_info',
@@ -1091,6 +1142,8 @@ class XtreamCatalogService extends ChangeNotifier {
       // Não retém em cache séries órfãs ou stubs para permitir auto-recuperação
       if (!info.isOrphanedOrStub) {
         _seriesInfoCache[seriesId] = info;
+        unawaited(_writeDiskCacheMap('series_info_$seriesId', data));
+        unawaited(_pruneDiskCache('series_info_', maxFiles: 25));
       }
       return info;
     } catch (e) {
@@ -1292,12 +1345,17 @@ class XtreamCatalogService extends ChangeNotifier {
     return buildVodStreamUrlsById(
       stream.streamId,
       extension: stream.containerExtension,
+      directSource: stream.directSource,
     );
   }
 
   /// Constrói URLs de filme por ID, respeitando a extensão fornecida pelo catálogo
   /// com rotas de contingência e codificação segura de credenciais.
-  List<String> buildVodStreamUrlsById(int streamId, {String? extension}) {
+  List<String> buildVodStreamUrlsById(
+    int streamId, {
+    String? extension,
+    String? directSource,
+  }) {
     final cleanServer = XtreamAuthService.normalizeServerUrl(serverUrl);
     final user = Uri.encodeComponent(username.trim());
     final pass = Uri.encodeComponent(password.trim());
@@ -1307,19 +1365,41 @@ class XtreamCatalogService extends ChangeNotifier {
         : 'mp4';
 
     final urls = <String>[];
+    void addUrl(String u) {
+      if (!urls.contains(u)) urls.add(u);
+    }
 
     // 1. Rota padrão Xtream Codes para VOD: /movie/$user/$pass/$id.$ext
-    urls.add('$cleanServer/movie/$user/$pass/$streamId.$cleanExt');
+    addUrl('$cleanServer/movie/$user/$pass/$streamId.$cleanExt');
 
-    // 2. Contingência com extensão alternativa apenas quando fizer sentido
+    // 2. Contingência com extensão alternativa prioritária
     if (cleanExt != 'mp4') {
-      urls.add('$cleanServer/movie/$user/$pass/$streamId.mp4');
+      addUrl('$cleanServer/movie/$user/$pass/$streamId.mp4');
     } else {
-      urls.add('$cleanServer/movie/$user/$pass/$streamId.mkv');
+      addUrl('$cleanServer/movie/$user/$pass/$streamId.mkv');
     }
 
     // 3. Rota legada direta sem /movie/
-    urls.add('$cleanServer/$user/$pass/$streamId.$cleanExt');
+    addUrl('$cleanServer/$user/$pass/$streamId.$cleanExt');
+
+    // 4. Contingências adicionais para formatos comuns e variação de rota
+    for (final ext in ['mp4', 'mkv', 'ts', 'avi']) {
+      addUrl('$cleanServer/movie/$user/$pass/$streamId.$ext');
+    }
+    for (final ext in ['mp4', 'mkv']) {
+      addUrl('$cleanServer/$user/$pass/$streamId.$ext');
+    }
+
+    // 5. Direct source caso o servidor forneça URL direta
+    final direct = directSource?.trim();
+    if (direct != null && direct.isNotEmpty) {
+      if (direct.startsWith('http://') || direct.startsWith('https://')) {
+        addUrl(direct);
+      } else {
+        final normalizedDirect = direct.startsWith('/') ? direct : '/$direct';
+        addUrl('$cleanServer$normalizedDirect');
+      }
+    }
 
     return urls;
   }

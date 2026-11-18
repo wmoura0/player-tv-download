@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/models/xtream_series_info.dart';
 import 'package:projeto_tv/services/ota_update_service.dart';
 import 'package:projeto_tv/services/smart_source_resolver.dart';
@@ -279,6 +280,196 @@ void main() {
       );
 
       expect(isValid, isTrue);
+    });
+  });
+
+  group('Home Continue Watching Fixes - VOD SmartSource & SeriesInfo Disk Cache', () {
+    test('resolveBestVodSource descobre extensão real via get_vod_info quando containerExtension é nulo', () async {
+      SmartSourceResolver.instance.clearCache();
+      final mockClient = MockClient((request) async {
+        final uri = request.url;
+        if (uri.queryParameters['action'] == 'get_vod_info' &&
+            uri.queryParameters['vod_id'] == '8888') {
+          return http.Response(
+            jsonEncode({
+              'movie_data': {
+                'stream_id': 8888,
+                'name': 'Duna Parte 2',
+                'container_extension': 'mkv',
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (uri.path.endsWith('/movie/user/pass/8888.mkv')) {
+          return http.Response('VIDEO_OK', 200, headers: {'content-length': '8'});
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+        client: mockClient,
+      );
+
+      const movie = XtreamVodStream(
+        streamId: 8888,
+        name: 'Duna Parte 2',
+        categoryId: '5',
+        containerExtension: null,
+      );
+
+      final result = await SmartSourceResolver.instance.resolveBestVodSource(
+        catalogService: catalog,
+        movie: movie,
+        probeClient: mockClient,
+      );
+
+      expect(result.isSuccess, isTrue);
+      expect(result.containerExtension, equals('mkv'));
+      expect(result.workingUrl, contains('/movie/user/pass/8888.mkv'));
+      expect(result.recoveredSeriesId, equals(8888));
+    });
+
+    test('resolveBestVodSource recupera filme reindexado pelo título normalizado quando streamId antigo retorna 404', () async {
+      SmartSourceResolver.instance.clearCache();
+      final mockClient = MockClient((request) async {
+        final uri = request.url;
+        final action = uri.queryParameters['action'];
+        if (action == 'get_vod_info') {
+          return http.Response('{}', 200, headers: {'content-type': 'application/json'});
+        }
+        if (action == 'get_vod_streams') {
+          return http.Response(
+            jsonEncode([
+              {
+                'stream_id': 2000,
+                'name': 'O Poderoso Chefao (1972)',
+                'category_id': '5',
+                'container_extension': 'mp4',
+              }
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (uri.path.endsWith('/movie/user/pass/2000.mp4')) {
+          return http.Response('VIDEO_OK', 200, headers: {'content-length': '8'});
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+        client: mockClient,
+      );
+
+      const oldMovie = XtreamVodStream(
+        streamId: 1000,
+        name: 'O Poderoso Chefao',
+        categoryId: '5',
+        containerExtension: 'mp4',
+      );
+
+      final result = await SmartSourceResolver.instance.resolveBestVodSource(
+        catalogService: catalog,
+        movie: oldMovie,
+        probeClient: mockClient,
+      );
+
+      expect(result.isSuccess, isTrue);
+      expect(result.recoveredSeriesId, equals(2000));
+      expect(result.workingUrl, contains('/movie/user/pass/2000.mp4'));
+    });
+
+    test('fetchSeriesInfo persiste metadados em disco e recarrega instantaneamente em nova sessão', () async {
+      final onlineClient = MockClient((request) async {
+        if (request.url.queryParameters['action'] == 'get_series_info' &&
+            request.url.queryParameters['series_id'] == '555') {
+          return http.Response(
+            jsonEncode({
+              'seasons': [
+                {'season_number': 1, 'name': 'Temporada 1'}
+              ],
+              'info': {'name': 'Série Cacheada'},
+              'episodes': {
+                '1': [
+                  {
+                    'id': '7001',
+                    'episode_num': 1,
+                    'title': 'Piloto',
+                    'container_extension': 'mkv',
+                  }
+                ]
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final catalogOnline = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+        client: onlineClient,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      final fetched = await catalogOnline.fetchSeriesInfo(555);
+      expect(fetched, isNotNull);
+      expect(fetched!.findEpisodeById(7001)?.containerExtension, equals('mkv'));
+
+      // Aguarda gravação assíncrona em disco completar
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final offlineClient = MockClient((request) async {
+        return http.Response('Network Error', 503);
+      });
+
+      final catalogOffline = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+        client: offlineClient,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      final restoredFromDisk = await catalogOffline.fetchSeriesInfo(555);
+      expect(restoredFromDisk, isNotNull);
+      expect(restoredFromDisk!.name, equals('Série Cacheada'));
+      expect(restoredFromDisk.findEpisodeById(7001)?.containerExtension, equals('mkv'));
+    });
+
+    test('buildVodStreamUrls inclui extensões extras e directSource sem alterar as 3 rotas principais', () {
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+      );
+
+      const movie = XtreamVodStream(
+        streamId: 42,
+        name: 'Teste VOD',
+        categoryId: '1',
+        containerExtension: 'avi',
+        directSource: 'https://cdn.example.com/custom/42.mp4',
+      );
+
+      final urls = catalog.buildVodStreamUrls(movie);
+      expect(urls[0], equals('http://testserver.tv:8080/movie/user/pass/42.avi'));
+      expect(urls[1], equals('http://testserver.tv:8080/movie/user/pass/42.mp4'));
+      expect(urls[2], equals('http://testserver.tv:8080/user/pass/42.avi'));
+      expect(urls, contains('http://testserver.tv:8080/movie/user/pass/42.mkv'));
+      expect(urls, contains('http://testserver.tv:8080/movie/user/pass/42.ts'));
+      expect(urls.last, equals('https://cdn.example.com/custom/42.mp4'));
     });
   });
 }

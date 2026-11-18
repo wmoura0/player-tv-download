@@ -44,6 +44,7 @@ class SeriesPlayerScreen extends StatefulWidget {
 
 class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     with WidgetsBindingObserver {
+  late XtreamSeriesInfo _currentSeriesInfo;
   late XtreamSeriesEpisode _currentEpisode;
   VideoPlayerController? _controller;
   final PlaybackProgressService _progressService = PlaybackProgressService();
@@ -78,7 +79,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _currentSeriesInfo = widget.seriesInfo;
     _currentEpisode = widget.initialEpisode;
+    _resumptionTarget = widget.initialPosition;
     _updateNextEpisode();
 
     DeviceUtils.setVideoOrientation();
@@ -157,7 +160,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   }
 
   void _updateNextEpisode() {
-    _nextEpisode = widget.seriesInfo.getNextEpisode(_currentEpisode);
+    _nextEpisode = _currentSeriesInfo.getNextEpisode(_currentEpisode);
   }
 
   void _startPeriodicProgressSave() {
@@ -180,10 +183,11 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
     // Proteção absoluta: NUNCA sobrescrever posição anterior válida se a reprodução atual ainda não avançou (menos de 5s).
     // Isso evita que um erro de buffer inicial ou encerramento rápido descarte o progresso salvo.
-    if (widget.initialPosition != null &&
-        widget.initialPosition!.inSeconds >= 10 &&
+    final resumptionRef = _resumptionTarget;
+    if (resumptionRef != null &&
+        resumptionRef.inSeconds >= 10 &&
         pos.inSeconds < 5) {
-      debugPrint('[SERIES PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(widget.initialPosition!)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
+      debugPrint('[SERIES PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(resumptionRef)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
       return;
     }
 
@@ -249,6 +253,26 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     _seekAttempted = false;
     _smartSourceAttempted = false;
     _smartSourceStatusMessage = null;
+
+    // Se veio da Home com estrutura mínima para abertura imediata, hidrata os detalhes da série aqui dentro do player
+    final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
+    if (knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
+      try {
+        final hydratedInfo = await widget.catalogService
+            .fetchSeriesInfo(widget.series.seriesId)
+            .timeout(const Duration(seconds: 4));
+        if (!mounted) return;
+        if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
+          _currentSeriesInfo = hydratedInfo;
+          final hydratedEp = hydratedInfo.findEpisodeById(_currentEpisode.id) ??
+              hydratedInfo.findEpisodeBySeasonAndNum(_currentEpisode.seasonNumber, _currentEpisode.episodeNum);
+          if (hydratedEp != null) {
+            _currentEpisode = hydratedEp;
+          }
+          _updateNextEpisode();
+        }
+      } catch (_) {}
+    }
 
     final baseUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
     final candidateUrls = SmartSourceResolver.instance.generateCandidateUrls(
@@ -343,6 +367,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           final safeTarget = detectedDur - const Duration(seconds: 10);
           target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
         }
+        _resumptionTarget = target;
 
         if (target > Duration.zero) {
           _isSeekingToInitial = true;
@@ -350,6 +375,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           debugPrint('[SERIES PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(initialPosition)})...');
           try {
             await controller.seekTo(target);
+            if (!controller.value.isPlaying) {
+              await controller.play();
+            }
             debugPrint('[SERIES PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[SERIES PLAYER] [SEEK] Aviso: falha ao buscar ponto salvo ($seekError). Reproduzindo do início.');
@@ -572,12 +600,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     // Validação segura de avanço real de reprodução / primeiro quadro
     bool hasAdvanced = false;
     if (_seekAttempted && _resumptionTarget != null && _resumptionTarget! > Duration.zero) {
-      // Quando houve seek para posição salva, a confirmação exige que a reprodução
-      // esteja ativa, sem buffering, e que a posição alcance ou avance em relação ao alvo
+      // Quando houve seek para posição salva, usa tolerância de 12s para acomodar alinhamento de keyframe (I-frame)
+      final minExpectedPos = _resumptionTarget! > const Duration(seconds: 12)
+          ? _resumptionTarget! - const Duration(seconds: 12)
+          : Duration.zero;
       hasAdvanced = c.value.isPlaying &&
                     !c.value.isBuffering &&
                     !_isSeekingToInitial &&
-                    c.value.position >= _resumptionTarget!;
+                    c.value.position >= minExpectedPos &&
+                    c.value.position > Duration.zero;
     } else {
       hasAdvanced = c.value.isPlaying &&
                     !c.value.isBuffering &&
@@ -821,7 +852,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             isLoading: _isLoading || _smartSourceStatusMessage != null,
             isBuffering: _isBuffering,
             errorMessage: _errorMessage,
-            onRetry: () => _initCurrentEpisode(),
+            onRetry: () => _initCurrentEpisode(
+              initialPosition: _resumptionTarget ?? widget.initialPosition,
+            ),
           ),
         ),
       ),

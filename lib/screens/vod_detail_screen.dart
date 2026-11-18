@@ -127,14 +127,18 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
     if (!mounted) return;
 
     final initialPos = fromBeginning ? Duration.zero : _savedProgress?.position;
+    final effectiveMovie = (resolvedExt != null && resolvedExt.trim().isNotEmpty)
+        ? widget.movie.copyWith(containerExtension: resolvedExt.trim())
+        : widget.movie;
 
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VodPlayerScreen(
-          movie: widget.movie,
+          movie: effectiveMovie,
           streamUrls: streamUrls,
           accountKey: widget.accountKey,
           initialPosition: initialPos,
+          catalogService: widget.catalogService,
         ),
       ),
     );

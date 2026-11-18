@@ -23,7 +23,6 @@ import 'services/pin_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
-import 'services/smart_source_resolver.dart';
 import 'services/user_profile_service.dart';
 import 'services/xtream_catalog_service.dart';
 import 'theme/app_colors.dart';
@@ -156,12 +155,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           widget.xtreamAccount!.username,
         );
         final storage = SecureStorageService();
-        final pass = await storage.getPassword().timeout(
+        String? pass = await storage.getPassword().timeout(
           const Duration(seconds: 4),
           onTimeout: () => null,
         );
+        if (pass == null || pass.isEmpty) {
+          final managed = AccountManagerService.instance.currentAccount;
+          if (managed != null &&
+              managed.password != null &&
+              managed.password!.isNotEmpty &&
+              managed.username == widget.xtreamAccount!.username) {
+            pass = managed.password;
+          }
+        }
         if (!mounted) return;
-        if (pass != null) {
+        if (pass != null && pass.isNotEmpty) {
           _sharedCatalogService = XtreamCatalogService(
             serverUrl: widget.xtreamAccount!.serverUrl,
             username: widget.xtreamAccount!.username,
@@ -224,10 +232,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<XtreamCatalogService?> _getOrInitCatalogService() async {
     if (widget.xtreamAccount == null) return null;
+    if (_accountKey.isEmpty) {
+      _accountKey = PlaybackProgressService.buildAccountKey(
+        widget.xtreamAccount!.serverUrl,
+        widget.xtreamAccount!.username,
+      );
+    }
     if (_sharedCatalogService != null) return _sharedCatalogService;
+
+    if (_isInitializingCatalog) {
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (_isInitializingCatalog && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 50));
+        if (!mounted) return _sharedCatalogService;
+      }
+      if (_sharedCatalogService != null) return _sharedCatalogService;
+    }
+
     final storage = SecureStorageService();
-    final pass = await storage.getPassword();
-    if (pass != null) {
+    String? pass;
+    try {
+      pass = await storage.getPassword().timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => null,
+      );
+    } catch (_) {}
+
+    if (pass == null || pass.isEmpty) {
+      final managed = AccountManagerService.instance.currentAccount;
+      if (managed != null &&
+          managed.password != null &&
+          managed.password!.isNotEmpty &&
+          managed.username == widget.xtreamAccount!.username) {
+        pass = managed.password;
+      }
+    }
+
+    if (pass != null && pass.isNotEmpty) {
       _sharedCatalogService = XtreamCatalogService(
         serverUrl: widget.xtreamAccount!.serverUrl,
         username: widget.xtreamAccount!.username,
@@ -313,12 +354,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       if (item.type == ContinueWatchingType.movie) {
         debugPrint('[HOME] Continuar assistindo filme: streamId=${item.streamId}, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
+        String? effectiveExt = item.containerExtension;
+        if (effectiveExt == null || effectiveExt.trim().isEmpty) {
+          try {
+            final vodInfo = await service
+                .fetchVodInfo(item.streamId)
+                .timeout(const Duration(milliseconds: 2500), onTimeout: () => null);
+            if (vodInfo?.containerExtension != null && vodInfo!.containerExtension!.trim().isNotEmpty) {
+              effectiveExt = vodInfo.containerExtension!.trim();
+            }
+          } catch (_) {}
+        }
         final movie = XtreamVodStream(
           streamId: item.streamId,
           name: item.title,
           streamIcon: item.coverUrl,
           categoryId: item.categoryId ?? '0',
-          containerExtension: item.containerExtension,
+          containerExtension: effectiveExt,
         );
         final streamUrls = service.buildVodStreamUrls(movie);
         if (!mounted) return;
@@ -329,6 +381,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               streamUrls: streamUrls,
               accountKey: accKey,
               initialPosition: item.position,
+              catalogService: service,
             ),
           ),
         ).then((_) {
@@ -336,7 +389,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _loadHomeData();
         });
       } else if (item.type == ContinueWatchingType.series) {
-        int effectiveSeriesId = (item.seriesId != null && item.seriesId! > 0)
+        final effectiveSeriesId = (item.seriesId != null && item.seriesId! > 0)
             ? item.seriesId!
             : item.streamId;
 
@@ -386,65 +439,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
         debugPrint('[HOME] Continuar assistindo série: seriesId=$effectiveSeriesId, epId=${item.streamId}, T$season:E$epNum, "${item.title}", pos=${PlaybackProgressService.formatDuration(item.position)}');
 
-        var series = XtreamSeriesItem(
+        final series = XtreamSeriesItem(
           seriesId: effectiveSeriesId,
           name: item.title,
           cover: item.coverUrl,
           categoryId: item.categoryId ?? '0',
         );
 
-        // Tenta obter os detalhes da série do cache ou rede com timeout de 8 segundos para não bloquear a UI
+        // Consulta rápida em memória/disco ou rede (máx. 2,5s) sem bloquear a Home com carga total de séries.
+        // Caso o ID ou série precisem de recuperação profunda, o próprio SeriesPlayerScreen resolve na tela do player.
         XtreamSeriesInfo? info;
         try {
-          info = await service.fetchSeriesInfo(effectiveSeriesId).timeout(const Duration(seconds: 8));
-        } catch (_) {
-          // Timeout ou erro de rede não impede a reprodução: usará contingência inteligente
-        }
-
-        // Se info estiver em cache mas NÃO contiver o episódio gravado nem pelo streamId nem pelo season/ep,
-        // força atualização da rede para obter dados atualizados do provedor
-        if (info != null && !info.isOrphanedOrStub) {
-          final existingEp = info.findEpisodeById(item.streamId) ?? info.findEpisodeBySeasonAndNum(season, epNum);
-          if (existingEp == null) {
-            try {
-              final refreshedInfo = await service.fetchSeriesInfo(effectiveSeriesId, forceRefresh: true).timeout(const Duration(seconds: 6));
-              if (refreshedInfo != null && !refreshedInfo.isOrphanedOrStub) {
-                info = refreshedInfo;
-              }
-            } catch (_) {}
+          final candidateInfo = await service
+              .fetchSeriesInfo(effectiveSeriesId)
+              .timeout(const Duration(milliseconds: 2500), onTimeout: () => null);
+          if (candidateInfo != null && !candidateInfo.isOrphanedOrStub) {
+            info = candidateInfo;
           }
-        }
-
-        // Se info for nulo ou se for uma série órfã/stub do provedor, tenta recuperar a série reindexada
-        if (info == null || info.isOrphanedOrStub) {
-          try {
-            List<XtreamSeriesItem> seriesList = [];
-            if (item.categoryId != null && item.categoryId != '0' && item.categoryId != 'all') {
-              seriesList = await service.fetchSeries(
-                categoryId: item.categoryId,
-                forceRefresh: true,
-              );
-            }
-            if (seriesList.isEmpty) {
-              seriesList = await service.fetchSeries(categoryId: 'all', forceRefresh: true);
-            }
-            final cleanTitle = SmartSourceResolver.normalizeTitle(item.title);
-            final matches = seriesList.where((s) {
-              final norm = SmartSourceResolver.normalizeTitle(s.name);
-              return norm == cleanTitle ||
-                  (cleanTitle.isNotEmpty && (norm.contains(cleanTitle) || cleanTitle.contains(norm)));
-            }).toList();
-            if (matches.isNotEmpty) {
-              final matched = matches.first;
-              final recoveredInfo = await service.fetchSeriesInfo(matched.seriesId, forceRefresh: true);
-              if (recoveredInfo != null && !recoveredInfo.isOrphanedOrStub) {
-                info = recoveredInfo;
-                series = matched;
-                effectiveSeriesId = matched.seriesId;
-              }
-            }
-          } catch (_) {}
-        }
+        } catch (_) {}
 
         if (!mounted) return;
 
@@ -484,8 +496,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           );
         }
 
-        // Se não localizado no catálogo da série ou catálogo indisponível no momento,
-        // sintetiza o episódio com os metadados preservados do histórico
+        // Se não localizado rapidamente no cache, abre o player imediatamente com os metadados preservados;
+        // o SeriesPlayerScreen hidratará e acionará o SmartSourceResolver se necessário sem congelar a Home.
         final targetEpisode = ep ?? XtreamSeriesEpisode(
           id: item.streamId,
           episodeNum: epNum,
@@ -495,7 +507,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           cover: item.coverUrl,
         );
 
-        // Se info for nulo, sintetiza estrutura mínima para que o player opere de forma totalmente transparente
         final effectiveInfo = info ?? XtreamSeriesInfo(
           name: item.title,
           cover: item.coverUrl,
@@ -1702,51 +1713,69 @@ class _ContinueWatchingDeleteButton extends StatefulWidget {
 }
 
 class _ContinueWatchingDeleteButtonState extends State<_ContinueWatchingDeleteButton> {
-  bool _isFocused = false;
+  final FocusNode _deleteFocusNode = FocusNode(
+    debugLabel: 'ContinueWatchingDelete',
+    skipTraversal: true,
+    canRequestFocus: false,
+  );
   bool _isHovered = false;
 
   @override
-  Widget build(BuildContext context) {
-    final isHighlighted = _isFocused || _isHovered;
+  void dispose() {
+    _deleteFocusNode.dispose();
+    super.dispose();
+  }
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.activateAction(widget.onDelete),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: Tooltip(
-        message: 'Remover "${widget.title}" de Continuar assistindo',
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            canRequestFocus: false,
-            onTap: widget.onDelete,
-            borderRadius: BorderRadius.circular(16),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
-              padding: const EdgeInsets.all(5),
-              decoration: BoxDecoration(
-                color: isHighlighted
-                    ? const Color(0xFFEF5350).withValues(alpha: 0.35)
-                    : Colors.black.withValues(alpha: 0.6),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isHighlighted ? const Color(0xFFEF5350) : Colors.white24,
-                  width: isHighlighted ? 1.5 : 1.0,
+  @override
+  Widget build(BuildContext context) {
+    final isHighlighted = _isHovered;
+
+    return ExcludeFocus(
+      excluding: true,
+      child: Focus(
+        focusNode: _deleteFocusNode,
+        canRequestFocus: false,
+        skipTraversal: true,
+        descendantsAreFocusable: false,
+        descendantsAreTraversable: false,
+        child: MouseRegion(
+          onEnter: (_) => setState(() => _isHovered = true),
+          onExit: (_) => setState(() => _isHovered = false),
+          child: Tooltip(
+            message: 'Remover "${widget.title}" de Continuar assistindo',
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                canRequestFocus: false,
+                onTap: widget.onDelete,
+                borderRadius: BorderRadius.circular(16),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: isHighlighted
+                        ? const Color(0xFFEF5350).withValues(alpha: 0.35)
+                        : Colors.black.withValues(alpha: 0.6),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: isHighlighted ? const Color(0xFFEF5350) : Colors.white24,
+                      width: isHighlighted ? 1.5 : 1.0,
+                    ),
+                    boxShadow: isHighlighted
+                        ? [
+                            BoxShadow(
+                              color: const Color(0xFFEF5350).withValues(alpha: 0.35),
+                              blurRadius: 8,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Icon(
+                    Icons.delete_outline_rounded,
+                    size: 15,
+                    color: isHighlighted ? const Color(0xFFFF8A80) : const Color(0xFFB0BEC5),
+                  ),
                 ),
-                boxShadow: isHighlighted
-                    ? [
-                        BoxShadow(
-                          color: const Color(0xFFEF5350).withValues(alpha: 0.35),
-                          blurRadius: 8,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: Icon(
-                Icons.delete_outline_rounded,
-                size: 15,
-                color: isHighlighted ? const Color(0xFFFF8A80) : const Color(0xFFB0BEC5),
               ),
             ),
           ),

@@ -1,11 +1,11 @@
 {
-  "version": "1.2.10",
-  "versionCode": 13,
+  "version": "1.2.11",
+  "versionCode": 14,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.10/JessFlix-v1.2.10.apk",
-  "fileSize": 58770329,
-  "sha256": "016383e0ef2c198c549516df19d37fc4ed145611162d04ae8abb884cb45397ad",
-  "releaseNotes": "• Hotfix P0.3 — Correção Definitiva na Reprodução de Séries: Resolução da divergência de sondagem HTTP (eliminação de falso 200 len=0 quando servidor responde 404 no Media3) e recuperação inteligente de episódios reindexados no provedor.\n• Resiliência do Continuar Assistindo: Abertura instantânea de episódios a partir do histórico com fallback resiliente por temporada/episódio.\n• Laboratório Experimental: Integração nativa de Android WebView Player para testes de fontes compatíveis sem interferência no Media3/ExoPlayer.\n• Estabilidade e Desempenho Fire TV: Sincronização nativa do ciclo de vida, D-Pad otimizado e prevenção contra vazamentos de memória.",
-  "publishedAt": "2026-11-11T16:05:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.11/JessFlix-v1.2.11.apk",
+  "fileSize": 58786725,
+  "sha256": "6e4c1f7b6f9ecdbc3065b996a9f85a675c75edae8c148265a5758eb50fdb8e8c",
+  "releaseNotes": "• Correção Definitiva do Continuar Assistindo na Home (Filmes e Séries): Resolução automática de extensão de container VOD via get_vod_info, recuperação inteligente de filmes reindexados (SmartSourceResolver) e eliminação de travamentos ao retomar episódios de séries na tela inicial.\n• Cache em Disco de Séries e Retomada Instantânea: Persistência local de metadados de séries (get_series_info) com abertura imediata do player e hidratação assíncrona.\n• Estabilidade de Seek e Controle D-Pad: Tolerância de keyframe (I-frame) no watchdog de retomada, preservação da posição ao tentar novamente e exclusão de foco D-Pad no botão de excluir do card.",
+  "publishedAt": "2026-11-18T14:24:30.000Z",
   "mandatory": false
 }
