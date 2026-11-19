@@ -58,6 +58,11 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
 
   void _onServiceUpdate() {
     if (mounted) {
+      if (_service.status == UpdateStatus.downloading ||
+          _service.status == UpdateStatus.readyToInstall ||
+          _service.status == UpdateStatus.upToDate) {
+        _localError = null;
+      }
       setState(() {});
     }
   }
@@ -68,7 +73,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
     });
 
     try {
-      await _service.downloadApk(widget.manifest);
+      await _service.downloadApk(widget.manifest, autoInstall: true);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -80,9 +85,10 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
 
   Future<void> _installApk() async {
     final success = await _service.installDownloadedApk();
-    if (!success && mounted) {
+    if (!success && mounted && _service.status != UpdateStatus.upToDate) {
       setState(() {
-        _localError = 'Permissão para instalar aplicativos desconhecidos é necessária.';
+        _localError = _service.errorMessage ??
+            'Permissão para instalar aplicativos desconhecidos é necessária.';
       });
     }
   }
@@ -283,7 +289,7 @@ class _OtaUpdateDialogState extends State<OtaUpdateDialog> {
                     style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
                   ),
                   const Text(
-                    'Continua com tela desligada',
+                    'Instalador abre ao concluir',
                     style: TextStyle(color: AppColors.textMuted, fontSize: 10),
                   ),
                 ],

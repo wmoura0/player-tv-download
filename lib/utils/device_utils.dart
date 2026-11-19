@@ -8,9 +8,9 @@ class DeviceUtils {
   static bool? _cachedIsTv;
   static bool? _mockIsPipSupported;
 
-  // Versão instalada real (padrão v1.2.11+14 com sincronização dinâmica via MainActivity)
-  static int _installedVersionCode = 14;
-  static String _installedVersionName = '1.2.11';
+  // Versão instalada real (padrão v1.2.12+15 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 15;
+  static String _installedVersionName = '1.2.12';
 
   /// Versão de build (versionCode) da aplicação instalada no dispositivo.
   static int get installedVersionCode => _installedVersionCode;
@@ -270,12 +270,21 @@ class DeviceUtils {
 
   /// Dispara a instalação nativa do APK através do PackageInstaller oficial via FileProvider.
   static Future<bool> installApk(String filePath) async {
+    final res = await installApkWithResult(filePath);
+    return res.success;
+  }
+
+  /// Dispara a instalação nativa do APK retornando código/mensagem de erro caso bloqueada.
+  static Future<({bool success, String? errorCode, String? errorMessage})> installApkWithResult(String filePath) async {
     try {
       final res = await _deviceChannel.invokeMethod<bool>('installApk', {'filePath': filePath});
-      return res ?? false;
+      return (success: res ?? false, errorCode: null, errorMessage: null);
+    } on PlatformException catch (e) {
+      debugPrint('Erro nativo ao acionar instalador de pacotes (${e.code}): ${e.message}');
+      return (success: false, errorCode: e.code, errorMessage: e.message);
     } catch (e) {
       debugPrint('Erro ao acionar instalador de pacotes: $e');
-      return false;
+      return (success: false, errorCode: 'UNKNOWN', errorMessage: e.toString());
     }
   }
 

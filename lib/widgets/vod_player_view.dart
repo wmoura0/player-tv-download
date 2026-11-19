@@ -80,8 +80,15 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   final FocusNode _cancelCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerCancelCountdown');
   final FocusNode _playNowCountdownFocusNode = FocusNode(debugLabel: 'VodPlayerPlayNowCountdown');
 
+  static const Duration _controlsAutoHideDuration = Duration(milliseconds: 2500);
+  static const Duration _skipIntroPillAutoHideDuration = Duration(seconds: 10);
+
   bool _showControls = true;
   Timer? _controlsTimer;
+  Timer? _skipIntroPillTimer;
+  bool _skipIntroFloatingDismissed = false;
+  bool _wasPlaying = false;
+  bool _wasInIntroWindow = false;
 
   bool _isDraggingSlider = false;
   double _dragSliderValue = 0.0;
@@ -135,12 +142,32 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     return true;
   }
 
+  bool get _canShowFloatingSkipIntro => _canSkipIntro && !_skipIntroFloatingDismissed;
+
+  void _scheduleSkipIntroPillAutoHide() {
+    if (_skipIntroFloatingDismissed) return;
+    if (!_canSkipIntro) return;
+    if (!(widget.controller?.value.isPlaying ?? false)) return;
+    if (_skipIntroPillTimer?.isActive ?? false) return;
+
+    _skipIntroPillTimer = Timer(_skipIntroPillAutoHideDuration, () {
+      if (!mounted) return;
+      if (_skipIntroFocusNode.hasFocus) {
+        _focusNode.requestFocus();
+      }
+      setState(() => _skipIntroFloatingDismissed = true);
+    });
+  }
+
   void _handleSkipIntro() {
     final c = widget.controller;
     if (c == null || !c.value.isInitialized) return;
 
+    _skipIntroPillTimer?.cancel();
+    _skipIntroPillTimer = null;
     setState(() {
       _introSkippedForCurrentEpisode = true;
+      _skipIntroFloatingDismissed = true;
       _lastShowSkipIntro = false;
     });
 
@@ -156,10 +183,13 @@ class _VodPlayerViewState extends State<VodPlayerView> {
   void initState() {
     super.initState();
     final c = widget.controller;
+    _wasPlaying = c?.value.isPlaying ?? false;
     _isUserPaused = c != null && c.value.isInitialized && !c.value.isPlaying;
     _attachController(widget.controller);
     _lastShowSkipIntro = _canSkipIntro;
+    _wasInIntroWindow = _lastShowSkipIntro;
     _startControlsTimer();
+    _scheduleSkipIntroPillAutoHide();
     _checkInitialOverlayFocus();
   }
 
@@ -191,9 +221,25 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       _detachController(oldWidget.controller);
       _attachController(widget.controller);
       _introSkippedForCurrentEpisode = false;
+      _skipIntroFloatingDismissed = false;
+      _skipIntroPillTimer?.cancel();
+      _skipIntroPillTimer = null;
       _lastShowSkipIntro = _canSkipIntro;
-      if (widget.controller?.value.isPlaying ?? false) {
+      _wasInIntroWindow = _lastShowSkipIntro;
+      _wasPlaying = widget.controller?.value.isPlaying ?? false;
+      if (_wasPlaying) {
         _isUserPaused = false;
+        if (_showControls) _startControlsTimer();
+        _scheduleSkipIntroPillAutoHide();
+      }
+    } else {
+      final loadingJustFinished = oldWidget.isLoading && !widget.isLoading;
+      final nowPlaying = widget.controller?.value.isPlaying ?? false;
+      final startedPlaying = nowPlaying && !_wasPlaying;
+      _wasPlaying = nowPlaying;
+      if (loadingJustFinished || startedPlaying) {
+        if (_showControls) _startControlsTimer();
+        _scheduleSkipIntroPillAutoHide();
       }
     }
 
@@ -237,23 +283,45 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     if (!mounted) return;
     final val = widget.controller?.value;
     if (val != null) {
-      if (val.isPlaying) {
+      final isNowPlaying = val.isPlaying;
+      final startedPlaying = isNowPlaying && !_wasPlaying;
+      _wasPlaying = isNowPlaying;
+
+      if (isNowPlaying) {
         if (_isUserPaused || _isRelativeSeeking) {
           setState(() {
             _isUserPaused = false;
             _isRelativeSeeking = false;
           });
         }
+        if (startedPlaying) {
+          if (_showControls) {
+            _startControlsTimer();
+          }
+          _scheduleSkipIntroPillAutoHide();
+        }
       }
 
       final canSkip = _canSkipIntro;
       if (canSkip != _lastShowSkipIntro) {
+        if (canSkip && !_wasInIntroWindow && !_introSkippedForCurrentEpisode) {
+          _skipIntroFloatingDismissed = false;
+          _skipIntroPillTimer?.cancel();
+          _skipIntroPillTimer = null;
+        } else if (!canSkip) {
+          _skipIntroPillTimer?.cancel();
+          _skipIntroPillTimer = null;
+        }
+        _wasInIntroWindow = canSkip;
         setState(() {
           _lastShowSkipIntro = canSkip;
           if (!canSkip && _skipIntroFocusNode.hasFocus) {
             _playPauseFocusNode.requestFocus();
           }
         });
+        if (canSkip && isNowPlaying) {
+          _scheduleSkipIntroPillAutoHide();
+        }
       }
     }
   }
@@ -263,6 +331,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     _detachController(widget.controller);
     _relativeSeekResetTimer?.cancel();
     _controlsTimer?.cancel();
+    _skipIntroPillTimer?.cancel();
     _initialHoldTimer?.cancel();
     _continuousSeekTicker?.cancel();
     _inactivityWatchdogTimer?.cancel();
@@ -326,15 +395,52 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
   void _startControlsTimer() {
     _controlsTimer?.cancel();
-    // Exibição de progresso com vídeo pausado: não auto-oculta enquanto estiver pausado ou em seek contínuo
-    _controlsTimer = Timer(const Duration(seconds: 4), () {
+    // Auto-ocultação rápida em 2.5s; não oculta enquanto estiver pausado ou em seek contínuo
+    _controlsTimer = Timer(_controlsAutoHideDuration, () {
       if (mounted &&
           (widget.controller?.value.isPlaying ?? false) &&
           !_isDraggingSlider &&
           !_isContinuousSeeking) {
         setState(() => _showControls = false);
+        _focusNode.requestFocus();
       }
     });
+  }
+
+  void _handleBackPress() {
+    if (_isBackDebounced) return;
+    _isBackDebounced = true;
+    _backDebounceTimer?.cancel();
+    _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) _isBackDebounced = false;
+    });
+
+    if (widget.errorMessage != null && !widget.isLoading) {
+      widget.onBack?.call();
+      return;
+    }
+
+    if (widget.nextEpisodeCountdown != null &&
+        widget.nextEpisodeCountdown! > 0 &&
+        widget.errorMessage == null) {
+      widget.onCancelNextEpisode?.call();
+      return;
+    }
+
+    if (_showControls || _canShowFloatingSkipIntro) {
+      // 1º toque em Voltar: oculta controles/botões mantendo o vídeo em execução
+      _controlsTimer?.cancel();
+      _skipIntroPillTimer?.cancel();
+      _skipIntroPillTimer = null;
+      setState(() {
+        _showControls = false;
+        _skipIntroFloatingDismissed = true;
+      });
+      _focusNode.requestFocus();
+    } else {
+      // 2º toque com tela limpa: retorna à tela anterior (Home ou Episódios)
+      widget.onBack?.call();
+    }
   }
 
   void _toggleControls() {
@@ -345,6 +451,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
       _startControlsTimer();
     } else {
       _controlsTimer?.cancel();
+      _focusNode.requestFocus();
     }
   }
 
@@ -503,22 +610,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
         key == LogicalKeyboardKey.backspace) {
       if (event is KeyRepeatEvent) return KeyEventResult.handled;
       if (event is KeyDownEvent) {
-        if (_isBackDebounced) return KeyEventResult.handled;
-        _isBackDebounced = true;
-        _backDebounceTimer?.cancel();
-        _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
-          if (mounted) _isBackDebounced = false;
-        });
-
-        if (_showControls) {
-          // Primeiro toque com controles visíveis: apenas oculta controles mantendo o vídeo rodando
-          _controlsTimer?.cancel();
-          setState(() => _showControls = false);
-          _focusNode.requestFocus();
-        } else {
-          // Com controles ocultos: sair da tela e retornar ao catálogo
-          widget.onBack?.call();
-        }
+        _handleBackPress();
       }
       return KeyEventResult.handled;
     }
@@ -854,18 +946,10 @@ class _VodPlayerViewState extends State<VodPlayerView> {
     final isPlaying = controller?.value.isPlaying ?? false;
 
     return PopScope(
-      canPop: !_showControls,
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _showControls) {
-          if (_isBackDebounced) return;
-          _isBackDebounced = true;
-          _backDebounceTimer?.cancel();
-          _backDebounceTimer = Timer(const Duration(milliseconds: 350), () {
-            if (mounted) _isBackDebounced = false;
-          });
-          _controlsTimer?.cancel();
-          setState(() => _showControls = false);
-        }
+        if (didPop) return;
+        _handleBackPress();
       },
       child: Focus(
         focusNode: _focusNode,
@@ -893,8 +977,8 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                 if (widget.errorMessage != null && !widget.isLoading)
                   _buildErrorOverlay(),
 
-                // 4. Botão flutuante "Pular Abertura (+85s)" para Séries quando OSD fechado
-                if (!_showControls && _canSkipIntro && widget.errorMessage == null)
+                // 4. Botão flutuante "Pular Abertura (+85s)" para Séries (auto-oculta em 10s ou no 1º Voltar)
+                if (!_showControls && _canShowFloatingSkipIntro && widget.errorMessage == null)
                   Positioned(
                     bottom: 28,
                     right: 28,

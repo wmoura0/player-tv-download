@@ -5,12 +5,64 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
+// ignore: depend_on_referenced_packages
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
+import 'package:projeto_tv/models/xtream_series_info.dart';
 import 'package:projeto_tv/screens/series_detail_screen.dart';
+import 'package:projeto_tv/screens/series_player_screen.dart';
 import 'package:projeto_tv/screens/vod_detail_screen.dart';
+import 'package:projeto_tv/screens/vod_player_screen.dart';
 import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
 import 'package:projeto_tv/widgets/vod_player_view.dart';
+
+class _TestVideoPlatform extends VideoPlayerPlatform {
+  @override
+  Future<void> init() async {}
+  @override
+  Future<void> dispose(int textureId) async {}
+  @override
+  Future<int?> create(DataSource dataSource) async => 1;
+  @override
+  Future<void> setLooping(int textureId, bool looping) async {}
+  @override
+  Future<void> play(int textureId) async {}
+  @override
+  Future<void> pause(int textureId) async {}
+  @override
+  Future<void> setVolume(int textureId, double volume) async {}
+  @override
+  Future<void> seekTo(int textureId, Duration position) async {}
+  @override
+  Future<Duration> getPosition(int textureId) async => Duration.zero;
+  @override
+  Stream<VideoEvent> videoEventsFor(int textureId) => const Stream.empty();
+}
+
+class _FakePlayerController extends VideoPlayerController {
+  _FakePlayerController({
+    required Duration position,
+    required Duration duration,
+    bool isPlaying = true,
+  }) : super.networkUrl(Uri.parse('https://example.com/video.mp4')) {
+    value = VideoPlayerValue(
+      isInitialized: true,
+      duration: duration,
+      position: position,
+      isPlaying: isPlaying,
+    );
+  }
+
+  void setPlayingState({required bool isPlaying, Duration? position}) {
+    value = value.copyWith(
+      isPlaying: isPlaying,
+      position: position ?? value.position,
+    );
+    notifyListeners();
+  }
+}
 
 void main() {
   setUp(() {
@@ -360,6 +412,238 @@ void main() {
       expect(find.text('8.9'), findsOneWidget);
       expect(find.text('Assistir filme'), findsOneWidget);
       expect(find.text('ADICIONAR AOS FAVORITOS'), findsOneWidget);
+    });
+  });
+
+  group('Fire TV Auto-Hide, Skip Intro Timer & Two-Step Hardware Back Tests', () {
+    setUp(() {
+      VideoPlayerPlatform.instance = _TestVideoPlatform();
+    });
+
+    testWidgets('Controles auto-ocultam em 2.5s mesmo após carregamento inicial demorado (> 5s)', (tester) async {
+      final controller = _FakePlayerController(
+        position: Duration.zero,
+        duration: const Duration(minutes: 40),
+        isPlaying: false,
+      );
+      bool isLoading = true;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return Column(
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        setState(() => isLoading = false);
+                        controller.setPlayingState(isPlaying: true);
+                      },
+                      child: const Text('StartPlaying'),
+                    ),
+                    Expanded(
+                      child: VodPlayerView(
+                        controller: controller,
+                        title: 'Filme Lento',
+                        isLoading: isLoading,
+                        onTogglePlayPause: () {},
+                        onBack: () {},
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+
+      // Simula 5 segundos de carregamento inicial antes de iniciar playback
+      await tester.pump(const Duration(seconds: 5));
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+
+      // Agora o vídeo começou a tocar
+      await tester.tap(find.text('StartPlaying'));
+      await tester.pump();
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+
+      // Após 2.6 segundos de reprodução ativa, os controles devem auto-ocultar
+      await tester.pump(const Duration(milliseconds: 2600));
+      expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
+    });
+
+    testWidgets('Pular Abertura (+85s) flutuante auto-oculta após 10s, mas permanece acessível ao abrir o OSD antes de 180s', (tester) async {
+      final controller = _FakePlayerController(
+        position: const Duration(seconds: 5),
+        duration: const Duration(minutes: 45),
+        isPlaying: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: VodPlayerView(
+              controller: controller,
+              title: 'Série Teste T1E1',
+              isSeriesEpisode: true,
+              onTogglePlayPause: () {},
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // OSD oculta em 2.5s; pílula flutuante segue visível antes dos 10s
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
+      expect(find.text('Pular Abertura (+85s)'), findsOneWidget);
+
+      // Após completar 10s de exibição, a pílula flutuante some da tela
+      await tester.pump(const Duration(seconds: 8));
+      expect(find.text('Pular Abertura (+85s)'), findsNothing);
+
+      // Se o usuário abrir os controles OSD manualmente (< 180s), a opção segue acessível lá dentro
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+      expect(find.text('Pular Abertura (+85s)'), findsOneWidget);
+    });
+
+    testWidgets('Voltar do sistema (maybePop) exige 2 cliques em VodPlayerScreen: 1º oculta controles, 2º sai', (tester) async {
+      final controller = _FakePlayerController(
+        position: const Duration(minutes: 5),
+        duration: const Duration(minutes: 100),
+        isPlaying: true,
+      );
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => VodPlayerScreen(
+                        movie: const XtreamVodStream(
+                          streamId: 500,
+                          name: 'Filme Two-Back',
+                          categoryId: '1',
+                          containerExtension: 'mp4',
+                        ),
+                        streamUrls: const ['https://example.com/500.mp4'],
+                        accountKey: 'acc',
+                        testController: controller,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('AbrirVod'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('AbrirVod'));
+      await tester.pumpAndSettle();
+      expect(find.byType(VodPlayerScreen), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+
+      // 1º maybePop (Voltar físico entregue via rota Android): apenas oculta controles
+      await Navigator.of(tester.element(find.byType(VodPlayerView))).maybePop();
+      await tester.pumpAndSettle();
+      expect(find.byType(VodPlayerScreen), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
+
+      // Aguarda debounce e envia 2º maybePop: retorna à tela anterior
+      await tester.pump(const Duration(milliseconds: 400));
+      await Navigator.of(tester.element(find.byType(VodPlayerView))).maybePop();
+      await tester.pumpAndSettle();
+      expect(find.byType(VodPlayerScreen), findsNothing);
+      expect(find.text('AbrirVod'), findsOneWidget);
+    });
+
+    testWidgets('Voltar do sistema (maybePop) exige 2 cliques em SeriesPlayerScreen: 1º oculta controles/Pular Abertura, 2º sai', (tester) async {
+      final controller = _FakePlayerController(
+        position: Duration.zero,
+        duration: const Duration(minutes: 45),
+        isPlaying: true,
+      );
+      addTearDown(controller.dispose);
+
+      final catalogService = XtreamCatalogService(
+        serverUrl: 'http://ls-prime.site',
+        username: 'user',
+        password: 'pass',
+      );
+      const ep = XtreamSeriesEpisode(
+        id: 700,
+        episodeNum: 1,
+        title: 'Piloto',
+        seasonNumber: 1,
+      );
+      const info = XtreamSeriesInfo(
+        name: 'Série Two-Back',
+        seasons: [XtreamSeriesSeason(seasonNumber: 1, name: 'Temporada 1')],
+        episodesBySeason: {
+          1: [ep],
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SeriesPlayerScreen(
+                        series: const XtreamSeriesItem(
+                          seriesId: 10,
+                          name: 'Série Two-Back',
+                          categoryId: '2',
+                        ),
+                        seriesInfo: info,
+                        initialEpisode: ep,
+                        catalogService: catalogService,
+                        accountKey: 'acc',
+                        testController: controller,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('AbrirSerie'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('AbrirSerie'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeriesPlayerScreen), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+
+      // 1º maybePop oculta controles e botão Pular Abertura sem sair
+      await Navigator.of(tester.element(find.byType(VodPlayerView))).maybePop();
+      await tester.pumpAndSettle();
+      expect(find.byType(SeriesPlayerScreen), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
+      expect(find.text('Pular Abertura (+85s)'), findsNothing);
+
+      // Aguarda debounce e envia 2º maybePop: retorna à tela anterior
+      await tester.pump(const Duration(milliseconds: 400));
+      await Navigator.of(tester.element(find.byType(VodPlayerView))).maybePop();
+      await tester.pumpAndSettle();
+      expect(find.byType(SeriesPlayerScreen), findsNothing);
+      expect(find.text('AbrirSerie'), findsOneWidget);
     });
   });
 }

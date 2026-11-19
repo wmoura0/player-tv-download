@@ -128,7 +128,7 @@ class MainActivity : FlutterActivity() {
                                 @Suppress("DEPRECATION")
                                 pInfo.versionCode
                             }
-                            val vName = pInfo.versionName ?: "1.2.11"
+                            val vName = pInfo.versionName ?: "1.2.12"
                             result.success(mapOf(
                                 "versionName" to vName,
                                 "versionCode" to vCode,
@@ -273,6 +273,7 @@ class MainActivity : FlutterActivity() {
                         if (apkUrl.isBlank() || fileSize <= 0L || sha256.isBlank()) {
                             result.error("INVALID_PARAMS", "Parâmetros do APK inválidos", null)
                         } else {
+                            OtaDownloadWorker.clearState(applicationContext)
                             OtaDownloadWorker.saveState(
                                 context = applicationContext,
                                 status = "DOWNLOADING",
@@ -318,6 +319,7 @@ class MainActivity : FlutterActivity() {
                         val errorMessage = prefs.getString(OtaDownloadWorker.KEY_ERROR_MESSAGE, null)
                         val targetVersionCode = prefs.getInt(OtaDownloadWorker.KEY_VERSION_CODE, 0)
                         val targetVersionName = prefs.getString(OtaDownloadWorker.KEY_VERSION_NAME, null)
+                        var verifiedSha256 = prefs.getString(OtaDownloadWorker.KEY_SHA256, null)
 
                         // Se o status nativo persistido for READY_TO_INSTALL, inspeciona o APK real em disco
                         if (status == "READY_TO_INSTALL" && apkPath != null) {
@@ -326,6 +328,7 @@ class MainActivity : FlutterActivity() {
                                 OtaDownloadWorker.clearState(applicationContext)
                                 status = "IDLE"
                                 apkPath = null
+                                verifiedSha256 = null
                             } else {
                                 val currentCode = try {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -354,6 +357,7 @@ class MainActivity : FlutterActivity() {
                                     OtaDownloadWorker.clearState(applicationContext)
                                     status = "IDLE"
                                     apkPath = null
+                                    verifiedSha256 = null
                                 }
                             }
                         }
@@ -366,7 +370,8 @@ class MainActivity : FlutterActivity() {
                             "apkPath" to apkPath,
                             "errorMessage" to errorMessage,
                             "versionCode" to targetVersionCode,
-                            "versionName" to targetVersionName
+                            "versionName" to targetVersionName,
+                            "sha256" to verifiedSha256
                         )
                         result.success(map)
                     }

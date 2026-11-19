@@ -739,6 +739,28 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       );
     }
 
+    String? firstNonEmptyUrl(List<String?> candidates) {
+      for (final c in candidates) {
+        if (c != null) {
+          final trimmed = c.trim();
+          if (trimmed.isNotEmpty && trimmed.toLowerCase() != 'null') {
+            return trimmed;
+          }
+        }
+      }
+      return null;
+    }
+
+    final currentSeason = info.seasons
+        .where((s) => s.seasonNumber == _selectedSeasonNumber)
+        .firstOrNull;
+    final fallbackImageUrl = firstNonEmptyUrl([
+      currentSeason?.cover,
+      info.backdrop,
+      info.cover,
+      _currentSeries.cover,
+    ]);
+
     return ListView.separated(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -751,6 +773,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         return _EpisodeTile(
           episode: ep,
           progress: prog,
+          fallbackImageUrl: fallbackImageUrl,
           onTap: () => _onEpisodeTap(ep),
         );
       },
@@ -1066,15 +1089,17 @@ class _SeasonChipState extends State<_SeasonChip> {
   }
 }
 
-/// Linha de episódio com destaque de foco e indicador de progresso
+/// Linha de episódio com miniatura 16:9, destaque de foco e indicador de progresso
 class _EpisodeTile extends StatefulWidget {
   final XtreamSeriesEpisode episode;
   final PlaybackProgress? progress;
+  final String? fallbackImageUrl;
   final VoidCallback onTap;
 
   const _EpisodeTile({
     required this.episode,
     required this.progress,
+    this.fallbackImageUrl,
     required this.onTap,
   });
 
@@ -1085,6 +1110,112 @@ class _EpisodeTile extends StatefulWidget {
 class _EpisodeTileState extends State<_EpisodeTile> {
   bool _isFocused = false;
 
+  Widget _buildEpisodeThumbnail(
+    XtreamSeriesEpisode ep,
+    double width,
+    double height,
+  ) {
+    final rawCover = ep.cover?.trim();
+    final imageUrl = (rawCover != null &&
+            rawCover.isNotEmpty &&
+            rawCover.toLowerCase() != 'null')
+        ? rawCover
+        : widget.fallbackImageUrl;
+
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSecondary,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
+          width: _isFocused ? 1.6 : 1.0,
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(7),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (imageUrl != null && imageUrl.isNotEmpty)
+              Image.network(
+                imageUrl,
+                width: width,
+                height: height,
+                fit: BoxFit.cover,
+                cacheWidth: 280,
+                filterQuality: FilterQuality.low,
+                gaplessPlayback: true,
+                errorBuilder: (_, _, _) => _buildThumbnailFallback(),
+              )
+            else
+              _buildThumbnailFallback(),
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.45),
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.35),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 5,
+              left: 5,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.78),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(
+                    color: _isFocused
+                        ? AppColors.focusCyan
+                        : Colors.white.withValues(alpha: 0.25),
+                    width: 1,
+                  ),
+                ),
+                child: Text(
+                  'E${ep.episodeNum}',
+                  style: TextStyle(
+                    color: _isFocused ? AppColors.focusCyan : Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildThumbnailFallback() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF141D2F), Color(0xFF0A0F1A)],
+        ),
+      ),
+      child: Center(
+        child: Icon(
+          Icons.movie_creation_outlined,
+          color: AppColors.primary.withValues(alpha: 0.65),
+          size: 26,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ep = widget.episode;
@@ -1093,6 +1224,9 @@ class _EpisodeTileState extends State<_EpisodeTile> {
     final progressFraction = (hasProgress && prog.duration.inMilliseconds > 0)
         ? (prog.position.inMilliseconds / prog.duration.inMilliseconds).clamp(0.0, 1.0)
         : 0.0;
+    final isCompact = MediaQuery.sizeOf(context).width < 500;
+    final thumbWidth = isCompact ? 112.0 : 136.0;
+    final thumbHeight = isCompact ? 63.0 : 76.0;
 
     return FocusableActionDetector(
       shortcuts: DeviceUtils.dpadSelectShortcuts,
@@ -1109,7 +1243,7 @@ class _EpisodeTileState extends State<_EpisodeTile> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: _isFocused ? AppColors.surfaceSecondary : AppColors.surfaceSecondary.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(12),
@@ -1134,31 +1268,8 @@ class _EpisodeTileState extends State<_EpisodeTile> {
             children: [
               Row(
                 children: [
-                  // Badge do número do episódio
-                  Container(
-                    width: 42,
-                    height: 42,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: _isFocused
-                          ? AppColors.focusCyan.withValues(alpha: 0.2)
-                          : AppColors.surfaceSecondary,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: _isFocused ? AppColors.focusCyan : AppColors.borderSubtle,
-                        width: 1.2,
-                      ),
-                    ),
-                    child: Text(
-                      'E${ep.episodeNum}',
-                      style: TextStyle(
-                        color: _isFocused ? AppColors.focusCyan : AppColors.primary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
+                  _buildEpisodeThumbnail(ep, thumbWidth, thumbHeight),
+                  const SizedBox(width: 12),
 
                   // Título e Duração
                   Expanded(
@@ -1176,16 +1287,17 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                           ),
                         ),
                         const SizedBox(height: 3),
-                        Row(
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 2,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
-                            if (ep.duration != null && ep.duration!.isNotEmpty) ...[
+                            if (ep.duration != null && ep.duration!.isNotEmpty)
                               Text(
                                 ep.duration!,
                                 style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
                               ),
-                              const SizedBox(width: 8),
-                            ],
-                            if (hasProgress) ...[
+                            if (hasProgress)
                               Text(
                                 '•  ${PlaybackProgressService.formatDuration(prog.position)} assistido',
                                 style: const TextStyle(
@@ -1194,18 +1306,18 @@ class _EpisodeTileState extends State<_EpisodeTile> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                            ],
                           ],
                         ),
                       ],
                     ),
                   ),
 
+                  const SizedBox(width: 8),
                   // Ícone de Play
                   Icon(
                     Icons.play_circle_fill_rounded,
                     color: _isFocused ? AppColors.focusCyan : AppColors.primary,
-                    size: 32,
+                    size: 30,
                   ),
                 ],
               ),

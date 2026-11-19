@@ -135,7 +135,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      OtaUpdateService.instance.syncWithNativeStatus();
+      OtaUpdateService.instance.onAppResumed();
     }
   }
 
@@ -359,7 +359,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           try {
             final vodInfo = await service
                 .fetchVodInfo(item.streamId)
-                .timeout(const Duration(milliseconds: 2500), onTimeout: () => null);
+                .timeout(const Duration(milliseconds: 1200), onTimeout: () => null);
             if (vodInfo?.containerExtension != null && vodInfo!.containerExtension!.trim().isNotEmpty) {
               effectiveExt = vodInfo.containerExtension!.trim();
             }
@@ -446,13 +446,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           categoryId: item.categoryId ?? '0',
         );
 
-        // Consulta rápida em memória/disco ou rede (máx. 2,5s) sem bloquear a Home com carga total de séries.
-        // Caso o ID ou série precisem de recuperação profunda, o próprio SeriesPlayerScreen resolve na tela do player.
+        // Consulta instantânea apenas em memória/disco (sem espera de rede na Home).
+        // Caso o ID ou série precisem de hidratação/recuperação, o SeriesPlayerScreen resolve em paralelo.
         XtreamSeriesInfo? info;
         try {
-          final candidateInfo = await service
-              .fetchSeriesInfo(effectiveSeriesId)
-              .timeout(const Duration(milliseconds: 2500), onTimeout: () => null);
+          final candidateInfo = await service.getCachedSeriesInfo(effectiveSeriesId);
           if (candidateInfo != null && !candidateInfo.isOrphanedOrStub) {
             info = candidateInfo;
           }

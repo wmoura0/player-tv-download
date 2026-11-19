@@ -248,21 +248,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
   }
 
-  Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
-    _resumptionTarget = initialPosition;
-    _seekAttempted = false;
-    _smartSourceAttempted = false;
-    _smartSourceStatusMessage = null;
-
-    // Se veio da Home com estrutura mínima para abertura imediata, hidrata os detalhes da série aqui dentro do player
-    final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
-    if (knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
-      try {
-        final hydratedInfo = await widget.catalogService
-            .fetchSeriesInfo(widget.series.seriesId)
-            .timeout(const Duration(seconds: 4));
-        if (!mounted) return;
-        if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
+  Future<void> _hydrateSeriesInfoInBackground(int seriesId) async {
+    try {
+      final hydratedInfo = await widget.catalogService
+          .fetchSeriesInfo(seriesId)
+          .timeout(const Duration(seconds: 6));
+      if (!mounted) return;
+      if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
+        setState(() {
           _currentSeriesInfo = hydratedInfo;
           final hydratedEp = hydratedInfo.findEpisodeById(_currentEpisode.id) ??
               hydratedInfo.findEpisodeBySeasonAndNum(_currentEpisode.seasonNumber, _currentEpisode.episodeNum);
@@ -270,6 +263,33 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             _currentEpisode = hydratedEp;
           }
           _updateNextEpisode();
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
+    _resumptionTarget = initialPosition;
+    _seekAttempted = false;
+    _smartSourceAttempted = false;
+    _smartSourceStatusMessage = null;
+
+    // Hidratação instantânea do cache local; se ausente, busca na rede em paralelo sem bloquear o vídeo
+    final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
+    if (knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
+      try {
+        final cachedInfo = await widget.catalogService.getCachedSeriesInfo(widget.series.seriesId);
+        if (!mounted) return;
+        if (cachedInfo != null && !cachedInfo.isOrphanedOrStub) {
+          _currentSeriesInfo = cachedInfo;
+          final hydratedEp = cachedInfo.findEpisodeById(_currentEpisode.id) ??
+              cachedInfo.findEpisodeBySeasonAndNum(_currentEpisode.seasonNumber, _currentEpisode.episodeNum);
+          if (hydratedEp != null) {
+            _currentEpisode = hydratedEp;
+          }
+          _updateNextEpisode();
+        } else {
+          unawaited(_hydrateSeriesInfoInBackground(widget.series.seriesId));
         }
       } catch (_) {}
     }
@@ -356,11 +376,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       // 1. Inicia o watchdog de buffer inicial
       _startInitialBufferingWatchdog(epoch);
 
-      // 2. Aciona play() para estabelecer o pipeline ativo de decodificação no ExoPlayer
-      await controller.play();
-      PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
-
-      // 3. Aplica o seekTo se houver posição salva válida para retomar
+      // 2. Aplica seekTo ANTES de play() para que o ExoPlayer já faça buffer direto na posição salva
       if (initialPosition != null && initialPosition > Duration.zero) {
         Duration target = initialPosition;
         if (detectedDur > Duration.zero && target >= detectedDur) {
@@ -375,9 +391,6 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           debugPrint('[SERIES PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(initialPosition)})...');
           try {
             await controller.seekTo(target);
-            if (!controller.value.isPlaying) {
-              await controller.play();
-            }
             debugPrint('[SERIES PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[SERIES PLAYER] [SEEK] Aviso: falha ao buscar ponto salvo ($seekError). Reproduzindo do início.');
@@ -386,6 +399,10 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           }
         }
       }
+
+      // 3. Aciona play() após posicionar o cursor inicial
+      await controller.play();
+      PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -818,43 +835,36 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        await _handleExit();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          top: false,
-          bottom: false,
-          left: false,
-          right: false,
-          child: VodPlayerView(
-            controller: _controller,
-            title: _displayTitle,
-            coverUrl: _currentEpisode.cover ?? widget.series.cover,
-            badgeText: 'SÉRIE',
-            isSeriesEpisode: true,
-            loadingMessage: _smartSourceStatusMessage ?? 'Carregando episódio...',
-            fitMode: _fitMode,
-            onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-            onTogglePlayPause: _togglePlayPause,
-            onSeekRelative: _seekRelative,
-            onSeekFraction: _seekFraction,
-            onBack: _handleExit,
-            onNextEpisode: _nextEpisode != null ? _playNextEpisode : null,
-            nextEpisodeTitle: _nextEpisodeDisplayTitle,
-            nextEpisodeCountdown: _countdownSeconds,
-            onCancelNextEpisode: _cancelCountdown,
-            onPlayNextEpisodeNow: _playNextEpisode,
-            isLoading: _isLoading || _smartSourceStatusMessage != null,
-            isBuffering: _isBuffering,
-            errorMessage: _errorMessage,
-            onRetry: () => _initCurrentEpisode(
-              initialPosition: _resumptionTarget ?? widget.initialPosition,
-            ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        left: false,
+        right: false,
+        child: VodPlayerView(
+          controller: _controller,
+          title: _displayTitle,
+          coverUrl: _currentEpisode.cover ?? widget.series.cover,
+          badgeText: 'SÉRIE',
+          isSeriesEpisode: true,
+          loadingMessage: _smartSourceStatusMessage ?? 'Carregando episódio...',
+          fitMode: _fitMode,
+          onFitModeChanged: (mode) => setState(() => _fitMode = mode),
+          onTogglePlayPause: _togglePlayPause,
+          onSeekRelative: _seekRelative,
+          onSeekFraction: _seekFraction,
+          onBack: _handleExit,
+          onNextEpisode: _nextEpisode != null ? _playNextEpisode : null,
+          nextEpisodeTitle: _nextEpisodeDisplayTitle,
+          nextEpisodeCountdown: _countdownSeconds,
+          onCancelNextEpisode: _cancelCountdown,
+          onPlayNextEpisodeNow: _playNextEpisode,
+          isLoading: _isLoading || _smartSourceStatusMessage != null,
+          isBuffering: _isBuffering,
+          errorMessage: _errorMessage,
+          onRetry: () => _initCurrentEpisode(
+            initialPosition: _resumptionTarget ?? widget.initialPosition,
           ),
         ),
       ),

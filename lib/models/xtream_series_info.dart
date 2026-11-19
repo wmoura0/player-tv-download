@@ -153,11 +153,32 @@ class XtreamSeriesEpisode {
     final rawDurationSecs = info['duration_secs'] ?? info['duration_seconds'] ?? json['duration_secs'];
     final durationSecs = int.tryParse(rawDurationSecs?.toString() ?? '');
 
-    final rawCover = info['movie_image']?.toString() ??
-        json['cover']?.toString() ??
-        info['cover_big']?.toString() ??
-        json['cover_big']?.toString();
-    final cover = (rawCover != null && rawCover.trim().isNotEmpty) ? rawCover.trim() : null;
+    String? pickNonEmptyImage(List<dynamic> candidates) {
+      for (final raw in candidates) {
+        if (raw == null) continue;
+        final trimmed = raw.toString().trim();
+        if (trimmed.isNotEmpty && trimmed.toLowerCase() != 'null') {
+          return trimmed;
+        }
+      }
+      return null;
+    }
+
+    final cover = pickNonEmptyImage([
+      info['movie_image'],
+      info['episode_image'],
+      info['still_path'],
+      json['movie_image'],
+      json['episode_image'],
+      json['still_path'],
+      json['cover'],
+      info['cover_big'],
+      json['cover_big'],
+      info['cover'],
+      json['stream_icon'],
+      info['image'],
+      json['image'],
+    ]);
 
     final rawRating = info['rating']?.toString() ?? json['rating']?.toString();
     final rating = (rawRating != null && rawRating.trim().isNotEmpty) ? rawRating.trim() : null;

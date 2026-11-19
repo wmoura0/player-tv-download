@@ -97,9 +97,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _startOtaDownload(UpdateManifest manifest) async {
     try {
-      final file = await OtaUpdateService.instance.downloadApk(manifest);
+      final file = await OtaUpdateService.instance.downloadApk(manifest, autoInstall: true);
       if (file != null && mounted) {
-        _showSnackbar('Download concluído e validado com sucesso! Pronto para instalar.');
+        _showSnackbar('Download concluído e validado com sucesso! Abrindo instalador...');
       }
     } catch (e) {
       if (mounted) {

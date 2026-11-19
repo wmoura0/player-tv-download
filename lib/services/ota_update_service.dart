@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -94,7 +95,7 @@ class OtaUpdateService extends ChangeNotifier {
   static const Duration _minCheckInterval = Duration(hours: 2);
   static const int _maxApkSizeBytes = 250 * 1024 * 1024; // 250 MB limite de proteção
 
-  // Versão instalada corrente (obtida dinamicamente do sistema nativo, com fallback para 1.2.11+14)
+  // Versão instalada corrente (obtida dinamicamente do sistema nativo, com fallback para 1.2.12+15)
   static String get currentVersionName => DeviceUtils.installedVersionName;
   static int get currentVersionCode => DeviceUtils.installedVersionCode;
 
@@ -104,6 +105,11 @@ class OtaUpdateService extends ChangeNotifier {
   bool _isCancelled = false;
   bool _isDialogShowing = false;
   bool get isDialogShowing => _isDialogShowing;
+  bool _isSyncingNative = false;
+  bool _autoInstallWhenReady = false;
+  bool _waitingForInstallPermission = false;
+  String? _validatedApkPath;
+  String? _validatedApkSha256;
 
   UpdateStatus _status = UpdateStatus.idle;
   UpdateStatus get status => _status;
@@ -202,8 +208,16 @@ class OtaUpdateService extends ChangeNotifier {
 
       if (!force && (now - lastCheckMs) < _minCheckInterval.inMilliseconds) {
         debugPrint('[OTA] Verificação silenciosa ignorada: última checagem recente.');
-        // Se já houver um download prévio pronto para instalar, sincroniza
+        // Se já houver um download prévio pronto para instalar, sincroniza e reexibe o modal
         await syncWithNativeStatus();
+        if (_status == UpdateStatus.readyToInstall &&
+            _latestManifest != null &&
+            context.mounted &&
+            !_isDialogShowing) {
+          _isDialogShowing = true;
+          await OtaUpdateDialog.show(context, _latestManifest!, service: this);
+          _isDialogShowing = false;
+        }
         return null;
       }
 
@@ -293,6 +307,10 @@ class OtaUpdateService extends ChangeNotifier {
         return UpdateCheckResult.updateAvailable(manifest);
       } else {
         _status = UpdateStatus.upToDate;
+        _downloadedApkFile = null;
+        _autoInstallWhenReady = false;
+        _waitingForInstallPermission = false;
+        await cleanOldApks();
         notifyListeners();
         return UpdateCheckResult.upToDate(manifest);
       }
@@ -323,8 +341,16 @@ class OtaUpdateService extends ChangeNotifier {
     }
   }
 
+  @visibleForTesting
+  void setAutoInstallForTesting(bool value) {
+    _autoInstallWhenReady = value;
+  }
+
   /// Sincroniza o estado do download com o Android WorkManager nativo.
   Future<void> syncWithNativeStatus() async {
+    if (_isSyncingNative) return;
+    _isSyncingNative = true;
+    var shouldAutoInstall = false;
     try {
       final statusMap = await DeviceUtils.getOtaDownloadStatus();
       if (statusMap == null) return;
@@ -359,61 +385,108 @@ class OtaUpdateService extends ChangeNotifier {
         _downloadProgress = 1.0;
       } else if (nativeStatus == 'READY_TO_INSTALL') {
         final nativeVersionCode = statusMap['versionCode'] as int?;
+        final nativeSha256 = (statusMap['sha256'] as String?)?.trim().toLowerCase();
         if (_latestManifest != null && _latestManifest!.versionCode <= currentVersionCode) {
           _status = UpdateStatus.upToDate;
           _downloadedApkFile = null;
+          _autoInstallWhenReady = false;
           await cleanOldApks();
         } else if (nativeVersionCode != null && nativeVersionCode <= currentVersionCode) {
           _status = UpdateStatus.upToDate;
           _downloadedApkFile = null;
+          _autoInstallWhenReady = false;
           await cleanOldApks();
         } else if (apkPath != null && apkPath.isNotEmpty) {
           final f = File(apkPath);
           final exists = await f.exists();
           if (_latestManifest != null && exists) {
+            final expectedSha = _latestManifest!.sha256.trim().toLowerCase();
             final fLen = await f.length();
-            if (fLen == _latestManifest!.fileSize) {
+            if (fLen != _latestManifest!.fileSize) {
+              debugPrint('[OTA] Tamanho do APK baixado ($fLen) difere do manifesto (${_latestManifest!.fileSize}). Descartando.');
+              _autoInstallWhenReady = false;
+              await cleanOldApks();
+              _status = UpdateStatus.updateAvailable;
+              _downloadedApkFile = null;
+            } else if (nativeSha256 != null && nativeSha256.isNotEmpty && nativeSha256 != expectedSha) {
+              debugPrint('[OTA] Hash SHA-256 reportado pelo nativo difere do manifesto. Descartando arquivo legado.');
+              _autoInstallWhenReady = false;
+              await cleanOldApks();
+              _status = UpdateStatus.updateAvailable;
+              _downloadedApkFile = null;
+            } else if ((nativeSha256 != null && nativeSha256 == expectedSha) ||
+                (_validatedApkPath == apkPath && _validatedApkSha256 == expectedSha)) {
+              _validatedApkPath = apkPath;
+              _validatedApkSha256 = expectedSha;
+              _status = UpdateStatus.readyToInstall;
+              _downloadProgress = 1.0;
+              _downloadedApkFile = f;
+            } else {
               final hash = await _calculateSha256(f);
-              if (hash.toLowerCase() == _latestManifest!.sha256.toLowerCase()) {
+              if (hash.toLowerCase() == expectedSha) {
+                _validatedApkPath = apkPath;
+                _validatedApkSha256 = expectedSha;
                 _status = UpdateStatus.readyToInstall;
                 _downloadProgress = 1.0;
                 _downloadedApkFile = f;
               } else {
                 debugPrint('[OTA] Hash SHA-256 do APK baixado difere do manifesto. Descartando arquivo legado.');
+                _autoInstallWhenReady = false;
                 await cleanOldApks();
                 _status = UpdateStatus.updateAvailable;
                 _downloadedApkFile = null;
               }
-            } else {
-              debugPrint('[OTA] Tamanho do APK baixado ($fLen) difere do manifesto (${_latestManifest!.fileSize}). Descartando.');
+            }
+          } else {
+            if (nativeSha256 != null &&
+                nativeSha256.isNotEmpty &&
+                _latestManifest != null &&
+                nativeSha256 != _latestManifest!.sha256.trim().toLowerCase()) {
+              debugPrint('[OTA] Hash SHA-256 reportado pelo nativo difere do manifesto. Descartando.');
+              _autoInstallWhenReady = false;
               await cleanOldApks();
               _status = UpdateStatus.updateAvailable;
               _downloadedApkFile = null;
+            } else {
+              // Em testes unitários com caminho mock ou quando o arquivo foi validado pelo nativo
+              _status = UpdateStatus.readyToInstall;
+              _downloadProgress = 1.0;
+              _downloadedApkFile = f;
             }
-          } else {
-            // Em testes unitários com caminho mock ou quando o arquivo foi validado pelo nativo
-            _status = UpdateStatus.readyToInstall;
-            _downloadProgress = 1.0;
-            _downloadedApkFile = f;
           }
         } else {
           // Sem arquivo: estado ocioso seguro
           _downloadedApkFile = null;
+          _autoInstallWhenReady = false;
           _status = UpdateStatus.idle;
         }
         _stopNativeSync();
       } else if (nativeStatus == 'ERROR') {
+        _autoInstallWhenReady = false;
         _status = UpdateStatus.error;
         _errorMessage = err ?? 'Falha no download da atualização.';
         _stopNativeSync();
       } else if (nativeStatus == 'CANCELLED') {
+        _autoInstallWhenReady = false;
         if (_status == UpdateStatus.downloading || _status == UpdateStatus.resuming) {
           _status = UpdateStatus.idle;
         }
         _stopNativeSync();
       }
+
+      if (_status == UpdateStatus.readyToInstall && _autoInstallWhenReady) {
+        shouldAutoInstall = true;
+        _autoInstallWhenReady = false;
+      }
       notifyListeners();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _isSyncingNative = false;
+    }
+
+    if (shouldAutoInstall) {
+      await installDownloadedApk();
+    }
   }
 
   void _startNativeSync(UpdateManifest manifest, void Function(int received, int total, double progress)? onProgress) {
@@ -423,6 +496,8 @@ class OtaUpdateService extends ChangeNotifier {
       onProgress?.call(_bytesDownloaded, _totalBytesToDownload, _downloadProgress);
 
       if (_status == UpdateStatus.readyToInstall ||
+          _status == UpdateStatus.waitingConfirmation ||
+          _status == UpdateStatus.upToDate ||
           _status == UpdateStatus.error ||
           _status == UpdateStatus.idle) {
         timer.cancel();
@@ -451,10 +526,13 @@ class OtaUpdateService extends ChangeNotifier {
     UpdateManifest manifest, {
     void Function(int received, int total, double progress)? onProgress,
     bool forceDartFallback = false,
+    bool autoInstall = false,
   }) async {
     _latestManifest = manifest;
     _errorMessage = null;
     _isCancelled = false;
+    _autoInstallWhenReady = autoInstall;
+    _waitingForInstallPermission = false;
 
     final apkUri = Uri.tryParse(manifest.apkUrl.trim());
     if (apkUri == null || apkUri.scheme.toLowerCase() != 'https') {
@@ -495,7 +573,12 @@ class OtaUpdateService extends ChangeNotifier {
     }
 
     // Fallback puro Dart (para testes ou falhas do WorkManager)
-    return _downloadApkDartFallback(manifest, onProgress: onProgress);
+    final file = await _downloadApkDartFallback(manifest, onProgress: onProgress);
+    if (file != null && _autoInstallWhenReady && _status == UpdateStatus.readyToInstall) {
+      _autoInstallWhenReady = false;
+      await installDownloadedApk();
+    }
+    return file;
   }
 
   Future<File?> _downloadApkDartFallback(
@@ -621,6 +704,8 @@ class OtaUpdateService extends ChangeNotifier {
   /// Cancela o download em andamento (no WorkManager e/ou no Dart).
   Future<void> cancelDownload() async {
     _isCancelled = true;
+    _autoInstallWhenReady = false;
+    _waitingForInstallPermission = false;
     _stopNativeSync();
     _activeDownloadClient?.close();
     _activeDownloadClient = null;
@@ -635,8 +720,24 @@ class OtaUpdateService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Sincroniza versão instalada, retoma instalação após permissão concedida e atualiza estado nativo.
+  Future<void> onAppResumed() async {
+    await DeviceUtils.loadAppVersion();
+    if (_waitingForInstallPermission && _downloadedApkFile != null) {
+      final canInstall = await DeviceUtils.canRequestPackageInstalls();
+      if (canInstall) {
+        _waitingForInstallPermission = false;
+        await installDownloadedApk();
+        return;
+      }
+    }
+    await syncWithNativeStatus();
+  }
+
   /// Dispara a instalação oficial através do DeviceUtils e FileProvider.
   Future<bool> installDownloadedApk() async {
+    _autoInstallWhenReady = false;
+    _errorMessage = null;
     final file = _downloadedApkFile;
     if (file == null || !await file.exists()) {
       _errorMessage = 'Nenhum arquivo APK validado pronto para instalação.';
@@ -648,16 +749,44 @@ class OtaUpdateService extends ChangeNotifier {
     try {
       final canInstall = await DeviceUtils.canRequestPackageInstalls();
       if (!canInstall) {
+        _waitingForInstallPermission = true;
         _status = UpdateStatus.waitingConfirmation;
+        _errorMessage = 'Ative a permissão para instalar apps desconhecidos e volte ao JessFlix.';
         notifyListeners();
         await DeviceUtils.openInstallPermissionSettings();
         return false;
       }
 
+      _waitingForInstallPermission = false;
       _status = UpdateStatus.waitingConfirmation;
       notifyListeners();
-      final success = await DeviceUtils.installApk(file.path);
-      return success;
+      final res = await DeviceUtils.installApkWithResult(file.path);
+      if (res.success) {
+        return true;
+      }
+
+      if (res.errorCode == 'DOWNGRADE_PREVENTED') {
+        _status = UpdateStatus.upToDate;
+        _downloadedApkFile = null;
+        _errorMessage = null;
+        await cleanOldApks();
+        notifyListeners();
+        return false;
+      }
+
+      if (res.errorCode == 'CORRUPT_APK' || res.errorCode == 'FILE_NOT_FOUND') {
+        _status = UpdateStatus.updateAvailable;
+        _downloadedApkFile = null;
+        _errorMessage = res.errorMessage ?? 'Arquivo de atualização inválido. Tente baixar novamente.';
+        await cleanOldApks();
+        notifyListeners();
+        return false;
+      }
+
+      _status = UpdateStatus.error;
+      _errorMessage = res.errorMessage ?? 'Não foi possível abrir o instalador nativo do Android.';
+      notifyListeners();
+      return false;
     } catch (e) {
       _errorMessage = 'Erro ao disparar instalador: $e';
       _status = UpdateStatus.error;
@@ -668,9 +797,12 @@ class OtaUpdateService extends ChangeNotifier {
 
   /// Limpa arquivos temporários de atualizações antigas.
   Future<void> cleanOldApks() async {
+    _validatedApkPath = null;
+    _validatedApkSha256 = null;
     try {
       await DeviceUtils.cleanOldApks();
     } catch (_) {}
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
     try {
       final tempDir = await getTemporaryDirectory();
       final entities = tempDir.listSync();
@@ -685,6 +817,17 @@ class OtaUpdateService extends ChangeNotifier {
   }
 
   static Future<String> _calculateSha256(File file) async {
+    final filePath = file.path;
+    try {
+      final len = await file.length();
+      if (len > 1024 * 1024) {
+        return await Isolate.run(() async {
+          final stream = File(filePath).openRead();
+          final digest = await sha256.bind(stream).first;
+          return digest.toString();
+        });
+      }
+    } catch (_) {}
     final stream = file.openRead();
     final digest = await sha256.bind(stream).first;
     return digest.toString();

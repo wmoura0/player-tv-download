@@ -136,7 +136,7 @@ class WebViewPlayerActivity : Activity() {
 
         // User-Agent padronizado
         val defaultUserAgent = settings.userAgentString
-        settings.userAgentString = "$defaultUserAgent JessFlixFireTV/1.2.11"
+        settings.userAgentString = "$defaultUserAgent JessFlixFireTV/1.2.12"
 
         wv.addJavascriptInterface(JessFlixBridge(), "JessFlixBridge")
     }

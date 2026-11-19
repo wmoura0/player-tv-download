@@ -319,6 +319,93 @@ void main() {
       expect(find.text('Por Favor, Mantenham a Calma'), findsOneWidget);
       expect(find.text('65 min'), findsOneWidget);
     });
+
+    testWidgets('Exibe miniatura 16:9 do episódio com cacheWidth limitado e fallback seguro', (tester) async {
+      final mockClient = MockClient((request) async {
+        final body = jsonEncode({
+          'info': {
+            'name': 'Stranger Things',
+            'cover': 'https://img.example.com/series_cover.jpg',
+          },
+          'seasons': [
+            {'season_number': 1, 'name': 'Temporada 1', 'episode_count': 2},
+          ],
+          'episodes': {
+            '1': [
+              {
+                'id': 9001,
+                'episode_num': 1,
+                'title': 'Capítulo Um',
+                'info': {
+                  'movie_image': '',
+                  'still_path': 'https://img.example.com/ep1_thumb.jpg',
+                  'duration': '48 min',
+                },
+              },
+              {
+                'id': 9002,
+                'episode_num': 2,
+                'title': 'Capítulo Dois',
+                'info': {
+                  'duration': '52 min',
+                },
+              },
+            ],
+          },
+        });
+        return http.Response(body, 200);
+      });
+
+      final catalogService = XtreamCatalogService(
+        serverUrl: 'http://ls-prime.site',
+        username: 'user',
+        password: 'pass',
+        client: mockClient,
+      );
+
+      const seriesItem = XtreamSeriesItem(
+        seriesId: 90,
+        name: 'Stranger Things',
+        cover: 'https://img.example.com/series_cover.jpg',
+        categoryId: '3',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SeriesDetailScreen(
+            series: seriesItem,
+            catalogService: catalogService,
+            accountKey: 'server_user',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final ep1 = XtreamSeriesEpisode.fromJson({
+        'id': 9001,
+        'episode_num': 1,
+        'title': 'Capítulo Um',
+        'info': {
+          'movie_image': '',
+          'still_path': 'https://img.example.com/ep1_thumb.jpg',
+        },
+      }, fallbackSeasonNumber: 1);
+      expect(ep1.cover, equals('https://img.example.com/ep1_thumb.jpg'));
+
+      final images = tester.widgetList<Image>(find.byType(Image)).toList();
+      final thumbUrls = images
+          .map((img) => img.image)
+          .whereType<ResizeImage>()
+          .map((resized) => resized.imageProvider)
+          .whereType<NetworkImage>()
+          .map((net) => net.url)
+          .toList();
+
+      expect(thumbUrls, contains('https://img.example.com/ep1_thumb.jpg'));
+      expect(thumbUrls, contains('https://img.example.com/series_cover.jpg'));
+      expect(find.text('E1'), findsOneWidget);
+      expect(find.text('E2'), findsOneWidget);
+    });
   });
 
   group('VodPlayerView Series & Next Episode Overlay Tests', () {

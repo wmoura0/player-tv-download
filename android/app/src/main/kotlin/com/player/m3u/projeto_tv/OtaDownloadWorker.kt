@@ -57,6 +57,7 @@ class OtaDownloadWorker(
         const val KEY_LAST_MODIFIED = "ota_last_modified"
         const val KEY_VERSION_CODE = "ota_version_code"
         const val KEY_VERSION_NAME = "ota_version_name"
+        const val KEY_SHA256 = "ota_verified_sha256"
 
         fun getUpdatesDir(context: Context): File {
             val base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
@@ -76,7 +77,8 @@ class OtaDownloadWorker(
             apkPath: String? = null,
             errorMessage: String? = null,
             versionCode: Int? = null,
-            versionName: String? = null
+            versionName: String? = null,
+            verifiedSha256: String? = null
         ) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().apply {
@@ -88,6 +90,7 @@ class OtaDownloadWorker(
                 if (errorMessage != null) putString(KEY_ERROR_MESSAGE, errorMessage) else remove(KEY_ERROR_MESSAGE)
                 if (versionCode != null && versionCode > 0) putInt(KEY_VERSION_CODE, versionCode)
                 if (versionName != null && versionName.isNotBlank()) putString(KEY_VERSION_NAME, versionName)
+                if (verifiedSha256 != null && verifiedSha256.isNotBlank()) putString(KEY_SHA256, verifiedSha256)
                 apply()
             }
         }
@@ -131,7 +134,8 @@ class OtaDownloadWorker(
                     totalBytes = expectedSize,
                     apkPath = finalApkFile.absolutePath,
                     versionCode = targetVersionCode,
-                    versionName = targetVersionName
+                    versionName = targetVersionName,
+                    verifiedSha256 = sha
                 )
                 return@withContext Result.success()
             }
@@ -357,7 +361,8 @@ class OtaDownloadWorker(
                 totalBytes = expectedSize,
                 apkPath = finalApkFile.absolutePath,
                 versionCode = targetVersionCode,
-                versionName = targetVersionName
+                versionName = targetVersionName,
+                verifiedSha256 = actualSha256
             )
 
             showReadyNotification(targetVersionName)

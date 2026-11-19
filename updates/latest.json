@@ -1,11 +1,11 @@
 {
-  "version": "1.2.11",
-  "versionCode": 14,
+  "version": "1.2.12",
+  "versionCode": 15,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.11/JessFlix-v1.2.11.apk",
-  "fileSize": 58786725,
-  "sha256": "6e4c1f7b6f9ecdbc3065b996a9f85a675c75edae8c148265a5758eb50fdb8e8c",
-  "releaseNotes": "• Correção Definitiva do Continuar Assistindo na Home (Filmes e Séries): Resolução automática de extensão de container VOD via get_vod_info, recuperação inteligente de filmes reindexados (SmartSourceResolver) e eliminação de travamentos ao retomar episódios de séries na tela inicial.\n• Cache em Disco de Séries e Retomada Instantânea: Persistência local de metadados de séries (get_series_info) com abertura imediata do player e hidratação assíncrona.\n• Estabilidade de Seek e Controle D-Pad: Tolerância de keyframe (I-frame) no watchdog de retomada, preservação da posição ao tentar novamente e exclusão de foco D-Pad no botão de excluir do card.",
-  "publishedAt": "2026-11-18T14:24:30.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.12/JessFlix-v1.2.12.apk",
+  "fileSize": 58819529,
+  "sha256": "28bf0a7904cc8313fe2376c02408bd5fd0d0166d268db17f2ae105c4cfbc5f8b",
+  "releaseNotes": "• Atualização OTA Automática e Sem Travamentos: Ao concluir 100% do download, o instalador do sistema abre automaticamente; eliminação de múltiplas verificações SHA-256 na tela e limpeza automática de APKs antigos após atualizar.\n• Início Mais Rápido em Filmes e Séries: Abertura imediata da Home sem bloqueios de rede, hidratação paralela no player de séries e seek na retomada aplicado antes do play() para evitar duplo buffering.\n• Controles e Controle Remoto no Fire TV: Botões da tela (Pause/Avançar) somem em 2,5s, botão flutuante Pular Abertura (+85s) oculta automaticamente em 10s e botão Voltar funciona em 2 cliques reais (1º limpa a tela, 2º retorna).\n• Miniaturas nos Episódios: Lista de episódios das séries agora exibe capa/miniatura 16:9 com badge e fallback otimizados.",
+  "publishedAt": "2026-11-19T01:30:00.000Z",
   "mandatory": false
 }

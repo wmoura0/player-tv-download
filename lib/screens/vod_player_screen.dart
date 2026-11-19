@@ -296,11 +296,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       // 1. Inicia watchdog de buffer inicial
       _startInitialBufferingWatchdog(epoch);
 
-      // 2. Aciona play() para estabelecer o pipeline de decodificação ativo
-      await controller.play();
-      PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
-
-      // 3. Aplica seekTo se houver posição inicial para continuar de onde parou
+      // 2. Aplica seekTo ANTES de play() quando há retomada para evitar duplo buffering no ExoPlayer
       final effectiveInitialPos = _resumptionTarget ?? widget.initialPosition;
       if (effectiveInitialPos != null && effectiveInitialPos > Duration.zero) {
         Duration target = effectiveInitialPos;
@@ -316,9 +312,6 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           debugPrint('[VOD PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(effectiveInitialPos)})...');
           try {
             await controller.seekTo(target);
-            if (!controller.value.isPlaying) {
-              await controller.play();
-            }
             debugPrint('[VOD PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[VOD PLAYER] [SEEK] Aviso: erro no seek inicial ($seekError). Reproduzindo do início.');
@@ -327,6 +320,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           }
         }
       }
+
+      // 3. Aciona play() após posicionar o cursor inicial
+      await controller.play();
+      PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -608,37 +605,30 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        await _handleExit();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: VodPlayerView(
-          controller: _controller,
-          title: _currentMovie.name,
-          coverUrl: _currentMovie.streamIcon,
-          isSeriesEpisode: false,
-          loadingMessage: _smartSourceStatusMessage ?? 'Carregando filme...',
-          fitMode: _fitMode,
-          onFitModeChanged: (mode) => setState(() => _fitMode = mode),
-          onTogglePlayPause: _togglePlayPause,
-          onSeekRelative: _seekRelative,
-          onSeekFraction: _seekToFraction,
-          onBack: _handleExit,
-          isLoading: _isLoading || _smartSourceStatusMessage != null,
-          isBuffering: _isBuffering,
-          errorMessage: _errorMessage,
-          onRetry: () {
-            _currentUrlIndex = 0;
-            _smartSourceAttempted = false;
-            _smartSourceStatusMessage = null;
-            _resumptionTarget ??= widget.initialPosition;
-            _initPlayer();
-          },
-        ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: VodPlayerView(
+        controller: _controller,
+        title: _currentMovie.name,
+        coverUrl: _currentMovie.streamIcon,
+        isSeriesEpisode: false,
+        loadingMessage: _smartSourceStatusMessage ?? 'Carregando filme...',
+        fitMode: _fitMode,
+        onFitModeChanged: (mode) => setState(() => _fitMode = mode),
+        onTogglePlayPause: _togglePlayPause,
+        onSeekRelative: _seekRelative,
+        onSeekFraction: _seekToFraction,
+        onBack: _handleExit,
+        isLoading: _isLoading || _smartSourceStatusMessage != null,
+        isBuffering: _isBuffering,
+        errorMessage: _errorMessage,
+        onRetry: () {
+          _currentUrlIndex = 0;
+          _smartSourceAttempted = false;
+          _smartSourceStatusMessage = null;
+          _resumptionTarget ??= widget.initialPosition;
+          _initPlayer();
+        },
       ),
     );
   }

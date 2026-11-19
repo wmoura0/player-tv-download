@@ -1108,26 +1108,33 @@ class XtreamCatalogService extends ChangeNotifier {
     return series;
   }
 
-  /// Consulta os detalhes e episódios de uma série (`action=get_series_info&series_id=...`).
-  Future<XtreamSeriesInfo?> fetchSeriesInfo(int seriesId, {bool forceRefresh = false}) async {
-    if (!forceRefresh && _seriesInfoCache.containsKey(seriesId)) {
+  /// Retorna imediatamente metadados da série disponíveis em memória ou disco (sem consultar rede).
+  Future<XtreamSeriesInfo?> getCachedSeriesInfo(int seriesId) async {
+    if (_seriesInfoCache.containsKey(seriesId)) {
       debugPrint('[PERF] [CACHE HIT] get_series_info (series_id: $seriesId)');
       return _seriesInfoCache[seriesId];
     }
 
-    if (!forceRefresh) {
-      final diskData = await _readDiskCacheMap(
-        'series_info_$seriesId',
-        maxAge: const Duration(hours: 24),
-      );
-      if (diskData != null && diskData.isNotEmpty) {
-        final diskInfo = XtreamSeriesInfo.fromJson(diskData);
-        if (!diskInfo.isOrphanedOrStub) {
-          _seriesInfoCache[seriesId] = diskInfo;
-          debugPrint('[PERF] [CACHE HIT DISK] get_series_info (series_id: $seriesId)');
-          return diskInfo;
-        }
+    final diskData = await _readDiskCacheMap(
+      'series_info_$seriesId',
+      maxAge: const Duration(hours: 24),
+    );
+    if (diskData != null && diskData.isNotEmpty) {
+      final diskInfo = XtreamSeriesInfo.fromJson(diskData);
+      if (!diskInfo.isOrphanedOrStub) {
+        _seriesInfoCache[seriesId] = diskInfo;
+        debugPrint('[PERF] [CACHE HIT DISK] get_series_info (series_id: $seriesId)');
+        return diskInfo;
       }
+    }
+    return null;
+  }
+
+  /// Consulta os detalhes e episódios de uma série (`action=get_series_info&series_id=...`).
+  Future<XtreamSeriesInfo?> fetchSeriesInfo(int seriesId, {bool forceRefresh = false}) async {
+    if (!forceRefresh) {
+      final cached = await getCachedSeriesInfo(seriesId);
+      if (cached != null) return cached;
     }
 
     try {

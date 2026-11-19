@@ -472,4 +472,306 @@ void main() {
       expect(urls.last, equals('https://cdn.example.com/custom/42.mp4'));
     });
   });
+
+  group('OTA Persistent Prompt & Auto-Install Fixes', () {
+    test('checkForUpdates limpa APKs residuais quando o app já está atualizado', () async {
+      bool cleanOldApksCalled = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+        if (call.method == 'cleanOldApks') {
+          cleanOldApksCalled = true;
+          return true;
+        }
+        return null;
+      });
+
+      final mockClient = MockClient((request) async {
+        final manifest = {
+          'version': OtaUpdateService.currentVersionName,
+          'versionCode': OtaUpdateService.currentVersionCode,
+          'apkUrl': 'https://example.com/app.apk',
+          'fileSize': 50000000,
+          'sha256': 'a' * 64,
+          'releaseNotes': 'Mesma versão instalada',
+        };
+        return http.Response(jsonEncode(manifest), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final service = OtaUpdateService(client: mockClient);
+      final result = await service.checkForUpdates(customUrl: 'https://example.com/latest.json');
+
+      expect(result.isUpToDate, isTrue);
+      expect(service.status, equals(UpdateStatus.upToDate));
+      expect(service.downloadedApkFile, isNull);
+      expect(cleanOldApksCalled, isTrue);
+    });
+
+    test('syncWithNativeStatus confia no SHA-256 nativo compatível e descarta imediatamente se divergir', () async {
+      final apkFile = File('${tempDir.path}/update_v99.apk');
+      apkFile.writeAsBytesSync(utf8.encode('APK_BINARY_DATA'));
+      final expectedSha = sha256.convert(apkFile.readAsBytesSync()).toString();
+      final newVersionCode = OtaUpdateService.currentVersionCode + 1;
+
+      String nativeSha = expectedSha;
+      bool cleanOldApksCalled = false;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+        if (call.method == 'getOtaDownloadStatus') {
+          return {
+            'status': 'READY_TO_INSTALL',
+            'apkPath': apkFile.path,
+            'versionCode': newVersionCode,
+            'versionName': '1.9.9',
+            'sha256': nativeSha,
+          };
+        } else if (call.method == 'cleanOldApks') {
+          cleanOldApksCalled = true;
+          return true;
+        }
+        return null;
+      });
+
+      final mockClient = MockClient((request) async {
+        final manifest = {
+          'version': '1.9.9',
+          'versionCode': newVersionCode,
+          'apkUrl': 'https://example.com/app.apk',
+          'fileSize': apkFile.lengthSync(),
+          'sha256': expectedSha,
+          'releaseNotes': 'Teste',
+        };
+        return http.Response(jsonEncode(manifest), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final service = OtaUpdateService(client: mockClient);
+      await service.checkForUpdates(customUrl: 'https://example.com/latest.json');
+
+      expect(service.status, equals(UpdateStatus.readyToInstall));
+      expect(service.downloadedApkFile?.path, equals(apkFile.path));
+      expect(cleanOldApksCalled, isFalse);
+
+      // Simula manifesto/APK antigo com SHA nativo divergente
+      nativeSha = 'f' * 64;
+      await service.syncWithNativeStatus();
+
+      expect(service.status, equals(UpdateStatus.updateAvailable));
+      expect(service.downloadedApkFile, isNull);
+      expect(cleanOldApksCalled, isTrue);
+    });
+
+    test('syncWithNativeStatus aciona installApk automaticamente quando autoInstall está armado', () async {
+      final apkFile = File('${tempDir.path}/update_auto.apk');
+      apkFile.writeAsBytesSync(utf8.encode('AUTO_INSTALL_APK'));
+      final digest = sha256.convert(apkFile.readAsBytesSync()).toString();
+      final newVersionCode = OtaUpdateService.currentVersionCode + 1;
+
+      String? installedPath;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+        switch (call.method) {
+          case 'getOtaDownloadStatus':
+            return {
+              'status': 'READY_TO_INSTALL',
+              'apkPath': apkFile.path,
+              'versionCode': newVersionCode,
+              'versionName': '1.9.9',
+              'sha256': digest,
+            };
+          case 'canRequestPackageInstalls':
+            return true;
+          case 'installApk':
+            installedPath = (call.arguments as Map)['filePath'] as String?;
+            return true;
+          default:
+            return null;
+        }
+      });
+
+      final mockClient = MockClient((request) async {
+        final manifest = {
+          'version': '1.9.9',
+          'versionCode': newVersionCode,
+          'apkUrl': 'https://example.com/app.apk',
+          'fileSize': apkFile.lengthSync(),
+          'sha256': digest,
+          'releaseNotes': 'Auto-install test',
+        };
+        return http.Response(jsonEncode(manifest), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final service = OtaUpdateService(client: mockClient);
+      await service.checkForUpdates(customUrl: 'https://example.com/latest.json');
+      service.setAutoInstallForTesting(true);
+      await service.syncWithNativeStatus();
+
+      expect(installedPath, equals(apkFile.path));
+      expect(service.status, equals(UpdateStatus.waitingConfirmation));
+    });
+
+    test('onAppResumed retoma instalação automaticamente após permissão concedida', () async {
+      final apkFile = File('${tempDir.path}/update_perm.apk');
+      apkFile.writeAsBytesSync(utf8.encode('PERM_RESUME_APK'));
+      final digest = sha256.convert(apkFile.readAsBytesSync()).toString();
+      final newVersionCode = OtaUpdateService.currentVersionCode + 1;
+
+      bool canInstall = false;
+      bool settingsOpened = false;
+      int installCalls = 0;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+        switch (call.method) {
+          case 'getOtaDownloadStatus':
+            return {
+              'status': 'READY_TO_INSTALL',
+              'apkPath': apkFile.path,
+              'versionCode': newVersionCode,
+              'versionName': '1.9.9',
+              'sha256': digest,
+            };
+          case 'canRequestPackageInstalls':
+            return canInstall;
+          case 'openInstallPermissionSettings':
+            settingsOpened = true;
+            return true;
+          case 'installApk':
+            installCalls++;
+            return true;
+          default:
+            return null;
+        }
+      });
+
+      final mockClient = MockClient((request) async {
+        final manifest = {
+          'version': '1.9.9',
+          'versionCode': newVersionCode,
+          'apkUrl': 'https://example.com/app.apk',
+          'fileSize': apkFile.lengthSync(),
+          'sha256': digest,
+          'releaseNotes': 'Permission resume test',
+        };
+        return http.Response(jsonEncode(manifest), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final service = OtaUpdateService(client: mockClient);
+      await service.checkForUpdates(customUrl: 'https://example.com/latest.json');
+
+      final firstAttempt = await service.installDownloadedApk();
+      expect(firstAttempt, isFalse);
+      expect(settingsOpened, isTrue);
+      expect(installCalls, equals(0));
+      expect(service.status, equals(UpdateStatus.waitingConfirmation));
+
+      // Usuário concedeu permissão nas configurações do Fire OS e voltou ao app
+      canInstall = true;
+      await service.onAppResumed();
+
+      expect(installCalls, equals(1));
+      expect(service.status, equals(UpdateStatus.waitingConfirmation));
+      expect(service.errorMessage, isNull);
+    });
+
+    test('installDownloadedApk se autocorrige para upToDate e limpa cache quando nativo retorna DOWNGRADE_PREVENTED', () async {
+      final apkFile = File('${tempDir.path}/update_downgrade.apk');
+      apkFile.writeAsBytesSync(utf8.encode('DOWNGRADE_APK'));
+      final digest = sha256.convert(apkFile.readAsBytesSync()).toString();
+      final newVersionCode = OtaUpdateService.currentVersionCode + 1;
+
+      bool cleanOldApksCalled = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.player.m3u/device'), (call) async {
+        switch (call.method) {
+          case 'getOtaDownloadStatus':
+            return {
+              'status': 'READY_TO_INSTALL',
+              'apkPath': apkFile.path,
+              'versionCode': newVersionCode,
+              'versionName': '1.9.9',
+              'sha256': digest,
+            };
+          case 'canRequestPackageInstalls':
+            return true;
+          case 'installApk':
+            throw PlatformException(
+              code: 'DOWNGRADE_PREVENTED',
+              message: 'APK legado descartado.',
+            );
+          case 'cleanOldApks':
+            cleanOldApksCalled = true;
+            return true;
+          default:
+            return null;
+        }
+      });
+
+      final mockClient = MockClient((request) async {
+        final manifest = {
+          'version': '1.9.9',
+          'versionCode': newVersionCode,
+          'apkUrl': 'https://example.com/app.apk',
+          'fileSize': apkFile.lengthSync(),
+          'sha256': digest,
+          'releaseNotes': 'Downgrade recovery test',
+        };
+        return http.Response(jsonEncode(manifest), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final service = OtaUpdateService(client: mockClient);
+      await service.checkForUpdates(customUrl: 'https://example.com/latest.json');
+      final ok = await service.installDownloadedApk();
+
+      expect(ok, isFalse);
+      expect(service.status, equals(UpdateStatus.upToDate));
+      expect(service.downloadedApkFile, isNull);
+      expect(service.errorMessage, isNull);
+      expect(cleanOldApksCalled, isTrue);
+    });
+
+    test('getCachedSeriesInfo retorna null imediatamente sem rede e retorna do cache quando salvo', () async {
+      int httpCalls = 0;
+      final client = MockClient((request) async {
+        httpCalls++;
+        return http.Response(
+          jsonEncode({
+            'info': {'name': 'Série Cache Instantâneo'},
+            'seasons': [
+              {'season_number': 1, 'name': 'Temporada 1'},
+            ],
+            'episodes': {
+              '1': [
+                {'id': 8801, 'episode_num': 1, 'title': 'Ep 1', 'container_extension': 'mp4'},
+              ],
+            },
+          }),
+          200,
+        );
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://testserver.tv:8080',
+        username: 'user',
+        password: 'pass',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      // Sem cache prévio: não faz nenhuma chamada HTTP
+      final uncached = await catalog.getCachedSeriesInfo(888);
+      expect(uncached, isNull);
+      expect(httpCalls, equals(0));
+
+      // Popula cache via fetchSeriesInfo
+      final fetched = await catalog.fetchSeriesInfo(888);
+      expect(fetched, isNotNull);
+      expect(httpCalls, equals(1));
+
+      // Nova consulta via getCachedSeriesInfo lê da memória/disco sem nova requisição
+      final cached = await catalog.getCachedSeriesInfo(888);
+      expect(cached, isNotNull);
+      expect(cached!.name, equals('Série Cache Instantâneo'));
+      expect(httpCalls, equals(1));
+    });
+  });
 }
