@@ -1,11 +1,11 @@
 {
-  "version": "1.2.13",
-  "versionCode": 16,
+  "version": "1.2.14",
+  "versionCode": 17,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.13/JessFlix-v1.2.13.apk",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.14/JessFlix-v1.2.14.apk",
   "fileSize": 59147209,
-  "sha256": "e3703ead48279e14c30efb36d4238dcfecc20a2970aab73974908f752206c7eb",
-  "releaseNotes": "• Tela Sempre Ligada no Celular: Bloqueio de suspensão da tela reforçado em Filmes e Séries, evitando que telas ocultas do catálogo apaguem a tela durante a reprodução.\n• Janela Flutuante (Pop-up) e PiP sem Pausar: Filmes e Séries continuam reproduzindo normalmente ao abrir outros aplicativos em janela flutuante/pop-up ou Picture-in-Picture no celular, com botão PiP dedicado.\n• Continuar Séries Corrigido no Fire TV: Correção do salto duplo de episódio (T1:E1 -> T1:E3), preservação de retomada quando detalhes carregam em segundo plano, redução de tentativas inválidas no ExoPlayer e abertura direta na temporada correta.\n• Sincronização em Nuvem Celular ↔ Fire TV (Firebase): Histórico de Filmes e Séries sincronizado automaticamente entre Celular e Fire TV, priorizando sempre o progresso mais avançado entre os dispositivos.",
-  "publishedAt": "2026-11-22T02:25:00.000Z",
+  "sha256": "0f1164daa9ea714e65201cf859f56d4005d701ecb778c339bd1563b5afeb149a",
+  "releaseNotes": "• Continuar Séries no 1º Clique (Home e Detalhes): Correção definitiva da falha ao clicar pela primeira vez em uma série em 'Continuar assistindo' na Home ou na tela de detalhes.\n• Hidratação Pré-Conexão e Anti-Corrida: O player aguarda até 2s pelos metadados reais do servidor (ID atualizado, container mkv/mp4 e direct_source) antes de abrir a 1ª conexão no ExoPlayer e detecta atualizações em segundo plano sem perder o fallback.\n• Fechamento Limpo de Conexão e Recuperação 403: Aguarda o encerramento do socket anterior antes de abrir nova rota, faz 1 nova tentativa limpa em HTTP 403 transitório sem ciclar extensões inválidas e invalida URLs em cache que falharem no player.\n• Sincronização em Nuvem Celular ↔ Fire TV (Firebase): Histórico de Filmes e Séries sincronizado automaticamente entre dispositivos.",
+  "publishedAt": "2026-11-22T23:06:00.000Z",
   "mandatory": false
 }

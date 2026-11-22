@@ -63,6 +63,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   Timer? _postPlaySeekTimer;
   bool _postPlaySeekFallbackDone = false;
   bool _wasControllerPlaying = false;
+  bool _isHandlingError = false;
+  bool _forceAwaitDispose = false;
+  bool _isInitializingController = false;
 
   Timer? _progressSaveTimer;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
@@ -289,18 +292,36 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     _postPlaySeekTimer = null;
     _initialBufferingWatchdog?.cancel();
     _syncPipState(false);
+    _isInitializingController = false;
+    final shouldAwaitDispose = _forceAwaitDispose;
+    _forceAwaitDispose = false;
     final oldController = _controller;
     _controller = null;
     if (oldController != null) {
       oldController.removeListener(_onControllerUpdate);
       try {
         if (oldController.value.isInitialized && oldController.value.isPlaying) {
-          await oldController.pause();
+          await oldController.pause().timeout(
+            const Duration(milliseconds: 250),
+            onTimeout: () {},
+          );
         }
       } catch (_) {}
-      try {
-        unawaited(oldController.dispose().catchError((_) {}));
-      } catch (_) {}
+      final nativePlayerCreated = oldController.value.isInitialized ||
+          oldController.value.hasError ||
+          shouldAwaitDispose;
+      if (nativePlayerCreated) {
+        try {
+          await oldController.dispose().timeout(
+            const Duration(milliseconds: 600),
+            onTimeout: () {},
+          );
+        } catch (_) {}
+      } else {
+        try {
+          unawaited(oldController.dispose().catchError((_) {}));
+        } catch (_) {}
+      }
     }
   }
 
@@ -330,6 +351,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
   Future<void> _connectToUrl(String url) async {
     final epoch = ++_connectionEpoch;
+    _isHandlingError = false;
     _postPlaySeekTimer?.cancel();
     _postPlaySeekTimer = null;
     _postPlaySeekFallbackDone = false;
@@ -364,7 +386,14 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     const timeoutDuration = Duration(seconds: 25);
 
     try {
-      await controller.initialize().timeout(timeoutDuration);
+      _isInitializingController = true;
+      try {
+        await controller.initialize().timeout(timeoutDuration);
+      } finally {
+        if (_controller == controller) {
+          _isInitializingController = false;
+        }
+      }
 
       if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
 
@@ -437,7 +466,14 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         });
       }
     } catch (e) {
-      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+      if (!mounted ||
+          epoch != _connectionEpoch ||
+          _controller != controller ||
+          _isHandlingError) {
+        return;
+      }
+      _isHandlingError = true;
+      _forceAwaitDispose = e is TimeoutException;
       await _handleConnectionError(e, epoch: epoch);
     }
   }
@@ -468,12 +504,31 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   }
 
   Future<void> _handleConnectionError(Object e, {required int epoch}) async {
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
     final quickDetails = PlayerDiagnostics.analyzeError(e);
 
+    final isPluginUnavailable =
+        e is UnimplementedError || e.toString().contains('MissingPluginException');
     final isTimeout = e is TimeoutException ||
         quickDetails.causeClass == 'TimeoutException' ||
         quickDetails.shortUiMessage.contains('Timeout');
     final isAuthOrForbidden = quickDetails.isAuthOrForbidden;
+
+    PlayerDiagnostics.logDiagnosticDetails(quickDetails);
+
+    if (isPluginUnavailable) {
+      await _disposeCurrentController();
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      _metrics.markError(quickDetails.shortUiMessage);
+      setState(() {
+        _isLoading = false;
+        _isBuffering = false;
+        _smartSourceStatusMessage = null;
+        _errorMessage = quickDetails.shortUiMessage;
+      });
+      return;
+    }
 
     final canTryAlternative = !isAuthOrForbidden &&
         !isTimeout &&
@@ -486,10 +541,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         'Tentando rota de contingência index $_currentUrlIndex devido a erro: ${quickDetails.technicalSummary}',
       );
 
-      // Sondagem assíncrona em background para telemetria
-      PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
-          .then((p) => PlayerDiagnostics.logDiagnosticDetails(PlayerDiagnostics.analyzeError(e, probe: p)))
-          .catchError((_) => null);
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
 
       await _connectToUrl(_streamUrls[_currentUrlIndex]);
       return;
@@ -502,6 +556,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         !isAuthOrForbidden &&
         !isTimeout) {
       _smartSourceAttempted = true;
+      await _disposeCurrentController();
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
       setState(() {
         _isLoading = true;
         _smartSourceStatusMessage = 'Recuperando fonte do filme (Smart Source)...';
@@ -518,7 +575,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         },
       );
 
-      if (!mounted || epoch != _connectionEpoch) return;
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
 
       if (result.isSuccess && result.workingUrl != null) {
         setState(() {
@@ -557,6 +614,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         }
 
         PlayerDiagnostics.log('SMART_SOURCE', 'Fonte VOD resolvida com sucesso: ${UrlSanitizer.sanitize(result.workingUrl!)}');
+        await Future.delayed(const Duration(milliseconds: 350));
+        if (!mounted || epoch != _connectionEpoch || _isExiting) return;
         await _connectToUrl(result.workingUrl!);
         return;
       }
@@ -572,9 +631,13 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       return;
     }
 
+    await _disposeCurrentController();
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
     final probe = _streamUrls.isNotEmpty
         ? await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)])
         : const HttpProbeResult(elapsedMs: 0);
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
     PlayerDiagnostics.log('ERROR', 'Falha na reprodução do filme: ${details.technicalSummary}');
@@ -624,10 +687,13 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     if (c == null || !mounted) return;
     final val = c.value;
 
-    // Erros durante a inicialização são tratados pelo try/catch de _connectToUrl
-    if (!val.isInitialized) return;
+    // Erros durante controller.initialize() são tratados pelo try/catch de _connectToUrl
+    if (_isInitializingController) return;
 
-    if (val.hasError && _errorMessage == null) {
+    if (val.hasError) {
+      if (_isHandlingError || _errorMessage != null) return;
+      _isHandlingError = true;
+      c.removeListener(_onControllerUpdate);
       _initialBufferingWatchdog?.cancel();
       final errorDesc = val.errorDescription ?? 'Erro interno de reprodução';
       final details = PlayerDiagnostics.analyzeError(errorDesc);
@@ -641,7 +707,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
       final isAuthOrForbidden = details.isAuthOrForbidden;
 
-      if (!isAuthOrForbidden && !isTimeout) {
+      if (!_isExiting && !isAuthOrForbidden && !isTimeout) {
         if (_currentUrlIndex + 1 < _streamUrls.length) {
           PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller do filme; tentando URL de contingência ${_currentUrlIndex + 1}.');
         }
@@ -654,6 +720,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         _isLoading = false;
         _isBuffering = false;
       });
+    } else if (!val.isInitialized) {
+      return;
     } else {
       // Confirmação segura de primeiro quadro / avanço real de reprodução
       bool hasAdvanced = false;

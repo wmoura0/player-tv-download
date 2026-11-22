@@ -1278,10 +1278,12 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 10,
                   children: [
-                    if (widget.onRetry != null) ...[
+                    if (widget.onRetry != null)
                       AnimatedBuilder(
                         animation: _retryFocusNode,
                         builder: (context, _) {
@@ -1312,9 +1314,7 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                           );
                         },
                       ),
-                      const SizedBox(width: 12),
-                    ],
-                    if (widget.onNextEpisode != null) ...[
+                    if (widget.onNextEpisode != null)
                       AnimatedBuilder(
                         animation: _errorNextEpFocusNode,
                         builder: (context, _) {
@@ -1345,8 +1345,6 @@ class _VodPlayerViewState extends State<VodPlayerView> {
                           );
                         },
                       ),
-                      const SizedBox(width: 12),
-                    ],
                     if (widget.onBack != null)
                       AnimatedBuilder(
                         animation: _errorBackFocusNode,

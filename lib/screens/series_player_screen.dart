@@ -69,6 +69,18 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   Future<void>? _hydrationFuture;
   final Set<String> _failedStreamUrls = {};
 
+  int _streamUrlsSourceEpisodeId = 0;
+  int? _streamUrlsSourceAltId;
+  String? _streamUrlsSourceExt;
+  String? _streamUrlsSourceDirect;
+  bool _hydratedRetryAttempted = false;
+  bool _transient403RetryAttempted = false;
+  bool _smartSourceConnectRetryAttempted = false;
+  String? _smartSourceResolvedUrl;
+  bool _isHandlingError = false;
+  bool _forceAwaitDispose = false;
+  bool _isInitializingController = false;
+
   Timer? _progressSaveTimer;
   Timer? _initialBufferingWatchdog;
   int _connectionEpoch = 0;
@@ -315,24 +327,55 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
   }
 
+  void _recordStreamUrlsSource(XtreamSeriesEpisode ep) {
+    _streamUrlsSourceEpisodeId = ep.id;
+    _streamUrlsSourceAltId = ep.streamId;
+    _streamUrlsSourceExt = ep.containerExtension;
+    _streamUrlsSourceDirect = ep.directSource;
+  }
+
+  bool _hasEpisodeMetadataChangedFromStreamUrls() {
+    return _currentEpisode.id != _streamUrlsSourceEpisodeId ||
+        _currentEpisode.streamId != _streamUrlsSourceAltId ||
+        _currentEpisode.containerExtension != _streamUrlsSourceExt ||
+        _currentEpisode.directSource != _streamUrlsSourceDirect;
+  }
+
   Future<void> _disposeCurrentController() async {
     _postPlaySeekTimer?.cancel();
     _postPlaySeekTimer = null;
     _initialBufferingWatchdog?.cancel();
     _syncPipState(false);
+    _isInitializingController = false;
+    final shouldAwaitDispose = _forceAwaitDispose;
+    _forceAwaitDispose = false;
     final oldController = _controller;
     _controller = null;
     if (oldController != null) {
       oldController.removeListener(_onControllerUpdate);
       try {
         if (oldController.value.isInitialized && oldController.value.isPlaying) {
-          oldController.pause();
+          await oldController.pause().timeout(
+            const Duration(milliseconds: 250),
+            onTimeout: () {},
+          );
         }
       } catch (_) {}
-      try {
-        // Dispara o descarte do controller de forma assíncrona sem travar a troca de rota
-        unawaited(oldController.dispose().catchError((_) {}));
-      } catch (_) {}
+      final nativePlayerCreated = oldController.value.isInitialized ||
+          oldController.value.hasError ||
+          shouldAwaitDispose;
+      if (nativePlayerCreated) {
+        try {
+          await oldController.dispose().timeout(
+            const Duration(milliseconds: 600),
+            onTimeout: () {},
+          );
+        } catch (_) {}
+      } else {
+        try {
+          unawaited(oldController.dispose().catchError((_) {}));
+        } catch (_) {}
+      }
     }
   }
 
@@ -429,8 +472,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     _smartSourceStatusMessage = null;
     _failedStreamUrls.clear();
     _hydrationFuture = null;
+    _hydratedRetryAttempted = false;
+    _transient403RetryAttempted = false;
+    _smartSourceConnectRetryAttempted = false;
+    _smartSourceResolvedUrl = null;
+    _isHandlingError = false;
 
-    // Hidratação instantânea do cache local; se ausente, busca na rede em paralelo sem bloquear o vídeo
+    // Hidratação instantânea do cache local; se ausente, aguarda janela curta pré-conexão (até 2s)
+    // para evitar abrir a 1ª conexão no ExoPlayer com ID/extensão incompletos e mantém em paralelo caso passe de 2s.
     final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
     if (knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
       try {
@@ -446,11 +495,19 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           _updateNextEpisode();
         } else {
           _hydrationFuture = _hydrateSeriesInfoInBackground(widget.series.seriesId);
+          try {
+            await _hydrationFuture!.timeout(
+              const Duration(milliseconds: 2000),
+              onTimeout: () {},
+            );
+          } catch (_) {}
+          if (!mounted) return;
         }
       } catch (_) {}
     }
 
     _streamUrls = _buildPriorityUrls(_currentEpisode);
+    _recordStreamUrlsSource(_currentEpisode);
     _currentUrlIndex = 0;
     _hasTriggeredCompletion = false;
     _hasTriggeredBingeCard = false;
@@ -472,6 +529,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
   Future<void> _connectToUrl(String url, {Duration? initialPosition}) async {
     final epoch = ++_connectionEpoch;
+    _isHandlingError = false;
     _postPlaySeekTimer?.cancel();
     _postPlaySeekTimer = null;
     _postPlaySeekFallbackDone = false;
@@ -506,7 +564,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     const timeoutDuration = Duration(seconds: 25);
 
     try {
-      await controller.initialize().timeout(timeoutDuration);
+      _isInitializingController = true;
+      try {
+        await controller.initialize().timeout(timeoutDuration);
+      } finally {
+        if (_controller == controller) {
+          _isInitializingController = false;
+        }
+      }
 
       if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
 
@@ -568,7 +633,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         });
       }
     } catch (e) {
-      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+      if (!mounted ||
+          epoch != _connectionEpoch ||
+          _controller != controller ||
+          _isHandlingError) {
+        return;
+      }
+      _isHandlingError = true;
+      _forceAwaitDispose = e is TimeoutException;
       _failedStreamUrls.add(url);
       await _handleConnectionError(e, epoch: epoch, initialPosition: initialPosition);
     }
@@ -604,18 +676,80 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     required int epoch,
     Duration? initialPosition,
   }) async {
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
     final quickDetails = PlayerDiagnostics.analyzeError(e);
 
+    final isPluginUnavailable =
+        e is UnimplementedError || e.toString().contains('MissingPluginException');
     final isTimeout = e is TimeoutException ||
         quickDetails.causeClass == 'TimeoutException' ||
         quickDetails.shortUiMessage.contains('Timeout');
     final isAuthOrForbidden = quickDetails.isAuthOrForbidden;
+    final isHttp403 = quickDetails.exoPlayerHttpStatus == 403 ||
+        quickDetails.probeHttpStatus == 403;
+
+    PlayerDiagnostics.logDiagnosticDetails(quickDetails);
+
+    if (isPluginUnavailable) {
+      await _disposeCurrentController();
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      _metrics.markError(quickDetails.shortUiMessage);
+      setState(() {
+        _isLoading = false;
+        _isBuffering = false;
+        _smartSourceStatusMessage = null;
+        _errorMessage = quickDetails.shortUiMessage;
+      });
+      return;
+    }
+
+    // 0a. Se o Smart Source acabou de validar uma URL e a conexão imediata falhou
+    // (ex.: servidor Xtream ainda liberando o slot da sonda), tenta 1 reconexão limpa.
+    if (_smartSourceResolvedUrl != null &&
+        !_smartSourceConnectRetryAttempted &&
+        !_isExiting &&
+        quickDetails.exoPlayerHttpStatus != 401) {
+      _smartSourceConnectRetryAttempted = true;
+      PlayerDiagnostics.log(
+        'RETRY_ROUTE',
+        'Repetindo conexão limpa na URL validada pelo Smart Source após breve pausa.',
+      );
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _connectToUrl(
+        _smartSourceResolvedUrl!,
+        initialPosition: initialPosition,
+      );
+      return;
+    }
+
+    // 0b. Em HTTP 403 transitório (sessão/socket anterior ainda fechando no servidor),
+    // aguarda brevemente e tenta a mesma URL uma única vez sem alternar extensões.
+    if (_smartSourceResolvedUrl == null &&
+        isHttp403 &&
+        !_transient403RetryAttempted &&
+        !_isExiting &&
+        _streamUrls.isNotEmpty) {
+      _transient403RetryAttempted = true;
+      final retryUrl = _streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)];
+      PlayerDiagnostics.log(
+        'RETRY_ROUTE',
+        'HTTP 403 transitório; aguardando fechamento da conexão anterior para tentar novamente a mesma URL.',
+      );
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 900));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _connectToUrl(retryUrl, initialPosition: initialPosition);
+      return;
+    }
 
     // REGRA DE SEGURANÇA E CONTINGÊNCIA:
     // 1. Nunca tentar rotas alternativas em erros de autenticação ou permissão (HTTP 401/403).
     // 2. Não tentar rotas alternativas para timeouts de rede puros (25s watchdog ou host inalcançável).
     // 3. Para qualquer falha de reprodução (Source error, 404, container/codec incompatível, EOF, conexão resetada):
-    //    se existirem URLs alternativas na lista, avança IMEDIATAMENTE para a próxima rota.
+    //    se existirem URLs alternativas na lista, encerra o player anterior e avança sem sondagem paralela.
     final canTryAlternative = !isAuthOrForbidden &&
         !isTimeout &&
         (_currentUrlIndex + 1 < _streamUrls.length);
@@ -624,40 +758,42 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       _currentUrlIndex++;
       PlayerDiagnostics.log(
         'RETRY_ROUTE',
-        'Avançando imediatamente para URL de contingência $_currentUrlIndex/${_streamUrls.length} devido a erro: ${quickDetails.technicalSummary}',
+        'Avançando para URL de contingência ${_currentUrlIndex + 1}/${_streamUrls.length} devido a erro: ${quickDetails.technicalSummary}',
       );
 
-      // Sondagem assíncrona em background para telemetria sem bloquear a troca imediata
-      PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex - 1], timeout: const Duration(seconds: 2))
-          .then((p) => PlayerDiagnostics.logDiagnosticDetails(PlayerDiagnostics.analyzeError(e, probe: p)))
-          .catchError((_) => null);
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
 
       await _connectToUrl(_streamUrls[_currentUrlIndex], initialPosition: initialPosition);
       return;
     }
 
-    // Se a hidratação em background estiver em andamento, aguarda antes de ir para o SmartSourceResolver
+    // Se a hidratação em background trouxe metadados reais diferentes do snapshot usado
+    // para montar _streamUrls (mesmo que tenha finalizado enquanto o ExoPlayer falhava ou dava timeout),
+    // recria as URLs hidratadas e tenta conectar antes de ir ao SmartSourceResolver.
     if (!isAuthOrForbidden &&
-        !isTimeout &&
+        !_hydratedRetryAttempted &&
         _hydrationFuture != null &&
         !_isExiting) {
-      final epIdBeforeWait = _currentEpisode.id;
-      final epExtBeforeWait = _currentEpisode.containerExtension;
       try {
-        await _hydrationFuture!.timeout(const Duration(seconds: 4), onTimeout: () {});
+        await _hydrationFuture!.timeout(const Duration(seconds: 6), onTimeout: () {});
       } catch (_) {}
-      if (!mounted || epoch != _connectionEpoch) return;
-      if (_currentEpisode.id != epIdBeforeWait ||
-          _currentEpisode.containerExtension != epExtBeforeWait) {
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      if (_hasEpisodeMetadataChangedFromStreamUrls()) {
+        _hydratedRetryAttempted = true;
         final refreshedUrls = _buildPriorityUrls(_currentEpisode)
             .where((u) => !_failedStreamUrls.contains(u))
             .toList();
         if (refreshedUrls.isNotEmpty) {
           _streamUrls = refreshedUrls;
           _currentUrlIndex = 0;
+          _recordStreamUrlsSource(_currentEpisode);
+          await _disposeCurrentController();
+          if (!mounted || epoch != _connectionEpoch || _isExiting) return;
           PlayerDiagnostics.log(
             'RETRY_ROUTE',
-            'Hidratação retornou episódio atualizado (ID=${_currentEpisode.id}); tentando rota fresca.',
+            'Hidratação retornou episódio atualizado (ID=${_currentEpisode.id}, ext=${_currentEpisode.containerExtension}); tentando rota fresca.',
           );
           await _connectToUrl(_streamUrls[0], initialPosition: initialPosition);
           return;
@@ -671,6 +807,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         !isAuthOrForbidden &&
         !isTimeout) {
       _smartSourceAttempted = true;
+      await _disposeCurrentController();
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
       setState(() {
         _isLoading = true;
         _smartSourceStatusMessage = 'Recuperando fonte do episódio (Smart Source)...';
@@ -691,9 +830,11 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         },
       );
 
-      if (!mounted || epoch != _connectionEpoch) return;
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
 
       if (result.isSuccess && result.workingUrl != null) {
+        final workingUrl = result.workingUrl!;
+        _smartSourceResolvedUrl = workingUrl;
         setState(() {
           _smartSourceStatusMessage = null;
         });
@@ -723,8 +864,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           );
         }
 
-        PlayerDiagnostics.log('SMART_SOURCE', 'Fonte resolvida com sucesso: ${result.workingUrl}');
-        await _connectToUrl(result.workingUrl!, initialPosition: initialPosition);
+        _streamUrls = [workingUrl];
+        _currentUrlIndex = 0;
+        _recordStreamUrlsSource(_currentEpisode);
+
+        PlayerDiagnostics.log('SMART_SOURCE', 'Fonte resolvida com sucesso: $workingUrl');
+        await Future.delayed(const Duration(milliseconds: 350));
+        if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+        await _connectToUrl(workingUrl, initialPosition: initialPosition);
         return;
       }
 
@@ -739,8 +886,16 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       return;
     }
 
+    await _disposeCurrentController();
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
     // Diagnóstico final definitivo quando todas as alternativas falharam ou em erro de auth/timeout
-    final probe = await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex]);
+    final probe = _streamUrls.isNotEmpty
+        ? await PlayerDiagnostics.probeStreamUrl(
+            _streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)],
+          )
+        : const HttpProbeResult(elapsedMs: 0);
+    if (!mounted || epoch != _connectionEpoch || _isExiting) return;
     final details = PlayerDiagnostics.analyzeError(e, probe: probe);
 
     PlayerDiagnostics.log('ERROR', 'Falha definitiva na reprodução do episódio: ${details.technicalSummary}');
@@ -789,11 +944,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     final c = _controller;
     if (c == null || !mounted) return;
 
-    // Erros durante a inicialização são tratados pelo try/catch de _connectToUrl
-    if (!c.value.isInitialized) return;
+    // Erros durante controller.initialize() são tratados pelo try/catch de _connectToUrl
+    if (_isInitializingController) return;
 
     // Se houver erro, cancela qualquer contagem regressiva e interrompe avanço automático
     if (c.value.hasError) {
+      if (_isHandlingError || _errorMessage != null) return;
+      _isHandlingError = true;
+      c.removeListener(_onControllerUpdate);
       _cancelCountdown();
       _initialBufferingWatchdog?.cancel();
       final errorDesc = c.value.errorDescription ?? 'Erro interno de reprodução';
@@ -805,30 +963,27 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       PlayerDiagnostics.log('STATE', 'hasError=true, pos=${c.value.position}, isPlaying=${c.value.isPlaying}, isBuffering=${c.value.isBuffering}');
       _metrics.markError(details.shortUiMessage);
 
-      final isTimeout = details.causeClass == 'TimeoutException' || details.shortUiMessage.contains('Timeout');
-      final isAuthOrForbidden = details.isAuthOrForbidden;
-
-      if (!_isExiting && !isAuthOrForbidden && !isTimeout) {
-        if (_currentUrlIndex >= 0 && _currentUrlIndex < _streamUrls.length) {
-          _failedStreamUrls.add(_streamUrls[_currentUrlIndex]);
-        }
-        final effectiveResumption = _resumptionTarget ?? (c.value.position > Duration.zero ? c.value.position : null);
-        if (_currentUrlIndex + 1 < _streamUrls.length) {
-          PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
-        }
+      if (_currentUrlIndex >= 0 && _currentUrlIndex < _streamUrls.length) {
+        _failedStreamUrls.add(_streamUrls[_currentUrlIndex]);
+      }
+      final effectiveResumption = _resumptionTarget ?? (c.value.position > Duration.zero ? c.value.position : null);
+      if (_currentUrlIndex + 1 < _streamUrls.length) {
+        PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
+      }
+      if (!_isExiting) {
         _handleConnectionError(errorDesc, epoch: _connectionEpoch, initialPosition: effectiveResumption);
         return;
       }
 
-      if (_errorMessage == null) {
-        setState(() {
-          _errorMessage = details.shortUiMessage;
-          _isLoading = false;
-          _isBuffering = false;
-        });
-      }
+      setState(() {
+        _errorMessage = details.shortUiMessage;
+        _isLoading = false;
+        _isBuffering = false;
+      });
       return;
     }
+
+    if (!c.value.isInitialized) return;
 
     // Validação segura de avanço real de reprodução / primeiro quadro
     bool hasAdvanced = false;

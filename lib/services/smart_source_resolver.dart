@@ -373,13 +373,18 @@ class SmartSourceResolver {
     final cacheKey = '${seriesId ?? 0}-${episode.id}';
     final cached = _validatedSourceCache[cacheKey];
     if (cached != null) {
-      debugPrint('[SMART SOURCE] [CACHE HIT] Fonte recuperada instantaneamente do cache: ${UrlSanitizer.sanitize(cached)}');
-      return SmartSourceResult(
-        status: SmartSourceStatus.resolved,
-        workingUrl: cached,
-        attemptsCount: 0,
-        diagnosticMessage: 'Fonte recuperada do cache local.',
-      );
+      if (alreadyFailedUrls != null && alreadyFailedUrls.contains(cached)) {
+        _validatedSourceCache.remove(cacheKey);
+        debugPrint('[SMART SOURCE] [CACHE EVICT] URL em cache já falhou no player; invalidando: ${UrlSanitizer.sanitize(cached)}');
+      } else {
+        debugPrint('[SMART SOURCE] [CACHE HIT] Fonte recuperada instantaneamente do cache: ${UrlSanitizer.sanitize(cached)}');
+        return SmartSourceResult(
+          status: SmartSourceStatus.resolved,
+          workingUrl: cached,
+          attemptsCount: 0,
+          diagnosticMessage: 'Fonte recuperada do cache local.',
+        );
+      }
     }
 
     final candidates = generateCandidateUrls(

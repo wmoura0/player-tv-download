@@ -138,7 +138,7 @@ class MainActivity : FlutterActivity() {
                                 @Suppress("DEPRECATION")
                                 pInfo.versionCode
                             }
-                            val vName = pInfo.versionName ?: "1.2.13"
+                            val vName = pInfo.versionName ?: "1.2.14"
                             result.success(mapOf(
                                 "versionName" to vName,
                                 "versionCode" to vCode,

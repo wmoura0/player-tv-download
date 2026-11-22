@@ -527,7 +527,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           episodeNum: epNum,
           seasonNumber: season,
           title: epTitle,
-          containerExtension: item.containerExtension ?? 'mp4',
+          containerExtension: item.containerExtension,
           cover: item.coverUrl,
         );
 
