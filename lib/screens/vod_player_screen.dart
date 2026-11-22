@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/xtream_catalog.dart';
+import '../services/cloud_progress_sync_service.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
@@ -59,6 +60,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
   Duration? _resumptionTarget;
   bool _seekAttempted = false;
+  Timer? _postPlaySeekTimer;
+  bool _postPlaySeekFallbackDone = false;
+  bool _wasControllerPlaying = false;
 
   Timer? _progressSaveTimer;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
@@ -67,10 +71,11 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     _currentMovie = widget.movie;
     _streamUrls = List<String>.from(widget.streamUrls);
     DeviceUtils.setVideoOrientation();
-    DeviceUtils.setKeepScreenOn(true);
+    DeviceUtils.setKeepScreenOn(true, force: true);
 
     _resumptionTarget = widget.initialPosition;
     _seekAttempted = false;
@@ -93,15 +98,48 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     _startPeriodicProgressSave();
   }
 
+  void _onPipModeChanged() {
+    if (!mounted) return;
+    final inPip = DeviceUtils.isPipMode.value;
+    if (!inPip) {
+      DeviceUtils.setVideoOrientation();
+      if (_isLoading || (_controller?.value.isPlaying ?? false)) {
+        DeviceUtils.setKeepScreenOn(true, force: true);
+      }
+    }
+    setState(() {});
+  }
+
+  void _syncPipState(bool enabled) {
+    if (DeviceUtils.isTv) return;
+    if (!enabled) {
+      DeviceUtils.setPipState(enabled: false);
+      return;
+    }
+    final sz = _controller?.value.size ?? Size.zero;
+    final w = sz.width.round();
+    final h = sz.height.round();
+    final aspectNum = (w > 0 && h > 0) ? w : 16;
+    final aspectDen = (w > 0 && h > 0) ? h : 9;
+    DeviceUtils.setPipState(
+      enabled: true,
+      aspectNumerator: aspectNum,
+      aspectDenominator: aspectDen,
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
+    if (state == AppLifecycleState.inactive) {
       _saveCurrentProgress(force: true);
-      final c = _controller;
-      if (c != null && c.value.isInitialized && c.value.isPlaying) {
-        c.pause();
+      return;
+    }
+
+    if (state == AppLifecycleState.paused) {
+      unawaited(_handleBackgroundLifecycle());
+    } else if (state == AppLifecycleState.resumed) {
+      if (mounted && (_isLoading || (_controller?.value.isPlaying ?? false))) {
+        DeviceUtils.setKeepScreenOn(true, force: true);
       }
     } else if (state == AppLifecycleState.detached) {
       _saveCurrentProgress(force: true);
@@ -109,10 +147,43 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     }
   }
 
+  Future<void> _handleBackgroundLifecycle() async {
+    await _saveCurrentProgress(force: true);
+    if (widget.accountKey.trim().isNotEmpty) {
+      unawaited(
+        CloudProgressSyncService.instance.syncAccount(
+          widget.accountKey,
+          progressService: _progressService,
+          force: true,
+        ),
+      );
+    }
+    if (DeviceUtils.isPipMode.value || DeviceUtils.isMultiWindowMode.value) {
+      return;
+    }
+    if (await DeviceUtils.isInMultiWindowOrPip()) {
+      return;
+    }
+    if (!mounted || _isExiting) return;
+    final currentLifecycle = WidgetsBinding.instance.lifecycleState;
+    if (currentLifecycle != null && currentLifecycle != AppLifecycleState.paused) {
+      return;
+    }
+    final c = _controller;
+    if (c != null && c.value.isInitialized && c.value.isPlaying) {
+      await c.pause();
+      _syncPipState(false);
+      DeviceUtils.setKeepScreenOn(false);
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
+    _syncPipState(false);
     DeviceUtils.setKeepScreenOn(false);
+    _postPlaySeekTimer?.cancel();
     _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
     if (!_isExiting) {
@@ -136,9 +207,21 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   Future<void> _handleExit() async {
     if (_isExiting) return;
     _isExiting = true;
+    _postPlaySeekTimer?.cancel();
     _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
+    _syncPipState(false);
+    DeviceUtils.setKeepScreenOn(false);
     await _saveCurrentProgress(force: true);
+    if (widget.accountKey.trim().isNotEmpty) {
+      unawaited(
+        CloudProgressSyncService.instance.syncAccount(
+          widget.accountKey,
+          progressService: _progressService,
+          force: true,
+        ),
+      );
+    }
     DeviceUtils.restoreOrientation();
     if (mounted) {
       Navigator.of(context).pop();
@@ -202,7 +285,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   }
 
   Future<void> _disposeCurrentController() async {
+    _postPlaySeekTimer?.cancel();
+    _postPlaySeekTimer = null;
     _initialBufferingWatchdog?.cancel();
+    _syncPipState(false);
     final oldController = _controller;
     _controller = null;
     if (oldController != null) {
@@ -213,7 +299,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         }
       } catch (_) {}
       try {
-        unawaited(oldController.dispose());
+        unawaited(oldController.dispose().catchError((_) {}));
       } catch (_) {}
     }
   }
@@ -244,6 +330,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
   Future<void> _connectToUrl(String url) async {
     final epoch = ++_connectionEpoch;
+    _postPlaySeekTimer?.cancel();
+    _postPlaySeekTimer = null;
+    _postPlaySeekFallbackDone = false;
+    _wasControllerPlaying = false;
     await _disposeCurrentController();
     if (!mounted || epoch != _connectionEpoch) return;
 
@@ -261,6 +351,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
       uri,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       httpHeaders: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
       },
@@ -297,6 +388,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       _startInitialBufferingWatchdog(epoch);
 
       // 2. Aplica seekTo ANTES de play() quando há retomada para evitar duplo buffering no ExoPlayer
+      Duration effectiveTarget = Duration.zero;
       final effectiveInitialPos = _resumptionTarget ?? widget.initialPosition;
       if (effectiveInitialPos != null && effectiveInitialPos > Duration.zero) {
         Duration target = effectiveInitialPos;
@@ -305,13 +397,14 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
         }
         _resumptionTarget = target;
+        effectiveTarget = target;
 
         if (target > Duration.zero) {
           _isSeekingToInitial = true;
           _seekAttempted = true;
           debugPrint('[VOD PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(effectiveInitialPos)})...');
           try {
-            await controller.seekTo(target);
+            await controller.seekTo(target).timeout(const Duration(seconds: 6));
             debugPrint('[VOD PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[VOD PLAYER] [SEEK] Aviso: erro no seek inicial ($seekError). Reproduzindo do início.');
@@ -323,7 +416,19 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
       // 3. Aciona play() após posicionar o cursor inicial
       await controller.play();
+      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
       PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
+
+      _syncPipState(true);
+      DeviceUtils.setKeepScreenOn(true, force: true);
+
+      if (effectiveTarget.inSeconds >= 10) {
+        _postPlaySeekTimer?.cancel();
+        _postPlaySeekTimer = Timer(const Duration(milliseconds: 800), () {
+          if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+          unawaited(_applyPostPlaySeekFallbackIfNeeded(controller, effectiveTarget, epoch));
+        });
+      }
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -334,6 +439,31 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     } catch (e) {
       if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
       await _handleConnectionError(e, epoch: epoch);
+    }
+  }
+
+  Future<void> _applyPostPlaySeekFallbackIfNeeded(
+    VideoPlayerController controller,
+    Duration target,
+    int epoch,
+  ) async {
+    if (_postPlaySeekFallbackDone ||
+        !mounted ||
+        epoch != _connectionEpoch ||
+        _controller != controller) {
+      return;
+    }
+    final val = controller.value;
+    if (val.isInitialized && val.isPlaying && val.position.inSeconds < 3 && !_isSeekingToInitial) {
+      _postPlaySeekFallbackDone = true;
+      _isSeekingToInitial = true;
+      debugPrint('[VOD PLAYER] [SEEK FALLBACK] Posição reiniciada em ${PlaybackProgressService.formatDuration(val.position)}; reaplicando seek para ${PlaybackProgressService.formatDuration(target)}...');
+      try {
+        await controller.seekTo(target).timeout(const Duration(seconds: 4));
+      } catch (_) {
+      } finally {
+        _isSeekingToInitial = false;
+      }
     }
   }
 
@@ -548,6 +678,14 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         debugPrint('[VOD PLAYER] [FRAME] Primeiro quadro / avanço efetivo de reprodução confirmado em ${PlaybackProgressService.formatDuration(val.position)}.');
       }
 
+      if (val.isPlaying != _wasControllerPlaying) {
+        _wasControllerPlaying = val.isPlaying;
+        if (val.isPlaying) {
+          _syncPipState(true);
+          DeviceUtils.setKeepScreenOn(true, force: true);
+        }
+      }
+
       if (val.isBuffering != _isBuffering) {
         debugPrint('[VOD PLAYER] [BUFFER] Estado de buffering alterado: ${val.isBuffering} (pos: ${PlaybackProgressService.formatDuration(val.position)})');
         if (val.isBuffering) {
@@ -566,9 +704,12 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
     if (c.value.isPlaying) {
       await c.pause();
+      _syncPipState(false);
       await _saveCurrentProgress(); // Salva imediatamente ao pausar
     } else {
       await c.play();
+      _syncPipState(true);
+      DeviceUtils.setKeepScreenOn(true, force: true);
     }
     setState(() {});
   }

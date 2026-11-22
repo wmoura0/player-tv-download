@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
 import '../models/xtream_vod_info.dart';
+import '../services/cloud_progress_sync_service.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/xtream_catalog_service.dart';
@@ -88,19 +89,27 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
   }
 
   Future<void> _loadDetailsAndProgress() async {
-    final progressFuture = _progressService.getProgress(
-      accountKey: widget.accountKey,
-      streamId: widget.movie.streamId,
-    );
+    final syncFuture = widget.accountKey.trim().isNotEmpty
+        ? CloudProgressSyncService.instance
+            .syncAccount(
+              widget.accountKey,
+              progressService: _progressService,
+            )
+            .timeout(const Duration(seconds: 3), onTimeout: () => false)
+            .catchError((_) => false)
+        : Future<bool>.value(false);
 
     final infoFuture = widget.catalogService
         .fetchVodInfo(widget.movie.streamId)
         .then<XtreamVodInfo?>((info) => info)
         .catchError((_) => null);
 
-    final results = await Future.wait([progressFuture, infoFuture]);
-    final progress = results[0] as PlaybackProgress?;
-    final info = results[1] as XtreamVodInfo?;
+    await syncFuture;
+    final progress = await _progressService.getProgress(
+      accountKey: widget.accountKey,
+      streamId: widget.movie.streamId,
+    );
+    final info = await infoFuture;
 
     if (mounted) {
       setState(() {

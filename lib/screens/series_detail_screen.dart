@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
+import '../services/cloud_progress_sync_service.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/smart_source_resolver.dart';
@@ -110,6 +111,16 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     });
 
     try {
+      final syncFuture = widget.accountKey.trim().isNotEmpty
+          ? CloudProgressSyncService.instance
+              .syncAccount(
+                widget.accountKey,
+                progressService: _progressService,
+              )
+              .timeout(const Duration(seconds: 3), onTimeout: () => false)
+              .catchError((_) => false)
+          : Future<bool>.value(false);
+
       var info = await widget.catalogService.fetchSeriesInfo(_currentSeries.seriesId);
 
       // Se a série não retornou dados ou retornou apenas registros órfãos/stubs sem extensões válidas,
@@ -164,11 +175,18 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         return;
       }
 
-      // Temporada inicial
-      final initialSeason = info.seasons.isNotEmpty ? info.seasons.first.seasonNumber : 1;
+      await syncFuture;
+      if (!mounted) return;
 
-      // Carregar progresso dos episódios
+      // Carregar progresso dos episódios antes de selecionar a temporada inicial
       await _loadEpisodesProgress(info);
+
+      final preferredSeason = _primaryEpisode?.seasonNumber;
+      final hasPreferredSeason = preferredSeason != null &&
+          info.seasons.any((s) => s.seasonNumber == preferredSeason);
+      final initialSeason = hasPreferredSeason
+          ? preferredSeason
+          : (info.seasons.isNotEmpty ? info.seasons.first.seasonNumber : 1);
 
       if (mounted) {
         setState(() {
@@ -222,6 +240,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       final lastEpId = lastWatched['episodeId'];
       final lastSeason = lastWatched['seasonNumber'];
       final lastNum = lastWatched['episodeNum'];
+      final isPromotedNext = lastWatched['isPromotedNext'] == 1;
       XtreamSeriesEpisode? lastEp = (lastEpId != null) ? info.findEpisodeById(lastEpId) : null;
       if (lastEp == null && lastSeason != null && lastNum != null) {
         lastEp = info.findEpisodeBySeasonAndNum(lastSeason, lastNum);
@@ -234,6 +253,11 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
           _primaryEpisode = lastEp;
           _primaryPosition = prog.position;
           _primaryButtonLabel = 'CONTINUAR S${lastEp.seasonNumber}E${lastEp.episodeNum}';
+        } else if (isPromotedNext) {
+          // Este episódio já é o próximo promovido pela conclusão do anterior
+          _primaryEpisode = lastEp;
+          _primaryPosition = Duration.zero;
+          _primaryButtonLabel = 'PRÓXIMO S${lastEp.seasonNumber}E${lastEp.episodeNum}';
         } else {
           // Episódio foi concluído: disponibilizar o próximo episódio válido
           final nextEp = info.getNextEpisode(lastEp);

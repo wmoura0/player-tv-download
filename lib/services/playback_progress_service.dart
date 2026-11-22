@@ -1,5 +1,7 @@
-﻿import 'dart:convert';
+﻿import 'dart:async';
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'cloud_progress_sync_service.dart';
 import 'user_profile_service.dart';
 
 /// Representação do progresso de reprodução salvo para um filme.
@@ -47,6 +49,7 @@ class ContinueWatchingItem {
   final String? categoryId;
   final int? seasonNumber;
   final int? episodeNum;
+  final DateTime? manualResetAt;
 
   const ContinueWatchingItem({
     required this.streamId,
@@ -62,7 +65,42 @@ class ContinueWatchingItem {
     this.categoryId,
     this.seasonNumber,
     this.episodeNum,
+    this.manualResetAt,
   });
+
+  ContinueWatchingItem copyWith({
+    int? streamId,
+    int? seriesId,
+    ContinueWatchingType? type,
+    String? title,
+    String? subtitle,
+    String? coverUrl,
+    Duration? position,
+    Duration? duration,
+    DateTime? updatedAt,
+    String? containerExtension,
+    String? categoryId,
+    int? seasonNumber,
+    int? episodeNum,
+    DateTime? manualResetAt,
+  }) {
+    return ContinueWatchingItem(
+      streamId: streamId ?? this.streamId,
+      seriesId: seriesId ?? this.seriesId,
+      type: type ?? this.type,
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      coverUrl: coverUrl ?? this.coverUrl,
+      position: position ?? this.position,
+      duration: duration ?? this.duration,
+      updatedAt: updatedAt ?? this.updatedAt,
+      containerExtension: containerExtension ?? this.containerExtension,
+      categoryId: categoryId ?? this.categoryId,
+      seasonNumber: seasonNumber ?? this.seasonNumber,
+      episodeNum: episodeNum ?? this.episodeNum,
+      manualResetAt: manualResetAt ?? this.manualResetAt,
+    );
+  }
 
   double get progressRatio {
     if (duration.inMilliseconds <= 0) return 0.0;
@@ -99,6 +137,7 @@ class ContinueWatchingItem {
     'categoryId': categoryId,
     'seasonNumber': seasonNumber,
     'episodeNum': episodeNum,
+    if (manualResetAt != null) 'manualResetAt': manualResetAt!.millisecondsSinceEpoch,
   };
 
   factory ContinueWatchingItem.fromJson(Map<String, dynamic> json) {
@@ -107,6 +146,7 @@ class ContinueWatchingItem {
     final posMs = json['pos'] as int? ?? 0;
     final durMs = json['dur'] as int? ?? 0;
     final timeMs = json['time'] as int? ?? 0;
+    final resetMs = json['manualResetAt'] as int?;
 
     return ContinueWatchingItem(
       streamId: json['streamId'] as int? ?? 0,
@@ -122,6 +162,9 @@ class ContinueWatchingItem {
       categoryId: json['categoryId']?.toString(),
       seasonNumber: json['seasonNumber'] as int?,
       episodeNum: json['episodeNum'] as int?,
+      manualResetAt: (resetMs != null && resetMs > 0)
+          ? DateTime.fromMillisecondsSinceEpoch(resetMs)
+          : null,
     );
   }
 }
@@ -243,6 +286,56 @@ class PlaybackProgressService {
     final prefs = await _getPrefs();
     final key = _buildStorageKey(accountKey, streamId);
     await prefs.remove(key);
+
+    final listKey = _buildContinueWatchingKey(accountKey);
+    final rawList = prefs.getStringList(listKey) ?? [];
+    ContinueWatchingItem? existingItem;
+    final filtered = <String>[];
+    for (final raw in rawList) {
+      try {
+        final item = ContinueWatchingItem.fromJson(
+          jsonDecode(raw) as Map<String, dynamic>,
+        );
+        if (item.type == ContinueWatchingType.movie && item.streamId == streamId) {
+          existingItem = item;
+          continue;
+        }
+        filtered.add(raw);
+      } catch (_) {}
+    }
+    if (existingItem != null) {
+      await prefs.setStringList(listKey, filtered);
+    }
+
+    final now = DateTime.now();
+    final resetItem = (existingItem ??
+            ContinueWatchingItem(
+              streamId: streamId,
+              type: ContinueWatchingType.movie,
+              title: 'VOD #$streamId',
+              position: Duration.zero,
+              duration: Duration.zero,
+              updatedAt: now,
+            ))
+        .copyWith(
+      position: Duration.zero,
+      duration: Duration.zero,
+      updatedAt: now,
+      manualResetAt: now,
+    );
+    final shouldPush = await CloudProgressSyncService.instance
+        .persistLocalLedgerChange(
+      accountKey: accountKey,
+      item: resetItem,
+      immediatePush: true,
+    );
+    if (shouldPush) {
+      CloudProgressSyncService.instance.triggerBackgroundSync(
+        accountKey,
+        progressService: this,
+        force: true,
+      );
+    }
   }
 
   // =========================================================================
@@ -359,6 +452,7 @@ class PlaybackProgressService {
     required int episodeId,
     required int seasonNumber,
     required int episodeNum,
+    bool isPromotedNext = false,
   }) async {
     final prefs = await _getPrefs();
     final key = _buildSeriesLastKey(accountKey, seriesId);
@@ -366,6 +460,7 @@ class PlaybackProgressService {
       'episodeId': episodeId,
       'seasonNumber': seasonNumber,
       'episodeNum': episodeNum,
+      'isPromotedNext': isPromotedNext,
       'time': DateTime.now().millisecondsSinceEpoch,
     };
     await prefs.setString(key, jsonEncode(data));
@@ -387,6 +482,7 @@ class PlaybackProgressService {
         'episodeId': data['episodeId'] as int? ?? 0,
         'seasonNumber': data['seasonNumber'] as int? ?? 1,
         'episodeNum': data['episodeNum'] as int? ?? 1,
+        'isPromotedNext': (data['isPromotedNext'] == true ? 1 : 0),
       };
     } catch (_) {
       return null;
@@ -448,26 +544,36 @@ class PlaybackProgressService {
     });
     final existingItem = existingIndex >= 0 ? currentList[existingIndex] : null;
 
+    var effectiveItem = item;
+    if (existingItem != null &&
+        existingItem.manualResetAt != null &&
+        effectiveItem.manualResetAt == null &&
+        !effectiveItem.isCompleted) {
+      effectiveItem = effectiveItem.copyWith(
+        manualResetAt: existingItem.manualResetAt,
+      );
+    }
+
     // Proteção contra gravações concorrentes desatualizadas:
     // Se o item persistido já possui timestamp posterior ao que está sendo gravado, ignora
-    if (existingItem != null && existingItem.updatedAt.isAfter(item.updatedAt)) {
+    if (existingItem != null && existingItem.updatedAt.isAfter(effectiveItem.updatedAt)) {
       return;
     }
 
     currentList.removeWhere((i) {
-      if (i.type == item.type) {
-        if (item.type == ContinueWatchingType.movie) {
-          return i.streamId == item.streamId;
+      if (i.type == effectiveItem.type) {
+        if (effectiveItem.type == ContinueWatchingType.movie) {
+          return i.streamId == effectiveItem.streamId;
         } else {
-          return (i.seriesId ?? i.streamId) == (item.seriesId ?? item.streamId);
+          return (i.seriesId ?? i.streamId) == (effectiveItem.seriesId ?? effectiveItem.streamId);
         }
       }
       return false;
     });
 
-    if (item.canResume) {
-      currentList.insert(0, item);
-    } else if (item.isCompleted) {
+    if (effectiveItem.canResume) {
+      currentList.insert(0, effectiveItem);
+    } else if (effectiveItem.isCompleted) {
       // Concluído normalmente: item removido do índice
     } else if (existingItem != null && existingItem.canResume) {
       // Proteção: se a sessão atual não atingiu o limite (ex.: saída durante carregamento/busca),
@@ -478,6 +584,27 @@ class PlaybackProgressService {
     final capped = currentList.take(10).toList();
     final jsonList = capped.map((i) => jsonEncode(i.toJson())).toList();
     await prefs.setStringList(key, jsonList);
+
+    if (effectiveItem.canResume ||
+        effectiveItem.isCompleted ||
+        effectiveItem.manualResetAt != null) {
+      final isImmediate = effectiveItem.isCompleted ||
+          effectiveItem.position == Duration.zero ||
+          effectiveItem.manualResetAt != null;
+      final shouldPush = await CloudProgressSyncService.instance
+          .persistLocalLedgerChange(
+        accountKey: accountKey,
+        item: effectiveItem,
+        immediatePush: isImmediate,
+      );
+      if (shouldPush) {
+        CloudProgressSyncService.instance.triggerBackgroundSync(
+          accountKey,
+          progressService: this,
+          force: isImmediate,
+        );
+      }
+    }
   }
 
   /// Remove um item específico do índice de continuar assistindo sem apagar o progresso existente.
@@ -491,19 +618,314 @@ class PlaybackProgressService {
     final key = _buildContinueWatchingKey(accountKey);
     final currentList = await getContinueWatchingList(accountKey: accountKey);
 
+    ContinueWatchingItem? removedItem;
     currentList.removeWhere((i) {
       if (i.type == type) {
-        if (type == ContinueWatchingType.movie) {
-          return i.streamId == id;
-        } else {
-          return (i.seriesId ?? i.streamId) == id;
+        final matches = (type == ContinueWatchingType.movie)
+            ? i.streamId == id
+            : (i.seriesId ?? i.streamId) == id;
+        if (matches) {
+          removedItem = i;
         }
+        return matches;
       }
       return false;
     });
 
     final jsonList = currentList.map((i) => jsonEncode(i.toJson())).toList();
     await prefs.setStringList(key, jsonList);
+
+    final now = DateTime.now();
+    int? lastSeason = removedItem?.seasonNumber;
+    int? lastEpisodeNum = removedItem?.episodeNum;
+    int streamId = removedItem?.streamId ?? id;
+    if (removedItem == null && type == ContinueWatchingType.series) {
+      final last = await getLastWatchedEpisode(accountKey: accountKey, seriesId: id);
+      if (last != null) {
+        streamId = (last['episodeId'] ?? 0) > 0 ? last['episodeId']! : id;
+        lastSeason = last['seasonNumber'];
+        lastEpisodeNum = last['episodeNum'];
+      }
+    }
+    final dur = (removedItem != null && removedItem!.duration > Duration.zero)
+        ? removedItem!.duration
+        : const Duration(seconds: 60);
+    final completedTombstone = (removedItem ??
+            ContinueWatchingItem(
+              streamId: streamId,
+              seriesId: type == ContinueWatchingType.series ? id : null,
+              type: type,
+              title: type == ContinueWatchingType.series ? 'Série #$id' : 'VOD #$id',
+              position: dur,
+              duration: dur,
+              updatedAt: now,
+              seasonNumber: lastSeason,
+              episodeNum: lastEpisodeNum,
+            ))
+        .copyWith(
+      streamId: streamId,
+      position: dur,
+      duration: dur,
+      updatedAt: now,
+      seasonNumber: lastSeason,
+      episodeNum: lastEpisodeNum,
+    );
+    final shouldPush = await CloudProgressSyncService.instance
+        .persistLocalLedgerChange(
+      accountKey: accountKey,
+      item: completedTombstone,
+      immediatePush: true,
+    );
+    if (shouldPush) {
+      CloudProgressSyncService.instance.triggerBackgroundSync(
+        accountKey,
+        progressService: this,
+        force: true,
+      );
+    }
+  }
+
+  /// Aplica localmente um item vencedor vindo da sincronização em nuvem sem disparar reenvio.
+  Future<void> applySyncedItem({
+    required String accountKey,
+    required ContinueWatchingItem item,
+  }) async {
+    if (accountKey.trim().isEmpty) return;
+    final prefs = await _getPrefs();
+
+    if (item.type == ContinueWatchingType.movie) {
+      final progKey = _buildStorageKey(accountKey, item.streamId);
+      final shouldClear = item.isCompleted ||
+          (item.manualResetAt != null && item.position.inSeconds < 10);
+      if (shouldClear) {
+        await prefs.remove(progKey);
+        await _upsertOrRemoveContinueWatchingLocal(
+          prefs: prefs,
+          accountKey: accountKey,
+          item: item,
+          remove: true,
+        );
+      } else {
+        if (item.position.inSeconds >= 10 && item.duration > Duration.zero) {
+          await prefs.setString(
+            progKey,
+            jsonEncode({
+              'pos': item.position.inMilliseconds,
+              'dur': item.duration.inMilliseconds,
+              'time': item.updatedAt.millisecondsSinceEpoch,
+            }),
+          );
+        }
+        await _upsertOrRemoveContinueWatchingLocal(
+          prefs: prefs,
+          accountKey: accountKey,
+          item: item,
+          remove: !item.canResume,
+        );
+      }
+      return;
+    }
+
+    // Série
+    final seriesId = item.seriesId ?? item.streamId;
+    final oldLast = await getLastWatchedEpisode(
+      accountKey: accountKey,
+      seriesId: seriesId,
+    );
+    if (oldLast != null &&
+        oldLast['episodeId'] != null &&
+        oldLast['episodeId'] != item.streamId) {
+      await prefs.remove(
+        _buildEpisodeStorageKey(accountKey, seriesId, oldLast['episodeId']!),
+      );
+    }
+
+    final epProgKey = _buildEpisodeStorageKey(accountKey, seriesId, item.streamId);
+    final lastKey = _buildSeriesLastKey(accountKey, seriesId);
+
+    if (item.isCompleted) {
+      await prefs.remove(epProgKey);
+      await prefs.setString(
+        lastKey,
+        jsonEncode({
+          'episodeId': item.streamId,
+          'seasonNumber': item.seasonNumber ?? 1,
+          'episodeNum': item.episodeNum ?? 1,
+          'isPromotedNext': false,
+          'time': item.updatedAt.millisecondsSinceEpoch,
+        }),
+      );
+      await _upsertOrRemoveContinueWatchingLocal(
+        prefs: prefs,
+        accountKey: accountKey,
+        item: item,
+        remove: true,
+      );
+      return;
+    }
+
+    if (item.manualResetAt != null &&
+        item.position.inSeconds < 10 &&
+        (item.seasonNumber ?? 1) <= 1 &&
+        (item.episodeNum ?? 1) <= 1) {
+      await prefs.remove(epProgKey);
+      await prefs.remove(lastKey);
+      await _upsertOrRemoveContinueWatchingLocal(
+        prefs: prefs,
+        accountKey: accountKey,
+        item: item,
+        remove: true,
+      );
+      return;
+    }
+
+    final isPromotedNext = item.position == Duration.zero && item.canResume;
+    await prefs.setString(
+      lastKey,
+      jsonEncode({
+        'episodeId': item.streamId,
+        'seasonNumber': item.seasonNumber ?? 1,
+        'episodeNum': item.episodeNum ?? 1,
+        'isPromotedNext': isPromotedNext,
+        'time': item.updatedAt.millisecondsSinceEpoch,
+      }),
+    );
+
+    if (item.position.inSeconds >= 10 && item.duration > Duration.zero) {
+      await prefs.setString(
+        epProgKey,
+        jsonEncode({
+          'pos': item.position.inMilliseconds,
+          'dur': item.duration.inMilliseconds,
+          'time': item.updatedAt.millisecondsSinceEpoch,
+        }),
+      );
+    } else if (item.position == Duration.zero) {
+      await prefs.remove(epProgKey);
+    }
+
+    await _upsertOrRemoveContinueWatchingLocal(
+      prefs: prefs,
+      accountKey: accountKey,
+      item: item,
+      remove: !item.canResume,
+    );
+  }
+
+  Future<void> _upsertOrRemoveContinueWatchingLocal({
+    required SharedPreferences prefs,
+    required String accountKey,
+    required ContinueWatchingItem item,
+    required bool remove,
+  }) async {
+    final key = _buildContinueWatchingKey(accountKey);
+    final rawList = prefs.getStringList(key) ?? [];
+    final currentList = <ContinueWatchingItem>[];
+    for (final raw in rawList) {
+      try {
+        final parsed = ContinueWatchingItem.fromJson(
+          jsonDecode(raw) as Map<String, dynamic>,
+        );
+        if (parsed.type == item.type) {
+          final matches = (item.type == ContinueWatchingType.movie)
+              ? parsed.streamId == item.streamId
+              : (parsed.seriesId ?? parsed.streamId) ==
+                  (item.seriesId ?? item.streamId);
+          if (matches) continue;
+        }
+        if (parsed.canResume && parsed.title.isNotEmpty) {
+          currentList.add(parsed);
+        }
+      } catch (_) {}
+    }
+    if (!remove && item.canResume && item.title.isNotEmpty) {
+      currentList.add(item);
+    }
+    currentList.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final capped = currentList.take(10).toList();
+    await prefs.setStringList(
+      key,
+      capped.map((i) => jsonEncode(i.toJson())).toList(),
+    );
+  }
+
+  /// Compara dois estados de reprodução para determinar qual está mais avançado.
+  /// Retorna > 0 quando [a] está mais avançado que [b], < 0 quando [b] está mais avançado e 0 em empate exato.
+  static int compareAdvancement(ContinueWatchingItem a, ContinueWatchingItem b) {
+    if (a.type != b.type) {
+      return a.updatedAt.compareTo(b.updatedAt);
+    }
+
+    if (a.type == ContinueWatchingType.movie) {
+      if (a.isCompleted != b.isCompleted) {
+        return a.isCompleted ? 1 : -1;
+      }
+      final posCmp = a.position.inMilliseconds.compareTo(b.position.inMilliseconds);
+      if (posCmp != 0) return posCmp;
+      return a.updatedAt.compareTo(b.updatedAt);
+    }
+
+    // Séries: temporada -> episódio -> conclusão -> posição -> timestamp
+    final sCmp = (a.seasonNumber ?? 1).compareTo(b.seasonNumber ?? 1);
+    if (sCmp != 0) return sCmp;
+
+    final eCmp = (a.episodeNum ?? 1).compareTo(b.episodeNum ?? 1);
+    if (eCmp != 0) return eCmp;
+
+    final cCmp = (a.isCompleted ? 1 : 0).compareTo(b.isCompleted ? 1 : 0);
+    if (cCmp != 0) return cCmp;
+
+    final posCmp = a.position.inMilliseconds.compareTo(b.position.inMilliseconds);
+    if (posCmp != 0) return posCmp;
+
+    return a.updatedAt.compareTo(b.updatedAt);
+  }
+
+  /// Seleciona o item prevalente entre o estado [local] e o [remote] dando prioridade
+  /// absoluta ao progresso mais avançado, exceto quando houver reinício manual explícito posterior.
+  static ContinueWatchingItem pickMoreAdvanced(
+    ContinueWatchingItem local,
+    ContinueWatchingItem remote,
+  ) {
+    final localReset = local.manualResetAt;
+    final remoteReset = remote.manualResetAt;
+
+    ContinueWatchingItem winner;
+    ContinueWatchingItem loser;
+
+    if (localReset != null &&
+        localReset.isAfter(remote.updatedAt) &&
+        (remoteReset == null || localReset.isAfter(remoteReset))) {
+      winner = local;
+      loser = remote;
+    } else if (remoteReset != null &&
+        remoteReset.isAfter(local.updatedAt) &&
+        (localReset == null || remoteReset.isAfter(localReset))) {
+      winner = remote;
+      loser = local;
+    } else if (compareAdvancement(local, remote) >= 0) {
+      winner = local;
+      loser = remote;
+    } else {
+      winner = remote;
+      loser = local;
+    }
+
+    final mergedCover = (winner.coverUrl != null && winner.coverUrl!.trim().isNotEmpty)
+        ? winner.coverUrl
+        : loser.coverUrl;
+    final mergedExt = (winner.containerExtension != null && winner.containerExtension!.trim().isNotEmpty)
+        ? winner.containerExtension
+        : loser.containerExtension;
+    final mergedCat = (winner.categoryId != null && winner.categoryId!.trim().isNotEmpty)
+        ? winner.categoryId
+        : loser.categoryId;
+
+    return winner.copyWith(
+      coverUrl: mergedCover,
+      containerExtension: mergedExt,
+      categoryId: mergedCat,
+    );
   }
 
   /// Formata uma duração em string legível (ex: 01:23:45 ou 05:30)

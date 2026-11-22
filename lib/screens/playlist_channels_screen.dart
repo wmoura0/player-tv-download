@@ -112,24 +112,46 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (DeviceUtils.isPipMode.value) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
       return;
     }
 
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      _stabilityManager.pauseMonitoring();
-      _playerController?.pause();
-      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
+    if (DeviceUtils.isPipMode.value || DeviceUtils.isMultiWindowMode.value) {
+      return;
+    }
+
+    if (state == AppLifecycleState.paused) {
+      unawaited(_handleBackgroundLifecycle());
     } else if (state == AppLifecycleState.resumed) {
       if (mounted &&
           _activeChannel != null &&
           _playerController != null &&
           _playerController!.value.isInitialized) {
-        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true, force: true);
         _stabilityManager.startStallMonitoring(_playerController!);
         _playerController!.play().catchError((_) {});
       }
     }
+  }
+
+  Future<void> _handleBackgroundLifecycle() async {
+    if (_activeChannel == null || _playerController == null) return;
+    if (await DeviceUtils.isInMultiWindowOrPip()) {
+      return;
+    }
+    if (!mounted) return;
+    final currentLifecycle = WidgetsBinding.instance.lifecycleState;
+    if (currentLifecycle != null && currentLifecycle != AppLifecycleState.paused) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      return;
+    }
+    _stabilityManager.pauseMonitoring();
+    _playerController?.pause();
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
   }
 
   @override
@@ -442,6 +464,7 @@ class _PlaylistChannelsScreenState extends State<PlaylistChannelsScreen>
 
     final controller = VideoPlayerController.networkUrl(
       uri,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       httpHeaders: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
       },

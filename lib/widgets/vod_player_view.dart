@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../services/playback_progress_service.dart';
 import '../services/url_sanitizer.dart';
+import '../utils/device_utils.dart';
 import 'live_player_view.dart'; // Para reutilizar LiveVideoFitMode
 
 /// Widget modular de interface de reprodução de Filmes (VOD) e Séries.
@@ -941,62 +942,78 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
   @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final isInitialized = controller != null && controller.value.isInitialized;
-    final isPlaying = controller?.value.isPlaying ?? false;
+    return ValueListenableBuilder<bool>(
+      valueListenable: DeviceUtils.isPipMode,
+      builder: (context, inPip, _) {
+        final controller = widget.controller;
+        final isInitialized = controller != null && controller.value.isInitialized;
+        final isPlaying = controller?.value.isPlaying ?? false;
 
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        _handleBackPress();
-      },
-      child: Focus(
-        focusNode: _focusNode,
-        autofocus: true,
-        onKeyEvent: _handleKeyEvent,
-        child: GestureDetector(
-          onTap: _toggleControls,
-          behavior: HitTestBehavior.opaque,
-          child: Container(
+        // No modo Picture-in-Picture (PiP), exibe unicamente a superfície limpa de vídeo
+        // sem botões, overlays de OSD ou armadilhas de foco
+        if (inPip) {
+          return Container(
             color: Colors.black,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // 1. Superfície Física do Vídeo
-                if (isInitialized && widget.errorMessage == null)
-                  _buildVideoSurface(controller)
-                else
-                  _buildPlaceholderBackground(),
+            child: (isInitialized && widget.errorMessage == null)
+                ? _buildVideoSurface(controller)
+                : _buildPlaceholderBackground(),
+          );
+        }
 
-                // 2. Indicador de Carregamento ou Buffering
-                if (widget.isLoading || widget.isBuffering)
-                  _buildLoadingOverlay(),
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            _handleBackPress();
+          },
+          child: Focus(
+            focusNode: _focusNode,
+            autofocus: true,
+            onKeyEvent: _handleKeyEvent,
+            child: GestureDetector(
+              onTap: _toggleControls,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                color: Colors.black,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // 1. Superfície Física do Vídeo
+                    if (isInitialized && widget.errorMessage == null)
+                      _buildVideoSurface(controller)
+                    else
+                      _buildPlaceholderBackground(),
 
-                // 3. Indicador de Erro
-                if (widget.errorMessage != null && !widget.isLoading)
-                  _buildErrorOverlay(),
+                    // 2. Indicador de Carregamento ou Buffering
+                    if (widget.isLoading || widget.isBuffering)
+                      _buildLoadingOverlay(),
 
-                // 4. Botão flutuante "Pular Abertura (+85s)" para Séries (auto-oculta em 10s ou no 1º Voltar)
-                if (!_showControls && _canShowFloatingSkipIntro && widget.errorMessage == null)
-                  Positioned(
-                    bottom: 28,
-                    right: 28,
-                    child: _buildSkipIntroPillButton(),
-                  ),
+                    // 3. Indicador de Erro
+                    if (widget.errorMessage != null && !widget.isLoading)
+                      _buildErrorOverlay(),
 
-                // 5. Controles Sobrepostos (OSD)
-                if (_showControls && widget.errorMessage == null)
-                  _buildControlsOverlay(controller, isPlaying),
+                    // 4. Botão flutuante "Pular Abertura (+85s)" para Séries (auto-oculta em 10s ou no 1º Voltar)
+                    if (!_showControls && _canShowFloatingSkipIntro && widget.errorMessage == null)
+                      Positioned(
+                        bottom: 28,
+                        right: 28,
+                        child: _buildSkipIntroPillButton(),
+                      ),
 
-                // 6. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
-                if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0 && widget.errorMessage == null)
-                  _buildNextEpisodeCountdownOverlay(),
-              ],
+                    // 5. Controles Sobrepostos (OSD)
+                    if (_showControls && widget.errorMessage == null)
+                      _buildControlsOverlay(controller, isPlaying),
+
+                    // 6. Overlay de Contagem Regressiva para Próximo Episódio (Cancelável)
+                    if (widget.nextEpisodeCountdown != null && widget.nextEpisodeCountdown! > 0 && widget.errorMessage == null)
+                      _buildNextEpisodeCountdownOverlay(),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -1422,6 +1439,23 @@ class _VodPlayerViewState extends State<VodPlayerView> {
             ),
           ),
           const SizedBox(width: 8),
+          if (!DeviceUtils.isTv) ...[
+            IconButton(
+              key: const Key('btn_vod_pip'),
+              tooltip: 'Janela flutuante (PiP)',
+              icon: const Icon(Icons.picture_in_picture_alt_rounded, color: Colors.white70, size: 22),
+              onPressed: () {
+                final sz = widget.controller?.value.size ?? Size.zero;
+                final w = sz.width.round();
+                final h = sz.height.round();
+                DeviceUtils.enterPip(
+                  aspectNumerator: (w > 0 && h > 0) ? w : 16,
+                  aspectDenominator: (w > 0 && h > 0) ? h : 9,
+                );
+              },
+            ),
+            const SizedBox(width: 6),
+          ],
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(

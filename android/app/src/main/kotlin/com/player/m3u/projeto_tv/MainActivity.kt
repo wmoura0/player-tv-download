@@ -94,18 +94,28 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
+    private fun isInMultiWindowOrPip(): Boolean {
+        val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+        val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false
+        return inPip || inMultiWindow
+    }
+
     private var isKeepScreenOnEnabled: Boolean = false
 
     private fun applyKeepScreenOn(enable: Boolean) {
-        try {
-            if (enable) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = true
-            } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = false
+        runOnUiThread {
+            try {
+                if (enable) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    window.decorView.keepScreenOn = true
+                    findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = true
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    window.decorView.keepScreenOn = false
+                    findViewById<android.view.View>(android.R.id.content)?.keepScreenOn = false
+                }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
     }
 
@@ -128,7 +138,7 @@ class MainActivity : FlutterActivity() {
                                 @Suppress("DEPRECATION")
                                 pInfo.versionCode
                             }
-                            val vName = pInfo.versionName ?: "1.2.12"
+                            val vName = pInfo.versionName ?: "1.2.13"
                             result.success(mapOf(
                                 "versionName" to vName,
                                 "versionCode" to vCode,
@@ -179,6 +189,9 @@ class MainActivity : FlutterActivity() {
                             false
                         }
                         result.success(inPip)
+                    }
+                    "isInMultiWindowOrPip" -> {
+                        result.success(isInMultiWindowOrPip())
                     }
                     "canRequestPackageInstalls" -> {
                         val canRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -431,7 +444,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (isPipEnabledForPlayback && !isTvDevice()) {
+        if (isPipEnabledForPlayback && !isTvDevice() && !isInMultiWindowOrPip()) {
             enterPipMode()
         }
     }
@@ -439,5 +452,10 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         methodChannel?.invokeMethod("onPipModeChanged", isInPictureInPictureMode)
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        methodChannel?.invokeMethod("onMultiWindowModeChanged", isInMultiWindowMode)
     }
 }

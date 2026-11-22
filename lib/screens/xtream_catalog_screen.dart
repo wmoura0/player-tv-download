@@ -264,27 +264,49 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Quando o app estiver em modo Picture-in-Picture (PiP), o Android coloca a Activity em
-    // estado Paused/Inactive, mas o vídeo DEVE continuar reproduzindo na janela flutuante.
-    if (DeviceUtils.isPipMode.value) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
       return;
     }
 
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      _stabilityManager.pauseMonitoring();
-      _playerController?.pause();
-      DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
+    // Quando o app estiver em modo Picture-in-Picture (PiP) ou Multi-Janela/Pop-up,
+    // o vídeo DEVE continuar reproduzindo normalmente sem pausar nem apagar a tela.
+    if (DeviceUtils.isPipMode.value || DeviceUtils.isMultiWindowMode.value) {
+      return;
+    }
+
+    if (state == AppLifecycleState.paused) {
+      unawaited(_handleBackgroundLifecycle());
     } else if (state == AppLifecycleState.resumed) {
       if (mounted &&
           _activeLiveStream != null &&
           _playerController != null &&
           _playerController!.value.isInitialized) {
-        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true);
+        DeviceUtils.updateScreenKeepAlive(shouldKeepOn: true, force: true);
         _stabilityManager.startStallMonitoring(_playerController!);
         // Transmissões ao vivo não devem executar seekTo para evitar salto para trás (~5s) ou perda de sincronia
         _playerController!.play().catchError((_) {});
       }
     }
+  }
+
+  Future<void> _handleBackgroundLifecycle() async {
+    if (_activeLiveStream == null || _playerController == null) return;
+    if (await DeviceUtils.isInMultiWindowOrPip()) {
+      return;
+    }
+    if (!mounted) return;
+    final currentLifecycle = WidgetsBinding.instance.lifecycleState;
+    if (currentLifecycle != null && currentLifecycle != AppLifecycleState.paused) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      return;
+    }
+    _stabilityManager.pauseMonitoring();
+    _playerController?.pause();
+    DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false);
   }
 
 
@@ -983,6 +1005,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
       uri,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       httpHeaders: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
       },

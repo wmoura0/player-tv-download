@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // This security rules file assumes the following data structures:
+    //
+    // Collection: sync_profiles
+    // Document ID: {syncId} (64-char lowercase hex SHA-256 hash: ^[a-f0-9]{64}$)
+    //   Computed client-side from the user's scoped Xtream account + profile key.
+    //   Zero PII (emails, names, server URLs, credentials) is stored in Firestore.
+    // Fields:
+    //   - syncId: string (required, immutable on update, exact length 64, matches ^[a-f0-9]{64}$, must equal document ID)
+    //   - updatedAtMs: int (required, > 0, client epoch milliseconds from DateTime.now().millisecondsSinceEpoch)
+    //   - lastUid: string (required, length 1..128, must equal request.auth.uid on both create and update)
+    //   - itemsJson: string (required, length 2..65536, compact JSON object mapping movie_<id>/series_<id> to ContinueWatchingItem)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the caller is authenticated (including Firebase Anonymous Auth)
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Validate required fields exist on the resulting document
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that a field is a string within [minLen, maxLen]
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate that immutable fields are not altered on update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate 64-character lowercase hex SHA-256 syncId format
+    function isValidSyncId(id) {
+      return id is string &&
+        id.size() == 64 &&
+        id.matches('^[a-f0-9]{64}$');
+    }
+
+    // Check if the caller is the last authenticated writer recorded on the existing document
+    function isLastWriter() {
+      return isAuthenticated() &&
+        resource != null &&
+        'lastUid' in resource.data &&
+        resource.data.lastUid is string &&
+        resource.data.lastUid == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // Strict schema, identity, type, and size validation for sync_profiles (used on BOTH create and update)
+    function isValidSyncProfile(syncIdParam) {
+      let data = request.resource.data;
+      return hasRequiredFields(['syncId', 'updatedAtMs', 'lastUid', 'itemsJson']) &&
+        hasOnlyAllowedFields(['syncId', 'updatedAtMs', 'lastUid', 'itemsJson']) &&
+        isValidSyncId(syncIdParam) &&
+        isValidSyncId(data.syncId) &&
+        data.syncId == syncIdParam &&
+        data.updatedAtMs is int &&
+        data.updatedAtMs > 0 &&
+        validStringLength('lastUid', 1, 128) &&
+        data.lastUid == request.auth.uid &&
+        validStringLength('itemsJson', 2, 65536);
+    }
+
+    // ===============================================================
+    // Default Deny
+    // ===============================================================
+
+    // Deny all reads and writes by default across every path
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Collection Rules: sync_profiles
+    // ===============================================================
+
+    match /sync_profiles/{syncId} {
+      // Allow single-document lookup only for authenticated clients presenting a valid 64-char SHA-256 syncId
+      allow get: if isAuthenticated() && isValidSyncId(syncId);
+
+      // Explicitly block collection scanning/enumeration
+      allow list: if false;
+
+      // Allow creating a sync profile document only with strictly valid schema and caller UID attribution
+      allow create: if isAuthenticated() && isValidSyncProfile(syncId);
+
+      // Allow updating an existing sync profile document across household devices while preserving syncId immutability
+      allow update: if isAuthenticated() &&
+        resource != null &&
+        'syncId' in resource.data &&
+        isValidSyncProfile(syncId) &&
+        areImmutableFieldsUnchanged(['syncId']) &&
+        request.resource.data.syncId == resource.data.syncId;
+
+      // Allow deleting only own-written documents (e.g., cleanup of own test or obsolete documents)
+      allow delete: if isValidSyncId(syncId) && isLastWriter();
+    }
+  }
+}

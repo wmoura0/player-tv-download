@@ -16,6 +16,7 @@ import 'screens/xtream_catalog_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/xtream_login_screen.dart';
 import 'services/account_manager_service.dart';
+import 'services/cloud_progress_sync_service.dart';
 import 'services/favorites_service.dart';
 import 'services/hidden_categories_service.dart';
 import 'services/ota_update_service.dart';
@@ -136,6 +137,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       OtaUpdateService.instance.onAppResumed();
+      final route = ModalRoute.of(context);
+      if (_accountKey.isNotEmpty && (route == null || route.isCurrent)) {
+        _syncContinueWatchingInBackground();
+      }
     }
   }
 
@@ -199,6 +204,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _continuarAssistindo = items;
         });
       }
+      _syncContinueWatchingInBackground();
     } else {
       if (mounted) {
         setState(() {
@@ -208,6 +214,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     await _loadRecentCachedMedia();
+  }
+
+  void _syncContinueWatchingInBackground() {
+    if (_accountKey.isEmpty) return;
+    unawaited(
+      CloudProgressSyncService.instance
+          .syncAccount(_accountKey, progressService: _progressService)
+          .then((changed) async {
+        if (changed && mounted) {
+          final refreshed = await _progressService.getContinueWatchingList(
+            accountKey: _accountKey,
+          );
+          if (mounted) {
+            setState(() {
+              _continuarAssistindo = refreshed;
+            });
+          }
+        }
+      }).catchError((_) {}),
+    );
   }
 
   Future<void> _loadRecentCachedMedia() async {

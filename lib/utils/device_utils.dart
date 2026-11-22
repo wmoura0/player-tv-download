@@ -7,10 +7,11 @@ class DeviceUtils {
   static const MethodChannel _deviceChannel = MethodChannel('com.player.m3u/device');
   static bool? _cachedIsTv;
   static bool? _mockIsPipSupported;
+  static bool? _mockIsMultiWindowOrPip;
 
-  // Versão instalada real (padrão v1.2.12+15 com sincronização dinâmica via MainActivity)
-  static int _installedVersionCode = 15;
-  static String _installedVersionName = '1.2.12';
+  // Versão instalada real (padrão v1.2.13+16 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 16;
+  static String _installedVersionName = '1.2.13';
 
   /// Versão de build (versionCode) da aplicação instalada no dispositivo.
   static int get installedVersionCode => _installedVersionCode;
@@ -50,6 +51,9 @@ class DeviceUtils {
   /// Verdadeiro quando o aplicativo estiver minimizado na janela flutuante nativa do Android.
   static final ValueNotifier<bool> isPipMode = ValueNotifier<bool>(false);
 
+  /// Notificador reativo do estado de Multi-Janela / Janela Flutuante (Pop-up / Split-screen).
+  static final ValueNotifier<bool> isMultiWindowMode = ValueNotifier<bool>(false);
+
   /// Inicializa e consulta a identificação nativa da plataforma Android/Fire TV.
   static Future<void> init() async {
     try {
@@ -57,6 +61,9 @@ class DeviceUtils {
         if (call.method == 'onPipModeChanged') {
           final inPip = call.arguments as bool? ?? false;
           isPipMode.value = inPip;
+        } else if (call.method == 'onMultiWindowModeChanged') {
+          final inMultiWindow = call.arguments as bool? ?? false;
+          isMultiWindowMode.value = inMultiWindow;
         }
       });
 
@@ -145,11 +152,12 @@ class DeviceUtils {
     required bool shouldKeepOn,
     bool immediate = true,
     Duration gracePeriod = const Duration(seconds: 8),
+    bool force = false,
   }) async {
     if (shouldKeepOn) {
       _screenKeepOnReleaseTimer?.cancel();
       _screenKeepOnReleaseTimer = null;
-      if (!_isScreenKeepOnActive) {
+      if (!_isScreenKeepOnActive || force) {
         _isScreenKeepOnActive = true;
         debugPrint('[DEVICE] Bloqueio de suspensão da tela ativado (KEEP_SCREEN_ON = true).');
         try {
@@ -181,8 +189,8 @@ class DeviceUtils {
   }
 
   /// Mantém a tela ligada durante a reprodução de vídeo para impedir bloqueio acidental.
-  static Future<void> setKeepScreenOn(bool enable) async {
-    await updateScreenKeepAlive(shouldKeepOn: enable, immediate: !enable);
+  static Future<void> setKeepScreenOn(bool enable, {bool force = false}) async {
+    await updateScreenKeepAlive(shouldKeepOn: enable, immediate: !enable, force: force);
   }
 
   @visibleForTesting
@@ -246,6 +254,26 @@ class DeviceUtils {
   @visibleForTesting
   static void setMockIsPipSupported(bool? value) {
     _mockIsPipSupported = value;
+  }
+
+  /// Indica se o aplicativo está atualmente em modo Picture-in-Picture (PiP)
+  /// ou em Multi-Janela / Janela Flutuante (Pop-up / Split-screen) no Android.
+  static Future<bool> isInMultiWindowOrPip() async {
+    if (_mockIsMultiWindowOrPip != null) return _mockIsMultiWindowOrPip!;
+    if (isPipMode.value || isMultiWindowMode.value) return true;
+    if (isTv) return false;
+    try {
+      final res = await _deviceChannel.invokeMethod<bool>('isInMultiWindowOrPip');
+      return res ?? (isPipMode.value || isMultiWindowMode.value);
+    } catch (_) {
+      return isPipMode.value || isMultiWindowMode.value;
+    }
+  }
+
+  /// Permite injetar o estado de PiP / Multi-Janela para testes controlados.
+  @visibleForTesting
+  static void setMockIsMultiWindowOrPip(bool? value) {
+    _mockIsMultiWindowOrPip = value;
   }
 
   /// Verifica se o aplicativo possui autorização do sistema para instalar pacotes APK.

@@ -361,6 +361,7 @@ class SmartSourceResolver {
     ValueChanged<String>? onProgressMessage,
     http.Client? probeClient,
     Duration? timeoutPerProbe,
+    Set<String>? alreadyFailedUrls,
   }) async {
     if (!SettingsService.instance.enableSmartSource) {
       return const SmartSourceResult(
@@ -394,6 +395,9 @@ class SmartSourceResolver {
 
     for (var i = 0; i < candidates.length; i++) {
       final candidateUrl = candidates[i];
+      if (alreadyFailedUrls != null && alreadyFailedUrls.contains(candidateUrl)) {
+        continue;
+      }
       tested.add(candidateUrl);
 
       final ext = candidateUrl.split('.').last.split('?').first.toLowerCase();

@@ -98,6 +98,12 @@ class _MockVideoPlayerPlatform extends VideoPlayerPlatform {
   Future<void> setVolume(int textureId, double volume) async {}
 
   @override
+  Future<void> setPlaybackSpeed(int textureId, double speed) async {}
+
+  @override
+  Future<void> setMixWithOthers(bool mixWithOthers) async {}
+
+  @override
   Future<void> seekTo(int textureId, Duration position) async {}
 
   @override

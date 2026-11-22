@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
+import '../services/cloud_progress_sync_service.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
@@ -62,6 +63,11 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
   Duration? _resumptionTarget;
   bool _seekAttempted = false;
+  Timer? _postPlaySeekTimer;
+  bool _postPlaySeekFallbackDone = false;
+  bool _wasControllerPlaying = false;
+  Future<void>? _hydrationFuture;
+  final Set<String> _failedStreamUrls = {};
 
   Timer? _progressSaveTimer;
   Timer? _initialBufferingWatchdog;
@@ -79,13 +85,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     _currentSeriesInfo = widget.seriesInfo;
     _currentEpisode = widget.initialEpisode;
     _resumptionTarget = widget.initialPosition;
     _updateNextEpisode();
 
     DeviceUtils.setVideoOrientation();
-    DeviceUtils.setKeepScreenOn(true);
+    DeviceUtils.setKeepScreenOn(true, force: true);
 
     _metrics = PlaybackMetrics(
       mediaType: PlaybackMediaType.series,
@@ -105,15 +112,48 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     _startPeriodicProgressSave();
   }
 
+  void _onPipModeChanged() {
+    if (!mounted) return;
+    final inPip = DeviceUtils.isPipMode.value;
+    if (!inPip) {
+      DeviceUtils.setVideoOrientation();
+      if (_isLoading || (_controller?.value.isPlaying ?? false)) {
+        DeviceUtils.setKeepScreenOn(true, force: true);
+      }
+    }
+    setState(() {});
+  }
+
+  void _syncPipState(bool enabled) {
+    if (DeviceUtils.isTv) return;
+    if (!enabled) {
+      DeviceUtils.setPipState(enabled: false);
+      return;
+    }
+    final sz = _controller?.value.size ?? Size.zero;
+    final w = sz.width.round();
+    final h = sz.height.round();
+    final aspectNum = (w > 0 && h > 0) ? w : 16;
+    final aspectDen = (w > 0 && h > 0) ? h : 9;
+    DeviceUtils.setPipState(
+      enabled: true,
+      aspectNumerator: aspectNum,
+      aspectDenominator: aspectDen,
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
+    if (state == AppLifecycleState.inactive) {
       _saveCurrentProgress(force: true);
-      final c = _controller;
-      if (c != null && c.value.isInitialized && c.value.isPlaying) {
-        c.pause();
+      return;
+    }
+
+    if (state == AppLifecycleState.paused) {
+      unawaited(_handleBackgroundLifecycle());
+    } else if (state == AppLifecycleState.resumed) {
+      if (mounted && (_isLoading || (_controller?.value.isPlaying ?? false))) {
+        DeviceUtils.setKeepScreenOn(true, force: true);
       }
     } else if (state == AppLifecycleState.detached) {
       _saveCurrentProgress(force: true);
@@ -121,10 +161,43 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
   }
 
+  Future<void> _handleBackgroundLifecycle() async {
+    await _saveCurrentProgress(force: true);
+    if (widget.accountKey.trim().isNotEmpty) {
+      unawaited(
+        CloudProgressSyncService.instance.syncAccount(
+          widget.accountKey,
+          progressService: _progressService,
+          force: true,
+        ),
+      );
+    }
+    if (DeviceUtils.isPipMode.value || DeviceUtils.isMultiWindowMode.value) {
+      return;
+    }
+    if (await DeviceUtils.isInMultiWindowOrPip()) {
+      return;
+    }
+    if (!mounted || _isExiting) return;
+    final currentLifecycle = WidgetsBinding.instance.lifecycleState;
+    if (currentLifecycle != null && currentLifecycle != AppLifecycleState.paused) {
+      return;
+    }
+    final c = _controller;
+    if (c != null && c.value.isInitialized && c.value.isPlaying) {
+      await c.pause();
+      _syncPipState(false);
+      DeviceUtils.setKeepScreenOn(false);
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
+    _syncPipState(false);
     DeviceUtils.setKeepScreenOn(false);
+    _postPlaySeekTimer?.cancel();
     _cancelCountdown();
     _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
@@ -149,10 +222,22 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   Future<void> _handleExit() async {
     if (_isExiting) return;
     _isExiting = true;
+    _postPlaySeekTimer?.cancel();
     _cancelCountdown();
     _initialBufferingWatchdog?.cancel();
     _progressSaveTimer?.cancel();
+    _syncPipState(false);
+    DeviceUtils.setKeepScreenOn(false);
     await _saveCurrentProgress(force: true);
+    if (widget.accountKey.trim().isNotEmpty) {
+      unawaited(
+        CloudProgressSyncService.instance.syncAccount(
+          widget.accountKey,
+          progressService: _progressService,
+          force: true,
+        ),
+      );
+    }
     DeviceUtils.restoreOrientation();
     if (mounted) {
       Navigator.of(context).pop();
@@ -231,7 +316,10 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   }
 
   Future<void> _disposeCurrentController() async {
+    _postPlaySeekTimer?.cancel();
+    _postPlaySeekTimer = null;
     _initialBufferingWatchdog?.cancel();
+    _syncPipState(false);
     final oldController = _controller;
     _controller = null;
     if (oldController != null) {
@@ -243,27 +331,93 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       } catch (_) {}
       try {
         // Dispara o descarte do controller de forma assíncrona sem travar a troca de rota
-        unawaited(oldController.dispose());
+        unawaited(oldController.dispose().catchError((_) {}));
       } catch (_) {}
     }
+  }
+
+  List<String> _buildPriorityUrls(XtreamSeriesEpisode ep) {
+    final baseUrls = widget.catalogService.buildSeriesStreamUrls(ep);
+    final cached = SmartSourceResolver.instance.getCachedSource(widget.series.seriesId, ep.id);
+    final direct = ep.directSource?.trim();
+
+    final merged = <String>[];
+    void addUrl(String u) {
+      final trimmed = u.trim();
+      if (trimmed.isNotEmpty && !merged.contains(trimmed) && merged.length < 4) {
+        merged.add(trimmed);
+      }
+    }
+
+    if (cached != null) {
+      addUrl(cached);
+    }
+    for (final u in baseUrls.take(3)) {
+      addUrl(u);
+    }
+    if (direct != null && direct.isNotEmpty) {
+      for (final u in baseUrls) {
+        if (u.contains(direct)) {
+          addUrl(u);
+        }
+      }
+    }
+    for (final u in baseUrls) {
+      if (merged.length >= 4) break;
+      addUrl(u);
+    }
+    return merged;
   }
 
   Future<void> _hydrateSeriesInfoInBackground(int seriesId) async {
     try {
       final hydratedInfo = await widget.catalogService
           .fetchSeriesInfo(seriesId)
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 12));
       if (!mounted) return;
       if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
+        final prevId = _currentEpisode.id;
+        final prevExt = _currentEpisode.containerExtension;
+        final hydratedEp = hydratedInfo.findEpisodeById(prevId) ??
+            hydratedInfo.findEpisodeBySeasonAndNum(
+              _currentEpisode.seasonNumber,
+              _currentEpisode.episodeNum,
+            );
         setState(() {
           _currentSeriesInfo = hydratedInfo;
-          final hydratedEp = hydratedInfo.findEpisodeById(_currentEpisode.id) ??
-              hydratedInfo.findEpisodeBySeasonAndNum(_currentEpisode.seasonNumber, _currentEpisode.episodeNum);
           if (hydratedEp != null) {
             _currentEpisode = hydratedEp;
           }
           _updateNextEpisode();
         });
+        if (hydratedEp != null &&
+            (hydratedEp.id != prevId || hydratedEp.containerExtension != prevExt)) {
+          final posToKeep = _resumptionTarget ?? widget.initialPosition ?? Duration.zero;
+          if (posToKeep.inSeconds >= 10) {
+            unawaited(
+              _progressService.saveContinueWatchingItem(
+                accountKey: widget.accountKey,
+                item: ContinueWatchingItem(
+                  type: ContinueWatchingType.series,
+                  streamId: hydratedEp.id,
+                  seriesId: widget.series.seriesId,
+                  title: widget.series.name,
+                  coverUrl: hydratedEp.cover ?? widget.series.cover,
+                  subtitle: 'T${hydratedEp.seasonNumber}:E${hydratedEp.episodeNum} • ${hydratedEp.title}',
+                  position: posToKeep,
+                  duration: hydratedEp.durationSecs != null
+                      ? Duration(seconds: hydratedEp.durationSecs!)
+                      : Duration.zero,
+                  updatedAt: DateTime.now(),
+                  seasonNumber: hydratedEp.seasonNumber,
+                  episodeNum: hydratedEp.episodeNum,
+                  containerExtension: hydratedEp.containerExtension,
+                  categoryId: widget.series.categoryId,
+                ),
+              ),
+            );
+          }
+        }
       }
     } catch (_) {}
   }
@@ -273,6 +427,8 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     _seekAttempted = false;
     _smartSourceAttempted = false;
     _smartSourceStatusMessage = null;
+    _failedStreamUrls.clear();
+    _hydrationFuture = null;
 
     // Hidratação instantânea do cache local; se ausente, busca na rede em paralelo sem bloquear o vídeo
     final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
@@ -289,30 +445,12 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           }
           _updateNextEpisode();
         } else {
-          unawaited(_hydrateSeriesInfoInBackground(widget.series.seriesId));
+          _hydrationFuture = _hydrateSeriesInfoInBackground(widget.series.seriesId);
         }
       } catch (_) {}
     }
 
-    final baseUrls = widget.catalogService.buildSeriesStreamUrls(_currentEpisode);
-    final candidateUrls = SmartSourceResolver.instance.generateCandidateUrls(
-      catalogService: widget.catalogService,
-      episode: _currentEpisode,
-    );
-    final cached = SmartSourceResolver.instance.getCachedSource(widget.series.seriesId, _currentEpisode.id);
-
-    final merged = <String>[];
-    if (cached != null) {
-      merged.add(cached);
-    }
-    for (final u in baseUrls) {
-      if (!merged.contains(u)) merged.add(u);
-    }
-    for (final u in candidateUrls) {
-      if (!merged.contains(u)) merged.add(u);
-    }
-
-    _streamUrls = merged;
+    _streamUrls = _buildPriorityUrls(_currentEpisode);
     _currentUrlIndex = 0;
     _hasTriggeredCompletion = false;
     _hasTriggeredBingeCard = false;
@@ -334,6 +472,10 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
   Future<void> _connectToUrl(String url, {Duration? initialPosition}) async {
     final epoch = ++_connectionEpoch;
+    _postPlaySeekTimer?.cancel();
+    _postPlaySeekTimer = null;
+    _postPlaySeekFallbackDone = false;
+    _wasControllerPlaying = false;
     await _disposeCurrentController();
     if (!mounted || epoch != _connectionEpoch) return;
 
@@ -351,6 +493,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     final uri = Uri.parse(url);
     final controller = VideoPlayerController.networkUrl(
       uri,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       httpHeaders: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
       },
@@ -377,6 +520,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       _startInitialBufferingWatchdog(epoch);
 
       // 2. Aplica seekTo ANTES de play() para que o ExoPlayer já faça buffer direto na posição salva
+      Duration effectiveTarget = Duration.zero;
       if (initialPosition != null && initialPosition > Duration.zero) {
         Duration target = initialPosition;
         if (detectedDur > Duration.zero && target >= detectedDur) {
@@ -384,13 +528,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           target = safeTarget > Duration.zero ? safeTarget : Duration.zero;
         }
         _resumptionTarget = target;
+        effectiveTarget = target;
 
         if (target > Duration.zero) {
           _isSeekingToInitial = true;
           _seekAttempted = true;
           debugPrint('[SERIES PLAYER] [SEEK] Disparando seekTo para ${PlaybackProgressService.formatDuration(target)} (posição salva: ${PlaybackProgressService.formatDuration(initialPosition)})...');
           try {
-            await controller.seekTo(target);
+            await controller.seekTo(target).timeout(const Duration(seconds: 6));
             debugPrint('[SERIES PLAYER] [SEEK] seekTo concluído com sucesso para ${PlaybackProgressService.formatDuration(target)}.');
           } catch (seekError) {
             debugPrint('[SERIES PLAYER] [SEEK] Aviso: falha ao buscar ponto salvo ($seekError). Reproduzindo do início.');
@@ -402,7 +547,19 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
       // 3. Aciona play() após posicionar o cursor inicial
       await controller.play();
+      if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
       PlayerDiagnostics.log('PLAY', 'controller.play() acionado (playWhenReady=true)');
+
+      _syncPipState(true);
+      DeviceUtils.setKeepScreenOn(true, force: true);
+
+      if (effectiveTarget.inSeconds >= 10) {
+        _postPlaySeekTimer?.cancel();
+        _postPlaySeekTimer = Timer(const Duration(milliseconds: 800), () {
+          if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+          unawaited(_applyPostPlaySeekFallbackIfNeeded(controller, effectiveTarget, epoch));
+        });
+      }
 
       if (mounted && epoch == _connectionEpoch && _controller == controller) {
         setState(() {
@@ -412,7 +569,33 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       }
     } catch (e) {
       if (!mounted || epoch != _connectionEpoch || _controller != controller) return;
+      _failedStreamUrls.add(url);
       await _handleConnectionError(e, epoch: epoch, initialPosition: initialPosition);
+    }
+  }
+
+  Future<void> _applyPostPlaySeekFallbackIfNeeded(
+    VideoPlayerController controller,
+    Duration target,
+    int epoch,
+  ) async {
+    if (_postPlaySeekFallbackDone ||
+        !mounted ||
+        epoch != _connectionEpoch ||
+        _controller != controller) {
+      return;
+    }
+    final val = controller.value;
+    if (val.isInitialized && val.isPlaying && val.position.inSeconds < 3 && !_isSeekingToInitial) {
+      _postPlaySeekFallbackDone = true;
+      _isSeekingToInitial = true;
+      debugPrint('[SERIES PLAYER] [SEEK FALLBACK] Posição reiniciada em ${PlaybackProgressService.formatDuration(val.position)}; reaplicando seek para ${PlaybackProgressService.formatDuration(target)}...');
+      try {
+        await controller.seekTo(target).timeout(const Duration(seconds: 4));
+      } catch (_) {
+      } finally {
+        _isSeekingToInitial = false;
+      }
     }
   }
 
@@ -453,6 +636,35 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       return;
     }
 
+    // Se a hidratação em background estiver em andamento, aguarda antes de ir para o SmartSourceResolver
+    if (!isAuthOrForbidden &&
+        !isTimeout &&
+        _hydrationFuture != null &&
+        !_isExiting) {
+      final epIdBeforeWait = _currentEpisode.id;
+      final epExtBeforeWait = _currentEpisode.containerExtension;
+      try {
+        await _hydrationFuture!.timeout(const Duration(seconds: 4), onTimeout: () {});
+      } catch (_) {}
+      if (!mounted || epoch != _connectionEpoch) return;
+      if (_currentEpisode.id != epIdBeforeWait ||
+          _currentEpisode.containerExtension != epExtBeforeWait) {
+        final refreshedUrls = _buildPriorityUrls(_currentEpisode)
+            .where((u) => !_failedStreamUrls.contains(u))
+            .toList();
+        if (refreshedUrls.isNotEmpty) {
+          _streamUrls = refreshedUrls;
+          _currentUrlIndex = 0;
+          PlayerDiagnostics.log(
+            'RETRY_ROUTE',
+            'Hidratação retornou episódio atualizado (ID=${_currentEpisode.id}); tentando rota fresca.',
+          );
+          await _connectToUrl(_streamUrls[0], initialPosition: initialPosition);
+          return;
+        }
+      }
+    }
+
     // Se esgotou as rotas imediatas sem sucesso, tenta a recuperação profunda SmartSourceResolver
     if (!_smartSourceAttempted &&
         SettingsService.instance.enableSmartSource &&
@@ -471,6 +683,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         seriesId: widget.series.seriesId,
         seriesName: widget.series.name,
         categoryId: widget.series.categoryId,
+        alreadyFailedUrls: Set<String>.from(_failedStreamUrls),
         onProgressMessage: (msg) {
           if (mounted && epoch == _connectionEpoch) {
             setState(() => _smartSourceStatusMessage = msg);
@@ -596,6 +809,9 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       final isAuthOrForbidden = details.isAuthOrForbidden;
 
       if (!_isExiting && !isAuthOrForbidden && !isTimeout) {
+        if (_currentUrlIndex >= 0 && _currentUrlIndex < _streamUrls.length) {
+          _failedStreamUrls.add(_streamUrls[_currentUrlIndex]);
+        }
         final effectiveResumption = _resumptionTarget ?? (c.value.position > Duration.zero ? c.value.position : null);
         if (_currentUrlIndex + 1 < _streamUrls.length) {
           PlayerDiagnostics.log('RETRY_ROUTE', 'Erro assíncrono no controller; tentando URL de contingência ${_currentUrlIndex + 1}.');
@@ -636,6 +852,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       _metrics.markFirstFrame();
       _initialBufferingWatchdog?.cancel();
       debugPrint('[SERIES PLAYER] [FRAME] Primeiro quadro / avanço efetivo de reprodução confirmado em ${PlaybackProgressService.formatDuration(c.value.position)}.');
+    }
+
+    if (c.value.isPlaying != _wasControllerPlaying) {
+      _wasControllerPlaying = c.value.isPlaying;
+      if (c.value.isPlaying) {
+        _syncPipState(true);
+        DeviceUtils.setKeepScreenOn(true, force: true);
+      }
     }
 
     final isBuff = c.value.isBuffering;
@@ -689,12 +913,37 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   }
 
   Future<void> _handleEpisodeCompleted() async {
+    final completedEp = _currentEpisode;
     // 1. Limpa o progresso salvo do episódio concluído
     await _progressService.clearEpisodeProgress(
       accountKey: widget.accountKey,
       seriesId: widget.series.seriesId,
-      episodeId: _currentEpisode.id,
+      episodeId: completedEp.id,
     );
+
+    // Se iniciou a partir de stub da Home (<= 1 episódio conhecido), aguarda/busca a grade completa
+    // antes de concluir que não existe próximo episódio.
+    var knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values
+        .fold<int>(0, (sum, list) => sum + list.length);
+    if (_nextEpisode == null && knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
+      if (_hydrationFuture != null) {
+        try {
+          await _hydrationFuture!.timeout(const Duration(seconds: 6), onTimeout: () {});
+        } catch (_) {}
+      } else {
+        try {
+          final fetched = await widget.catalogService
+              .fetchSeriesInfo(widget.series.seriesId)
+              .timeout(const Duration(seconds: 6), onTimeout: () => null);
+          if (fetched != null && !fetched.isOrphanedOrStub) {
+            _currentSeriesInfo = fetched;
+            _updateNextEpisode();
+          }
+        } catch (_) {}
+      }
+      knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values
+          .fold<int>(0, (sum, list) => sum + list.length);
+    }
 
     // 2. Se houver próximo episódio na série, promove-o com posição inicial zero
     if (_nextEpisode != null) {
@@ -704,6 +953,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         episodeId: _nextEpisode!.id,
         seasonNumber: _nextEpisode!.seasonNumber,
         episodeNum: _nextEpisode!.episodeNum,
+        isPromotedNext: true,
       );
 
       await _progressService.saveContinueWatchingItem(
@@ -726,8 +976,8 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           episodeNum: _nextEpisode!.episodeNum,
         ),
       );
-    } else {
-      // Último episódio da série: remove do Continuar Assistindo
+    } else if (knownEpisodesCount > 1) {
+      // Último episódio da série confirmada como hidratada: remove do Continuar Assistindo
       await _progressService.removeContinueWatchingItem(
         accountKey: widget.accountKey,
         type: ContinueWatchingType.series,
@@ -770,16 +1020,79 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   }
 
   void _playNextEpisode() {
-    if (_nextEpisode == null) return;
+    final next = _nextEpisode;
+    if (next == null) return;
+    final previousEp = _currentEpisode;
+    final prevController = _controller;
     _cancelCountdown();
-    _saveCurrentProgress();
+    unawaited(_transitionToNextEpisode(previousEp, next, prevController));
+  }
 
+  Future<void> _transitionToNextEpisode(
+    XtreamSeriesEpisode previousEp,
+    XtreamSeriesEpisode next,
+    VideoPlayerController? prevController,
+  ) async {
+    if (prevController != null && prevController.value.isInitialized) {
+      final pos = prevController.value.position;
+      final dur = prevController.value.duration;
+      final isNearEnd = dur.inSeconds > 0 &&
+          ((dur.inSeconds - pos.inSeconds) <= 45 ||
+              (pos.inSeconds / dur.inSeconds) >= 0.96);
+      if (isNearEnd) {
+        await _progressService.clearEpisodeProgress(
+          accountKey: widget.accountKey,
+          seriesId: widget.series.seriesId,
+          episodeId: previousEp.id,
+        );
+      } else if (pos.inSeconds >= 10 && dur > Duration.zero) {
+        await _progressService.saveEpisodeProgress(
+          accountKey: widget.accountKey,
+          seriesId: widget.series.seriesId,
+          episodeId: previousEp.id,
+          position: pos,
+          duration: dur,
+        );
+      }
+    }
+
+    await _progressService.saveLastWatchedEpisode(
+      accountKey: widget.accountKey,
+      seriesId: widget.series.seriesId,
+      episodeId: next.id,
+      seasonNumber: next.seasonNumber,
+      episodeNum: next.episodeNum,
+      isPromotedNext: true,
+    );
+
+    await _progressService.saveContinueWatchingItem(
+      accountKey: widget.accountKey,
+      item: ContinueWatchingItem(
+        streamId: next.id,
+        seriesId: widget.series.seriesId,
+        type: ContinueWatchingType.series,
+        title: widget.series.name,
+        subtitle: 'T${next.seasonNumber}:E${next.episodeNum} • ${next.title}',
+        coverUrl: next.cover ?? widget.series.cover,
+        position: Duration.zero,
+        duration: next.durationSecs != null
+            ? Duration(seconds: next.durationSecs!)
+            : Duration.zero,
+        updatedAt: DateTime.now(),
+        containerExtension: next.containerExtension,
+        categoryId: widget.series.categoryId,
+        seasonNumber: next.seasonNumber,
+        episodeNum: next.episodeNum,
+      ),
+    );
+
+    if (!mounted || _isExiting) return;
     setState(() {
-      _currentEpisode = _nextEpisode!;
+      _currentEpisode = next;
       _updateNextEpisode();
     });
 
-    _initCurrentEpisode();
+    await _initCurrentEpisode();
   }
 
   void _togglePlayPause() {
@@ -788,11 +1101,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
     if (c.value.isPlaying) {
       c.pause();
+      _syncPipState(false);
       _saveCurrentProgress();
     } else {
       // Se estava em contagem regressiva, cancela ao despausar
       _cancelCountdown();
       c.play();
+      _syncPipState(true);
+      DeviceUtils.setKeepScreenOn(true, force: true);
     }
     setState(() {});
   }
