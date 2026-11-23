@@ -1,11 +1,11 @@
 {
-  "version": "1.2.14",
-  "versionCode": 17,
+  "version": "1.2.15",
+  "versionCode": 18,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.14/JessFlix-v1.2.14.apk",
-  "fileSize": 59147209,
-  "sha256": "0f1164daa9ea714e65201cf859f56d4005d701ecb778c339bd1563b5afeb149a",
-  "releaseNotes": "• Continuar Séries no 1º Clique (Home e Detalhes): Correção definitiva da falha ao clicar pela primeira vez em uma série em 'Continuar assistindo' na Home ou na tela de detalhes.\n• Hidratação Pré-Conexão e Anti-Corrida: O player aguarda até 2s pelos metadados reais do servidor (ID atualizado, container mkv/mp4 e direct_source) antes de abrir a 1ª conexão no ExoPlayer e detecta atualizações em segundo plano sem perder o fallback.\n• Fechamento Limpo de Conexão e Recuperação 403: Aguarda o encerramento do socket anterior antes de abrir nova rota, faz 1 nova tentativa limpa em HTTP 403 transitório sem ciclar extensões inválidas e invalida URLs em cache que falharem no player.\n• Sincronização em Nuvem Celular ↔ Fire TV (Firebase): Histórico de Filmes e Séries sincronizado automaticamente entre dispositivos.",
-  "publishedAt": "2026-11-22T23:06:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.15/JessFlix-v1.2.15.apk",
+  "fileSize": 59147213,
+  "sha256": "f8505bb4f9a89d0b2f7b55e9910525b017a55082ac87783d88cf73ceb89798c6",
+  "releaseNotes": "• Correção do 1º Clique Direto na Tela da Série e na Home: Revalidação automática com forceRefresh dos episódios (tanto na tela de detalhes quanto dentro do player) para eliminar caches antigos de 24h com ID ou formato desatualizados.\n• Recarga Automática Transparente de Sessão: Caso o 1º ciclo de conexão falhe por bloqueio transitório do servidor Xtream ou atualização de stream, o player executa automaticamente a recarga completa do episódio sem exigir um 2º clique.\n• Smart Source Aprimorado: Detecção de atualização de container (.mkv/.mp4/.ts), stream_id e direct_source mesmo quando o ID principal do episódio permanece igual.\n• Sincronização em Nuvem Celular ↔ Fire TV (Firebase): Histórico de Filmes e Séries sincronizado automaticamente entre dispositivos.",
+  "publishedAt": "2026-11-23T00:02:30.000Z",
   "mandatory": false
 }

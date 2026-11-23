@@ -267,7 +267,12 @@ class SmartSourceResolver {
         final freshInfo = await catalogService.fetchSeriesInfo(oldSeriesId, forceRefresh: true);
         if (freshInfo != null && !freshInfo.isOrphanedOrStub) {
           final refreshedEp = freshInfo.findEpisodeBySeasonAndNum(episode.seasonNumber, episode.episodeNum);
-          if (refreshedEp != null && refreshedEp.id != episode.id) {
+          final hasMetadataChanged = refreshedEp != null &&
+              (refreshedEp.id != episode.id ||
+                  refreshedEp.streamId != episode.streamId ||
+                  refreshedEp.containerExtension != episode.containerExtension ||
+                  refreshedEp.directSource != episode.directSource);
+          if (hasMetadataChanged) {
             final candidateUrls = generateCandidateUrls(
               catalogService: catalogService,
               episode: refreshedEp,

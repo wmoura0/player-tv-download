@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_catalog.dart';
@@ -121,7 +122,19 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
               .catchError((_) => false)
           : Future<bool>.value(false);
 
-      var info = await widget.catalogService.fetchSeriesInfo(_currentSeries.seriesId);
+      // 1. Carregamento instantâneo via cache se disponível
+      var info = await widget.catalogService.getCachedSeriesInfo(_currentSeries.seriesId);
+      final hadCachedInfo = info != null && info.seasons.isNotEmpty && !info.isOrphanedOrStub;
+      if (!hadCachedInfo) {
+        info = await widget.catalogService.fetchSeriesInfo(
+          _currentSeries.seriesId,
+          forceRefresh: true,
+        );
+      } else {
+        // Revalidação em segundo plano (Stale-While-Revalidate): garante que IDs reindexados
+        // ou container_extension atualizados no servidor substituam o cache de 24h em disco.
+        unawaited(_revalidateSeriesInfoFromNetwork(_currentSeries.seriesId));
+      }
 
       // Se a série não retornou dados ou retornou apenas registros órfãos/stubs sem extensões válidas,
       // tenta recuperar se foi reindexada com novo seriesId
@@ -205,6 +218,26 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     }
   }
 
+  Future<void> _revalidateSeriesInfoFromNetwork(int seriesId) async {
+    try {
+      final freshInfo = await widget.catalogService
+          .fetchSeriesInfo(seriesId, forceRefresh: true)
+          .timeout(const Duration(seconds: 12), onTimeout: () => null);
+      if (!mounted || freshInfo == null || freshInfo.seasons.isEmpty || freshInfo.isOrphanedOrStub) {
+        return;
+      }
+      await _loadEpisodesProgress(freshInfo);
+      if (!mounted) return;
+      setState(() {
+        _seriesInfo = freshInfo;
+        if (!freshInfo.seasons.any((s) => s.seasonNumber == _selectedSeasonNumber) &&
+            freshInfo.seasons.isNotEmpty) {
+          _selectedSeasonNumber = freshInfo.seasons.first.seasonNumber;
+        }
+      });
+    } catch (_) {}
+  }
+
   Future<void> _loadEpisodesProgress(XtreamSeriesInfo info) async {
     _episodesProgress.clear();
     _primaryEpisode = null;
@@ -244,6 +277,36 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       XtreamSeriesEpisode? lastEp = (lastEpId != null) ? info.findEpisodeById(lastEpId) : null;
       if (lastEp == null && lastSeason != null && lastNum != null) {
         lastEp = info.findEpisodeBySeasonAndNum(lastSeason, lastNum);
+        // Se o ID do episódio mudou no servidor mas temporada/número coincidem, migra o progresso salvo para o novo ID
+        if (lastEp != null && lastEpId != null && lastEpId > 0 && lastEp.id != lastEpId) {
+          final migratedProg = await _progressService.getEpisodeProgress(
+            accountKey: widget.accountKey,
+            seriesId: _currentSeries.seriesId,
+            episodeId: lastEpId,
+          );
+          if (migratedProg != null && migratedProg.canResume) {
+            _episodesProgress[lastEp.id] = migratedProg;
+            unawaited(
+              _progressService.saveEpisodeProgress(
+                accountKey: widget.accountKey,
+                seriesId: _currentSeries.seriesId,
+                episodeId: lastEp.id,
+                position: migratedProg.position,
+                duration: migratedProg.duration,
+              ),
+            );
+          }
+          unawaited(
+            _progressService.saveLastWatchedEpisode(
+              accountKey: widget.accountKey,
+              seriesId: _currentSeries.seriesId,
+              episodeId: lastEp.id,
+              seasonNumber: lastEp.seasonNumber,
+              episodeNum: lastEp.episodeNum,
+              isPromotedNext: isPromotedNext,
+            ),
+          );
+        }
       }
 
       if (lastEp != null) {

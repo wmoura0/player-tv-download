@@ -76,6 +76,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   bool _hydratedRetryAttempted = false;
   bool _transient403RetryAttempted = false;
   bool _smartSourceConnectRetryAttempted = false;
+  bool _autoSessionReloadAttempted = false;
   String? _smartSourceResolvedUrl;
   bool _isHandlingError = false;
   bool _forceAwaitDispose = false;
@@ -412,20 +413,25 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     return merged;
   }
 
-  Future<void> _hydrateSeriesInfoInBackground(int seriesId) async {
+  Future<void> _hydrateSeriesInfoInBackground(
+    int seriesId, {
+    bool forceRefresh = false,
+  }) async {
     try {
       final hydratedInfo = await widget.catalogService
-          .fetchSeriesInfo(seriesId)
+          .fetchSeriesInfo(seriesId, forceRefresh: forceRefresh)
           .timeout(const Duration(seconds: 12));
       if (!mounted) return;
       if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
         final prevId = _currentEpisode.id;
         final prevExt = _currentEpisode.containerExtension;
-        final hydratedEp = hydratedInfo.findEpisodeById(prevId) ??
-            hydratedInfo.findEpisodeBySeasonAndNum(
+        // Prioriza a correspondência por temporada e número do episódio quando disponível,
+        // pois em reindexações parciais o ID antigo pode ter sido reaproveitado ou substituído.
+        final hydratedEp = hydratedInfo.findEpisodeBySeasonAndNum(
               _currentEpisode.seasonNumber,
               _currentEpisode.episodeNum,
-            );
+            ) ??
+            hydratedInfo.findEpisodeById(prevId);
         setState(() {
           _currentSeriesInfo = hydratedInfo;
           if (hydratedEp != null) {
@@ -465,7 +471,13 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     } catch (_) {}
   }
 
-  Future<void> _initCurrentEpisode({Duration? initialPosition}) async {
+  Future<void> _initCurrentEpisode({
+    Duration? initialPosition,
+    bool isAutoSessionReload = false,
+  }) async {
+    if (!isAutoSessionReload) {
+      _autoSessionReloadAttempted = false;
+    }
     _resumptionTarget = initialPosition;
     _seekAttempted = false;
     _smartSourceAttempted = false;
@@ -493,8 +505,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             _currentEpisode = hydratedEp;
           }
           _updateNextEpisode();
+          _hydrationFuture = _hydrateSeriesInfoInBackground(
+            widget.series.seriesId,
+            forceRefresh: true,
+          );
         } else {
-          _hydrationFuture = _hydrateSeriesInfoInBackground(widget.series.seriesId);
+          _hydrationFuture = _hydrateSeriesInfoInBackground(
+            widget.series.seriesId,
+            forceRefresh: true,
+          );
           try {
             await _hydrationFuture!.timeout(
               const Duration(milliseconds: 2000),
@@ -504,6 +523,13 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           if (!mounted) return;
         }
       } catch (_) {}
+    } else if (widget.series.seriesId > 0) {
+      // Mesmo vindo de SeriesDetailScreen (knownEpisodesCount > 1), revalida em segundo plano com forceRefresh: true
+      // para cobrir cache em disco de até 24h cujo episódio tenha mudado de ID/container no servidor.
+      _hydrationFuture = _hydrateSeriesInfoInBackground(
+        widget.series.seriesId,
+        forceRefresh: true,
+      );
     }
 
     _streamUrls = _buildPriorityUrls(_currentEpisode);
@@ -875,6 +901,27 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         return;
       }
 
+      // Antes de exibir erro definitivo ao usuário no 1º clique, realiza 1 recarga automática de sessão completa
+      // (equivalente ao 2º clique / botão Tentar novamente) após liberar completamente os sockets.
+      if (!_autoSessionReloadAttempted &&
+          !_isExiting &&
+          !isPluginUnavailable &&
+          quickDetails.exoPlayerHttpStatus != 401) {
+        _autoSessionReloadAttempted = true;
+        PlayerDiagnostics.log(
+          'RETRY_ROUTE',
+          'Acionando recarga automática completa do episódio no 1º clique após falha do Smart Source.',
+        );
+        await _disposeCurrentController();
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+        await _initCurrentEpisode(
+          initialPosition: initialPosition,
+          isAutoSessionReload: true,
+        );
+        return;
+      }
+
       final failureMsg = result.diagnosticMessage ?? quickDetails.shortUiMessage;
       _metrics.markError(failureMsg);
       setState(() {
@@ -888,6 +935,27 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
     await _disposeCurrentController();
     if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
+    // Antes de exibir erro definitivo ao usuário no 1º clique (ex.: HTTP 403 persistente por socket da tela anterior,
+    // ou falha transitória de abertura), realiza 1 recarga automática de sessão completa (exceto HTTP 401 ou timeout de 25s).
+    if (!_autoSessionReloadAttempted &&
+        !_isExiting &&
+        !isPluginUnavailable &&
+        !isTimeout &&
+        quickDetails.exoPlayerHttpStatus != 401) {
+      _autoSessionReloadAttempted = true;
+      PlayerDiagnostics.log(
+        'RETRY_ROUTE',
+        'Acionando recarga automática completa do episódio no 1º clique antes de exibir erro na tela.',
+      );
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _initCurrentEpisode(
+        initialPosition: initialPosition,
+        isAutoSessionReload: true,
+      );
+      return;
+    }
 
     // Diagnóstico final definitivo quando todas as alternativas falharam ou em erro de auth/timeout
     final probe = _streamUrls.isNotEmpty

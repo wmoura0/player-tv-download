@@ -766,6 +766,163 @@ void main() {
         await cleanUnmountPlayer(tester);
       },
     );
+
+    testWidgets(
+      '7. Tela da série (knownEpisodesCount > 1) com cache desatualizado (ID antigo 100 -> novo ID 999) recupera no 1º clique',
+      (tester) async {
+        // Simula SeriesDetailScreen que tinha em cache series_info com episódio ID 100 (.mp4),
+        // mas no servidor o episódio T1:E1 foi atualizado para ID 999 (.mkv).
+        final httpClient = MockClient((req) async {
+          if (req.url.queryParameters['action'] == 'get_series_info') {
+            await Future.delayed(const Duration(milliseconds: 120));
+            return http.Response(
+              jsonEncode(hydratedSeriesJson(episodeId: 999, ext: 'mkv')),
+              200,
+            );
+          }
+          return http.Response('Not Found', 404);
+        });
+
+        final catalog = XtreamCatalogService(
+          serverUrl: 'http://testserver.com',
+          username: 'u',
+          password: 'p',
+          client: httpClient,
+        );
+        // Popula o cache com o seriesInfo desatualizado (2 episódios, ID 100 e 101)
+        const staleEp1 = XtreamSeriesEpisode(
+          id: 100,
+          episodeNum: 1,
+          seasonNumber: 1,
+          title: 'Ep 1 Antigo',
+          containerExtension: 'mp4',
+        );
+        const staleEp2 = XtreamSeriesEpisode(
+          id: 101,
+          episodeNum: 2,
+          seasonNumber: 1,
+          title: 'Ep 2 Antigo',
+          containerExtension: 'mp4',
+        );
+        final staleFullInfo = XtreamSeriesInfo(
+          name: 'Série Teste',
+          seasons: const [XtreamSeriesSeason(seasonNumber: 1, name: 'Temporada 1')],
+          episodesBySeason: {
+            1: [staleEp1, staleEp2],
+          },
+        );
+
+        mockPlatform.outcomeForUrl = (url, _) {
+          if (url.contains('/100.')) return 'source_error';
+          if (url.contains('/999.mkv')) return 'ok';
+          return 'source_error';
+        };
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SeriesPlayerScreen(
+              series: const XtreamSeriesItem(
+                seriesId: 62,
+                name: 'Série Teste',
+                categoryId: '1',
+              ),
+              seriesInfo: staleFullInfo,
+              initialEpisode: staleEp1,
+              catalogService: catalog,
+              accountKey: 'acc_7',
+            ),
+          ),
+        );
+
+        for (var i = 0; i < 12; i++) {
+          await tester.pump(const Duration(milliseconds: 250));
+        }
+
+        expect(
+          mockPlatform.createdUrls.any((u) => u.contains('/999.mkv')),
+          isTrue,
+          reason:
+              'Mesmo abrindo da tela de detalhes (knownEpisodesCount > 1) com cache desatualizado, deve revalidar com forceRefresh e abrir /999.mkv no 1º clique',
+        );
+        expect(find.byIcon(Icons.error_outline_rounded), findsNothing);
+
+        await cleanUnmountPlayer(tester);
+      },
+    );
+
+    testWidgets(
+      '8. Recarga automática de sessão completa no 1º clique recupera quando todas as tentativas do 1º ciclo falham (ex: 403 duplo ou falha transitória)',
+      (tester) async {
+        // Simula cenário onde as 2 primeiras conexões (1ª tentativa + 1º retry 403) ainda recebem 403,
+        // e a 3ª conexão (acionada automaticamente pelo auto-reload do 1º clique) funciona.
+        mockPlatform.outcomeForUrl = (url, attempt) {
+          if (attempt <= 2) return '403';
+          return 'ok';
+        };
+
+        final catalog = XtreamCatalogService(
+          serverUrl: 'http://testserver.com',
+          username: 'u',
+          password: 'p',
+        );
+
+        const ep = XtreamSeriesEpisode(
+          id: 950,
+          episodeNum: 1,
+          seasonNumber: 1,
+          title: 'Ep AutoReload',
+          containerExtension: 'mp4',
+        );
+        final fullInfo = XtreamSeriesInfo(
+          name: 'Série Teste',
+          seasons: const [XtreamSeriesSeason(seasonNumber: 1, name: 'T1')],
+          episodesBySeason: {
+            1: [
+              ep,
+              const XtreamSeriesEpisode(
+                id: 951,
+                episodeNum: 2,
+                seasonNumber: 1,
+                title: 'Ep 2',
+                containerExtension: 'mp4',
+              ),
+            ],
+          },
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SeriesPlayerScreen(
+              series: const XtreamSeriesItem(
+                seriesId: 63,
+                name: 'Série Teste',
+                categoryId: '1',
+              ),
+              seriesInfo: fullInfo,
+              initialEpisode: ep,
+              catalogService: catalog,
+              accountKey: 'acc_8',
+            ),
+          ),
+        );
+
+        for (var i = 0; i < 15; i++) {
+          await tester.pump(const Duration(milliseconds: 300));
+        }
+
+        expect(
+          mockPlatform.createdUrls,
+          equals([
+            'http://testserver.com/series/u/p/950.mp4',
+            'http://testserver.com/series/u/p/950.mp4',
+            'http://testserver.com/series/u/p/950.mp4',
+          ]),
+        );
+        expect(find.byIcon(Icons.error_outline_rounded), findsNothing);
+
+        await cleanUnmountPlayer(tester);
+      },
+    );
   });
 
   group('Sanidade PlayerDiagnostics', () {

@@ -66,6 +66,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   bool _isHandlingError = false;
   bool _forceAwaitDispose = false;
   bool _isInitializingController = false;
+  bool _transient403RetryAttempted = false;
+  bool _smartSourceConnectRetryAttempted = false;
+  bool _autoSessionReloadAttempted = false;
+  String? _smartSourceResolvedUrl;
 
   Timer? _progressSaveTimer;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
@@ -325,13 +329,21 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     }
   }
 
-  Future<void> _initPlayer() async {
+  Future<void> _initPlayer({bool isAutoSessionReload = false}) async {
+    if (!isAutoSessionReload) {
+      _autoSessionReloadAttempted = false;
+    }
     _resumptionTarget ??= widget.initialPosition;
     _seekAttempted = false;
     _smartSourceAttempted = false;
     _smartSourceStatusMessage = null;
+    _transient403RetryAttempted = false;
+    _smartSourceConnectRetryAttempted = false;
+    _smartSourceResolvedUrl = null;
+    _isHandlingError = false;
+    _currentUrlIndex = 0;
 
-    if (_streamUrls.isEmpty && widget.catalogService != null) {
+    if ((_streamUrls.isEmpty || isAutoSessionReload) && widget.catalogService != null) {
       _streamUrls = widget.catalogService!.buildVodStreamUrls(_currentMovie);
     }
 
@@ -514,6 +526,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         quickDetails.causeClass == 'TimeoutException' ||
         quickDetails.shortUiMessage.contains('Timeout');
     final isAuthOrForbidden = quickDetails.isAuthOrForbidden;
+    final isHttp403 = quickDetails.exoPlayerHttpStatus == 403 ||
+        quickDetails.probeHttpStatus == 403;
 
     PlayerDiagnostics.logDiagnosticDetails(quickDetails);
 
@@ -527,6 +541,32 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         _smartSourceStatusMessage = null;
         _errorMessage = quickDetails.shortUiMessage;
       });
+      return;
+    }
+
+    if (_smartSourceResolvedUrl != null &&
+        !_smartSourceConnectRetryAttempted &&
+        !_isExiting &&
+        quickDetails.exoPlayerHttpStatus != 401) {
+      _smartSourceConnectRetryAttempted = true;
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _connectToUrl(_smartSourceResolvedUrl!);
+      return;
+    }
+
+    if (_smartSourceResolvedUrl == null &&
+        isHttp403 &&
+        !_transient403RetryAttempted &&
+        !_isExiting &&
+        _streamUrls.isNotEmpty) {
+      _transient403RetryAttempted = true;
+      final retryUrl = _streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)];
+      await _disposeCurrentController();
+      await Future.delayed(const Duration(milliseconds: 900));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _connectToUrl(retryUrl);
       return;
     }
 
@@ -613,10 +653,23 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           }
         }
 
+        _smartSourceResolvedUrl = result.workingUrl;
         PlayerDiagnostics.log('SMART_SOURCE', 'Fonte VOD resolvida com sucesso: ${UrlSanitizer.sanitize(result.workingUrl!)}');
         await Future.delayed(const Duration(milliseconds: 350));
         if (!mounted || epoch != _connectionEpoch || _isExiting) return;
         await _connectToUrl(result.workingUrl!);
+        return;
+      }
+
+      if (!_autoSessionReloadAttempted &&
+          !_isExiting &&
+          !isPluginUnavailable &&
+          quickDetails.exoPlayerHttpStatus != 401) {
+        _autoSessionReloadAttempted = true;
+        await _disposeCurrentController();
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+        await _initPlayer(isAutoSessionReload: true);
         return;
       }
 
@@ -633,6 +686,18 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
     await _disposeCurrentController();
     if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+
+    if (!_autoSessionReloadAttempted &&
+        !_isExiting &&
+        !isPluginUnavailable &&
+        !isTimeout &&
+        quickDetails.exoPlayerHttpStatus != 401) {
+      _autoSessionReloadAttempted = true;
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      await _initPlayer(isAutoSessionReload: true);
+      return;
+    }
 
     final probe = _streamUrls.isNotEmpty
         ? await PlayerDiagnostics.probeStreamUrl(_streamUrls[_currentUrlIndex.clamp(0, _streamUrls.length - 1)])
