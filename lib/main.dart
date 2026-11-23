@@ -198,6 +198,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _initSharedCatalogService();
 
     if (_accountKey.isNotEmpty) {
+      await _progressService.reconcileOrphanedSeriesContinueWatching(
+        accountKey: _accountKey,
+        getCachedSeriesInfo: (seriesId) async =>
+            await _sharedCatalogService?.getCachedSeriesInfo(seriesId),
+        getSeriesTitleSync: (seriesId) =>
+            _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.name,
+        getSeriesCoverSync: (seriesId) =>
+            _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.cover,
+        getSeriesCategoryIdSync: (seriesId) =>
+            _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.categoryId,
+      );
       final items = await _progressService.getContinueWatchingList(accountKey: _accountKey);
       if (mounted) {
         setState(() {

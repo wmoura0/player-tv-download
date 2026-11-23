@@ -256,6 +256,17 @@ class XtreamCatalogService extends ChangeNotifier {
     return _seriesCache[categoryId];
   }
 
+  /// Localiza um item de série pelo [seriesId] em qualquer categoria já carregada em memória.
+  XtreamSeriesItem? findCachedSeriesByIdSync(int seriesId) {
+    if (seriesId <= 0) return null;
+    for (final list in _seriesCache.values) {
+      for (final item in list) {
+        if (item.seriesId == seriesId) return item;
+      }
+    }
+    return null;
+  }
+
   /// Busca itens em cache local (memória primeiro, depois disco) sem ir à rede
   Future<List<dynamic>?> getLocalItems({
     required String type,

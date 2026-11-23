@@ -15,7 +15,7 @@ void main() {
   });
 
   tearDown(() {
-    DeviceUtils.setMockAppVersion(versionCode: 18, versionName: '1.2.15');
+    DeviceUtils.setMockAppVersion(versionCode: 19, versionName: '1.2.16');
   });
 
   group('JessFlix v1.2.10+13 — Verificações de Versão e Atualização OTA', () {

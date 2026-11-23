@@ -290,6 +290,21 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
 
     if (dur > Duration.zero && (pos.inSeconds >= 5 || force)) {
+      final isNearEnd = dur.inSeconds > 0 &&
+          ((dur.inSeconds - pos.inSeconds) <= 45 ||
+              (pos.inSeconds / dur.inSeconds) >= 0.96);
+
+      // Se o episódio atingiu os créditos finais (<= 45s ou >= 96%) e o usuário saiu ou o timer disparou,
+      // promove automaticamente o próximo episódio (se existir) em vez de deixar o item como isCompleted=true
+      // (o que faria saveContinueWatchingItem remover a série do carrossel Continuar Assistindo da Home).
+      if (isNearEnd) {
+        if (!_hasTriggeredCompletion) {
+          _hasTriggeredCompletion = true;
+          await _handleEpisodeCompleted();
+        }
+        return;
+      }
+
       debugPrint('[SERIES PLAYER] [PROGRESSO] Salvando progresso: ep=${_currentEpisode.id}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveEpisodeProgress(
         accountKey: widget.accountKey,

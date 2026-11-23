@@ -376,6 +376,68 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         _primaryButtonLabel = 'ASSISTIR S${firstEp.seasonNumber}E${firstEp.episodeNum}';
       }
     }
+
+    // 4. Auto-reconciliação do card "Continuar assistindo" da Home:
+    // Se a série possui um episódio ativo para CONTINUAR ou PRÓXIMO na tela da série,
+    // mas por qualquer razão (saída nos créditos finais, atualização de versão, etc.)
+    // não estava presente ou estava desatualizada no índice da Home, restaura-a automaticamente.
+    if (widget.accountKey.trim().isNotEmpty &&
+        _primaryEpisode != null &&
+        (_primaryButtonLabel.startsWith('CONTINUAR') ||
+            _primaryButtonLabel.startsWith('PRÓXIMO'))) {
+      final primaryEp = _primaryEpisode!;
+      final pos = _primaryPosition ?? Duration.zero;
+      final prog = _episodesProgress[primaryEp.id];
+      final dur = (prog != null && prog.duration > Duration.zero)
+          ? prog.duration
+          : (primaryEp.durationSecs != null && primaryEp.durationSecs! > 0
+              ? Duration(seconds: primaryEp.durationSecs!)
+              : Duration.zero);
+
+      final isNextPromoted = _primaryButtonLabel.startsWith('PRÓXIMO');
+      if (isNextPromoted &&
+          (lastWatched == null ||
+              lastWatched['episodeId'] != primaryEp.id ||
+              lastWatched['isPromotedNext'] != 1)) {
+        unawaited(
+          _progressService.saveLastWatchedEpisode(
+            accountKey: widget.accountKey,
+            seriesId: _currentSeries.seriesId,
+            episodeId: primaryEp.id,
+            seasonNumber: primaryEp.seasonNumber,
+            episodeNum: primaryEp.episodeNum,
+            isPromotedNext: true,
+          ),
+        );
+      }
+
+      final lastTimeMs = lastWatched != null ? (lastWatched['time'] ?? 0) : 0;
+      final effectiveUpdatedAt = prog?.updatedAt ??
+          (lastTimeMs > 0
+              ? DateTime.fromMillisecondsSinceEpoch(lastTimeMs)
+              : DateTime.now());
+
+      unawaited(
+        _progressService.ensureContinueWatchingSeriesItem(
+          accountKey: widget.accountKey,
+          item: ContinueWatchingItem(
+            streamId: primaryEp.id,
+            seriesId: _currentSeries.seriesId,
+            type: ContinueWatchingType.series,
+            title: _currentSeries.name.isNotEmpty ? _currentSeries.name : info.name,
+            subtitle: 'T${primaryEp.seasonNumber}:E${primaryEp.episodeNum} • ${primaryEp.title}',
+            coverUrl: primaryEp.cover ?? _currentSeries.cover ?? info.cover,
+            position: pos,
+            duration: dur,
+            updatedAt: effectiveUpdatedAt,
+            containerExtension: primaryEp.containerExtension,
+            categoryId: _currentSeries.categoryId,
+            seasonNumber: primaryEp.seasonNumber,
+            episodeNum: primaryEp.episodeNum,
+          ),
+        ),
+      );
+    }
   }
 
   void _onEpisodeTap(XtreamSeriesEpisode episode) {

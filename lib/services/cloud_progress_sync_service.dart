@@ -310,6 +310,13 @@ class CloudProgressSyncService {
     _cachedExpiresAt = null;
   }
 
+  Future<Map<String, ContinueWatchingItem>> loadLocalLedgerForReconciliation(
+    String accountKey,
+  ) async {
+    if (accountKey.trim().isEmpty) return {};
+    return _loadLedger(_effectiveAccountKey(accountKey));
+  }
+
   Future<Map<String, ContinueWatchingItem>> _loadLedger(
     String effectiveAccountKey,
   ) async {

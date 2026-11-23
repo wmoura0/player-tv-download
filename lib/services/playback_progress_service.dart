@@ -1,6 +1,7 @@
 ﻿import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/xtream_series_info.dart';
 import 'cloud_progress_sync_service.dart';
 import 'user_profile_service.dart';
 
@@ -483,6 +484,7 @@ class PlaybackProgressService {
         'seasonNumber': data['seasonNumber'] as int? ?? 1,
         'episodeNum': data['episodeNum'] as int? ?? 1,
         'isPromotedNext': (data['isPromotedNext'] == true ? 1 : 0),
+        'time': data['time'] as int? ?? 0,
       };
     } catch (_) {
       return null;
@@ -579,9 +581,19 @@ class PlaybackProgressService {
       // Proteção: se a sessão atual não atingiu o limite (ex.: saída durante carregamento/busca),
       // preserva o progresso anterior válido em vez de apagá-lo
       currentList.insert(0, existingItem);
+    } else if (effectiveItem.type == ContinueWatchingType.series &&
+        (effectiveItem.episodeNum ?? 0) >= 1 &&
+        effectiveItem.position.inSeconds < 10) {
+      // Se um episódio promovido (posição 0) ou recém-aberto foi fechado antes de 10s,
+      // mantém o episódio na lista com posição 00:00 em vez de descartar a série da Home.
+      currentList.insert(
+        0,
+        effectiveItem.copyWith(position: Duration.zero),
+      );
     }
 
-    final capped = currentList.take(10).toList();
+    currentList.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final capped = currentList.take(20).toList();
     final jsonList = capped.map((i) => jsonEncode(i.toJson())).toList();
     await prefs.setStringList(key, jsonList);
 
@@ -605,6 +617,214 @@ class PlaybackProgressService {
         );
       }
     }
+  }
+
+  /// Garante que uma série que possui episódio ativo para CONTINUAR ou PRÓXIMO
+  /// esteja presente e sincronizada no índice "Continuar assistindo" da Home.
+  /// Se o item já existir na lista com progresso igual ou mais avançado, não altera a ordem.
+  Future<void> ensureContinueWatchingSeriesItem({
+    required String accountKey,
+    required ContinueWatchingItem item,
+  }) async {
+    if (accountKey.trim().isEmpty || !item.canResume) return;
+    final currentList = await getContinueWatchingList(accountKey: accountKey);
+    final existingIndex = currentList.indexWhere((i) {
+      if (i.type == ContinueWatchingType.series) {
+        return (i.seriesId ?? i.streamId) == (item.seriesId ?? item.streamId);
+      }
+      return false;
+    });
+
+    if (existingIndex >= 0) {
+      final existing = currentList[existingIndex];
+      // Se o item na Home já está no mesmo episódio (ou mais avançado) e na mesma posição, nada a fazer
+      if (compareAdvancement(existing, item) >= 0 &&
+          existing.streamId == item.streamId &&
+          (existing.position.inSeconds - item.position.inSeconds).abs() < 2) {
+        return;
+      }
+    }
+
+    await saveContinueWatchingItem(
+      accountKey: accountKey,
+      item: item,
+    );
+  }
+
+  /// Reconcilia automaticamente séries que possuem `series_last` ativo no dispositivo
+  /// mas ficaram fora da lista `continue_watching` (ex.: saída nos créditos finais em versões anteriores).
+  Future<bool> reconcileOrphanedSeriesContinueWatching({
+    required String accountKey,
+    Future<XtreamSeriesInfo?> Function(int seriesId)? getCachedSeriesInfo,
+    String? Function(int seriesId)? getSeriesTitleSync,
+    String? Function(int seriesId)? getSeriesCoverSync,
+    String? Function(int seriesId)? getSeriesCategoryIdSync,
+  }) async {
+    if (accountKey.trim().isEmpty) return false;
+    final prefs = await _getPrefs();
+    final effective = _effectiveAccountKey(accountKey);
+    final lastPrefix = 'series_last_${effective}_';
+
+    final currentList = await getContinueWatchingList(accountKey: accountKey);
+    final activeSeriesIds = <int>{};
+    for (final item in currentList) {
+      if (item.type == ContinueWatchingType.series) {
+        activeSeriesIds.add(item.seriesId ?? item.streamId);
+      }
+    }
+
+    final ledgerMap = await CloudProgressSyncService.instance
+        .loadLocalLedgerForReconciliation(accountKey);
+
+    bool addedAny = false;
+    final allKeys = prefs.getKeys();
+    for (final k in allKeys) {
+      if (!k.startsWith(lastPrefix)) continue;
+      final seriesIdStr = k.substring(lastPrefix.length);
+      final seriesId = int.tryParse(seriesIdStr);
+      if (seriesId == null || seriesId <= 0 || activeSeriesIds.contains(seriesId)) {
+        continue;
+      }
+
+      final lastData = await getLastWatchedEpisode(
+        accountKey: accountKey,
+        seriesId: seriesId,
+      );
+      if (lastData == null) continue;
+
+      final lastEpId = lastData['episodeId'] ?? 0;
+      final lastSeason = lastData['seasonNumber'] ?? 1;
+      final lastEpNum = lastData['episodeNum'] ?? 1;
+      final isPromotedNext = lastData['isPromotedNext'] == 1;
+      final lastTimeMs = lastData['time'] ?? 0;
+
+      if (lastEpId <= 0) continue;
+
+      final cachedInfo = await getCachedSeriesInfo?.call(seriesId);
+      final ledgerItem = ledgerMap['series_$seriesId'];
+      // Se o usuário removeu manualmente no botão X da Home após o último registro de reprodução, respeita a remoção
+      if (ledgerItem != null &&
+          ledgerItem.isCompleted &&
+          lastTimeMs > 0 &&
+          ledgerItem.updatedAt.millisecondsSinceEpoch > lastTimeMs + 1000 &&
+          !isPromotedNext) {
+        final epProgCheck = await getEpisodeProgress(
+          accountKey: accountKey,
+          seriesId: seriesId,
+          episodeId: lastEpId,
+        );
+        if (epProgCheck == null) {
+          // Mas se existir próximo episódio no cache da série, foi conclusão de episódio nos créditos finais!
+          if (cachedInfo == null) continue;
+          final currentEp = cachedInfo.findEpisodeById(lastEpId) ??
+              cachedInfo.findEpisodeBySeasonAndNum(lastSeason, lastEpNum);
+          final nextEp = currentEp != null ? cachedInfo.getNextEpisode(currentEp) : null;
+          if (nextEp == null) continue;
+        }
+      }
+
+      final epProg = await getEpisodeProgress(
+        accountKey: accountKey,
+        seriesId: seriesId,
+        episodeId: lastEpId,
+      );
+
+      XtreamSeriesEpisode? targetEp;
+      Duration targetPos = Duration.zero;
+      Duration targetDur = Duration.zero;
+
+      if (epProg != null && epProg.canResume) {
+        targetEp = cachedInfo?.findEpisodeById(lastEpId) ??
+            cachedInfo?.findEpisodeBySeasonAndNum(lastSeason, lastEpNum);
+        targetPos = epProg.position;
+        targetDur = epProg.duration;
+      } else if (isPromotedNext) {
+        targetEp = cachedInfo?.findEpisodeById(lastEpId) ??
+            cachedInfo?.findEpisodeBySeasonAndNum(lastSeason, lastEpNum);
+        targetPos = Duration.zero;
+        targetDur = (targetEp?.durationSecs != null && targetEp!.durationSecs! > 0)
+            ? Duration(seconds: targetEp.durationSecs!)
+            : Duration.zero;
+      } else if (cachedInfo != null) {
+        final lastEp = cachedInfo.findEpisodeById(lastEpId) ??
+            cachedInfo.findEpisodeBySeasonAndNum(lastSeason, lastEpNum);
+        if (lastEp != null) {
+          final nextEp = cachedInfo.getNextEpisode(lastEp);
+          if (nextEp != null) {
+            targetEp = nextEp;
+            final nextProg = await getEpisodeProgress(
+              accountKey: accountKey,
+              seriesId: seriesId,
+              episodeId: nextEp.id,
+            );
+            targetPos = (nextProg != null && nextProg.canResume)
+                ? nextProg.position
+                : Duration.zero;
+            targetDur = (nextProg != null && nextProg.duration > Duration.zero)
+                ? nextProg.duration
+                : ((nextEp.durationSecs != null && nextEp.durationSecs! > 0)
+                    ? Duration(seconds: nextEp.durationSecs!)
+                    : Duration.zero);
+            await saveLastWatchedEpisode(
+              accountKey: accountKey,
+              seriesId: seriesId,
+              episodeId: nextEp.id,
+              seasonNumber: nextEp.seasonNumber,
+              episodeNum: nextEp.episodeNum,
+              isPromotedNext: targetPos == Duration.zero,
+            );
+          }
+        }
+      }
+
+      if (targetEp == null && (epProg == null || !epProg.canResume) && !isPromotedNext) {
+        continue;
+      }
+
+      final title = getSeriesTitleSync?.call(seriesId) ??
+          cachedInfo?.name ??
+          ledgerItem?.title ??
+          '';
+      if (title.trim().isEmpty || title.startsWith('Série #')) continue;
+
+      final effSeason = targetEp?.seasonNumber ?? lastSeason;
+      final effEpNum = targetEp?.episodeNum ?? lastEpNum;
+      final effEpId = targetEp?.id ?? lastEpId;
+      final effEpTitle = targetEp?.title ?? 'Episódio $effEpNum';
+      final cover = targetEp?.cover ??
+          getSeriesCoverSync?.call(seriesId) ??
+          cachedInfo?.cover ??
+          ledgerItem?.coverUrl;
+      final categoryId = getSeriesCategoryIdSync?.call(seriesId) ??
+          ledgerItem?.categoryId;
+      final ext = targetEp?.containerExtension ?? ledgerItem?.containerExtension;
+      final updatedAt = epProg?.updatedAt ??
+          (lastTimeMs > 0
+              ? DateTime.fromMillisecondsSinceEpoch(lastTimeMs)
+              : DateTime.now());
+
+      await saveContinueWatchingItem(
+        accountKey: accountKey,
+        item: ContinueWatchingItem(
+          streamId: effEpId,
+          seriesId: seriesId,
+          type: ContinueWatchingType.series,
+          title: title,
+          subtitle: 'T$effSeason:E$effEpNum • $effEpTitle',
+          coverUrl: cover,
+          position: targetPos,
+          duration: targetDur,
+          updatedAt: updatedAt,
+          containerExtension: ext,
+          categoryId: categoryId,
+          seasonNumber: effSeason,
+          episodeNum: effEpNum,
+        ),
+      );
+      addedAny = true;
+    }
+
+    return addedAny;
   }
 
   /// Remove um item específico do índice de continuar assistindo sem apagar o progresso existente.
@@ -842,7 +1062,7 @@ class PlaybackProgressService {
       currentList.add(item);
     }
     currentList.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    final capped = currentList.take(10).toList();
+    final capped = currentList.take(20).toList();
     await prefs.setStringList(
       key,
       capped.map((i) => jsonEncode(i.toJson())).toList(),

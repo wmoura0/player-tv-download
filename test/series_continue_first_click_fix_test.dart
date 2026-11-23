@@ -7,7 +7,9 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:projeto_tv/models/xtream_catalog.dart';
 import 'package:projeto_tv/models/xtream_series_info.dart';
+import 'package:projeto_tv/screens/series_detail_screen.dart';
 import 'package:projeto_tv/screens/series_player_screen.dart';
+import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/player_diagnostics.dart';
 import 'package:projeto_tv/services/settings_service.dart';
 import 'package:projeto_tv/services/smart_source_resolver.dart';
@@ -33,9 +35,11 @@ class _ConfigurableMockVideoPlatform extends VideoPlayerPlatform {
   String Function(String url, int attemptForUrl)? outcomeForUrl;
   final Map<String, int> _urlAttempts = {};
   Duration disposeDelay = Duration.zero;
+  Duration mockPosition = const Duration(minutes: 5);
 
   void reset() {
     _nextId = 1;
+    mockPosition = const Duration(minutes: 5);
     lifecycleEvents.clear();
     createdUrls.clear();
     urlByTexture.clear();
@@ -180,8 +184,7 @@ class _ConfigurableMockVideoPlatform extends VideoPlayerPlatform {
   Future<void> seekTo(int textureId, Duration position) async {}
 
   @override
-  Future<Duration> getPosition(int textureId) async =>
-      const Duration(minutes: 5);
+  Future<Duration> getPosition(int textureId) async => mockPosition;
 
   @override
   Widget buildView(int textureId) => const SizedBox(width: 1920, height: 1080);
@@ -921,6 +924,150 @@ void main() {
         expect(find.byIcon(Icons.error_outline_rounded), findsNothing);
 
         await cleanUnmountPlayer(tester);
+      },
+    );
+
+    testWidgets(
+      '9. Série Matéria Escura: sair durante os créditos finais (<= 45s restantes) promove o próximo episódio no card Continuar assistindo em vez de remover a série da Home',
+      (tester) async {
+        // Posição em 44:30 de 45:00 (faltam 30s -> isNearEnd == true)
+        mockPlatform.mockPosition = const Duration(minutes: 44, seconds: 30);
+
+        final catalog = XtreamCatalogService(
+          serverUrl: 'http://testserver.com',
+          username: 'u',
+          password: 'p',
+        );
+
+        const ep1 = XtreamSeriesEpisode(
+          id: 2001,
+          episodeNum: 1,
+          seasonNumber: 1,
+          title: 'Você Está Feliz Com Sua Vida?',
+          containerExtension: 'mp4',
+        );
+        const ep2 = XtreamSeriesEpisode(
+          id: 2002,
+          episodeNum: 2,
+          seasonNumber: 1,
+          title: 'A Viagem da Sua Vida',
+          containerExtension: 'mp4',
+        );
+        final fullInfo = XtreamSeriesInfo(
+          name: 'Matéria Escura',
+          seasons: const [XtreamSeriesSeason(seasonNumber: 1, name: 'Temporada 1')],
+          episodesBySeason: {
+            1: [ep1, ep2],
+          },
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SeriesPlayerScreen(
+              series: const XtreamSeriesItem(
+                seriesId: 777,
+                name: 'Matéria Escura',
+                categoryId: '1',
+              ),
+              seriesInfo: fullInfo,
+              initialEpisode: ep1,
+              catalogService: catalog,
+              accountKey: 'acc_materia_escura',
+            ),
+          ),
+        );
+
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        // Desmonta o player (simulando saída nos créditos finais)
+        await cleanUnmountPlayer(tester);
+
+        final progressService = PlaybackProgressService();
+        final cwList = await progressService.getContinueWatchingList(
+          accountKey: 'acc_materia_escura',
+        );
+        expect(cwList.length, equals(1));
+        expect(cwList.first.title, equals('Matéria Escura'));
+        expect(cwList.first.streamId, equals(2002));
+        expect(cwList.first.episodeNum, equals(2));
+        expect(cwList.first.position, equals(Duration.zero));
+      },
+    );
+
+    testWidgets(
+      '10. Série Matéria Escura: reconciliação automática na Home e na SeriesDetailScreen restaura card ausente quando series_last existe',
+      (tester) async {
+        final httpClient = MockClient((req) async {
+          if (req.url.queryParameters['action'] == 'get_series_info') {
+            return http.Response(
+              jsonEncode(hydratedSeriesJson(episodeId: 3001, ext: 'mp4')),
+              200,
+            );
+          }
+          return http.Response('{}', 200);
+        });
+
+        final catalog = XtreamCatalogService(
+          serverUrl: 'http://testserver.com',
+          username: 'u',
+          password: 'p',
+          client: httpClient,
+        );
+
+        final progressService = PlaybackProgressService();
+        // Simula estado onde series_last e series_prog estão salvos para Matéria Escura (seriesId=888, epId=3001),
+        // mas continue_watching estava sem o item (ex.: havia apenas 3 outras séries).
+        await progressService.saveLastWatchedEpisode(
+          accountKey: 'acc_reconcile',
+          seriesId: 888,
+          episodeId: 3001,
+          seasonNumber: 1,
+          episodeNum: 1,
+        );
+        await progressService.saveEpisodeProgress(
+          accountKey: 'acc_reconcile',
+          seriesId: 888,
+          episodeId: 3001,
+          position: const Duration(minutes: 15),
+          duration: const Duration(minutes: 45),
+        );
+
+        // 1. Verifica que reconcileOrphanedSeriesContinueWatching na Home já restaura Matéria Escura
+        final fetchedInfo = await catalog.fetchSeriesInfo(888);
+        final reconciled = await progressService.reconcileOrphanedSeriesContinueWatching(
+          accountKey: 'acc_reconcile',
+          getCachedSeriesInfo: (_) async => fetchedInfo,
+          getSeriesTitleSync: (_) => 'Matéria Escura',
+        );
+        expect(reconciled, isTrue);
+
+        var cwList = await progressService.getContinueWatchingList(
+          accountKey: 'acc_reconcile',
+        );
+        expect(cwList.any((i) => i.seriesId == 888 && i.title == 'Matéria Escura'), isTrue);
+
+        // 2. Verifica também que abrir SeriesDetailScreen restaura caso o card não estivesse na lista
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SeriesDetailScreen(
+              series: const XtreamSeriesItem(
+                seriesId: 888,
+                name: 'Matéria Escura',
+                categoryId: '1',
+              ),
+              catalogService: catalog,
+              accountKey: 'acc_reconcile',
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        cwList = await progressService.getContinueWatchingList(
+          accountKey: 'acc_reconcile',
+        );
+        expect(cwList.any((i) => i.seriesId == 888 && i.title == 'Matéria Escura'), isTrue);
       },
     );
   });
