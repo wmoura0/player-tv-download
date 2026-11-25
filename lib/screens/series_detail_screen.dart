@@ -247,6 +247,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       matched.seriesId,
       forceRefresh: true,
       expectedSeriesName: target.name,
+      expectedCoverUrl: matched.cover ?? target.cover,
     );
     if (!candidateResult.hasUsableEpisodes ||
         candidateResult.identityConsistency == SeriesIdentityConsistency.mismatch) {
@@ -367,6 +368,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         _currentSeries.seriesId,
         forceRefresh: forceRefresh,
         expectedSeriesName: _currentSeries.name,
+        expectedCoverUrl: _currentSeries.cover,
       );
       if (!mounted || gen != _loadGeneration) return;
 
@@ -440,6 +442,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             seriesId,
             forceRefresh: true,
             expectedSeriesName: _currentSeries.name,
+            expectedCoverUrl: _currentSeries.cover,
           )
           .timeout(
             const Duration(seconds: 12),

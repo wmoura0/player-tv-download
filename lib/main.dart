@@ -104,8 +104,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final PlaybackProgressService _progressService = PlaybackProgressService();
   final ScrollController _scrollController = ScrollController();
-  final FocusScopeNode _categoriesScopeNode =
-      FocusScopeNode(debugLabel: 'HomeCategoriesScope');
+  final FocusNode _categoriesFallbackFocusNode =
+      FocusNode(debugLabel: 'HomeCategoriesFallback');
   final List<FocusNode> _cwCardFocusNodes = [];
   int _lastFocusedCwIndex = 0;
 
@@ -152,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       n.dispose();
     }
     _cwCardFocusNodes.clear();
-    _categoriesScopeNode.dispose();
+    _categoriesFallbackFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -563,6 +563,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           final candidateInfo = await service.getCachedSeriesInfo(
             effectiveSeriesId,
             expectedSeriesName: item.title,
+            expectedCoverUrl: item.coverUrl,
           );
           if (candidateInfo != null && !candidateInfo.isOrphanedOrStub) {
             info = candidateInfo;
@@ -856,7 +857,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           return;
         }
       }
-      _categoriesScopeNode.requestFocus();
+      _categoriesFallbackFocusNode.requestFocus();
     });
   }
 
@@ -1334,12 +1335,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         horizontal: horizontalPadding,
                         vertical: 8.0,
                       ),
-                      child: FocusScope(
-                        node: _categoriesScopeNode,
+                      child: FocusTraversalGroup(
                         child: _MainCategoriesSection(
                           isLandscape: isLandscape,
                           onCategoryTap: _onCategorySelected,
                           liveCount: _sharedCatalogService?.totalLiveCount,
+                          heroFocusNode: _categoriesFallbackFocusNode,
                         ),
                       ),
                     ),
@@ -2154,20 +2155,22 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
     final isHighlighted = _isFocused || _isHovered;
     final isSeries = widget.item.type == ContinueWatchingType.series;
 
-    return Focus(
-      focusNode: widget.focusNode,
-      onFocusChange: (focused) {
-        if (!focused) {
-          _cancelOkHold();
-        } else {
-          widget.onFocused?.call();
-        }
-        if (mounted) {
-          setState(() => _isFocused = focused);
-        }
-      },
-      onKeyEvent: _handleKeyEvent,
-      child: MouseRegion(
+    return Actions(
+      actions: DeviceUtils.activateAction(widget.onTap),
+      child: Focus(
+        focusNode: widget.focusNode,
+        onFocusChange: (focused) {
+          if (!focused) {
+            _cancelOkHold();
+          } else {
+            widget.onFocused?.call();
+          }
+          if (mounted) {
+            setState(() => _isFocused = focused);
+          }
+        },
+        onKeyEvent: _handleKeyEvent,
+        child: MouseRegion(
         onEnter: (_) => setState(() => _isHovered = true),
         onExit: (_) => setState(() => _isHovered = false),
         child: AnimatedScale(
@@ -2347,6 +2350,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
           ),
         ),
       ),
+    ),
     ),
     );
   }
@@ -2792,11 +2796,13 @@ class _MainCategoriesSection extends StatelessWidget {
   final bool isLandscape;
   final ValueChanged<String> onCategoryTap;
   final int? liveCount;
+  final FocusNode? heroFocusNode;
 
   const _MainCategoriesSection({
     required this.isLandscape,
     required this.onCategoryTap,
     this.liveCount,
+    this.heroFocusNode,
   });
 
   @override
@@ -2852,6 +2858,7 @@ class _MainCategoriesSection extends StatelessWidget {
               flex: 40,
               child: _CategoryCard(
                 item: heroItem,
+                focusNode: heroFocusNode,
                 isLandscape: true,
                 isHero: true,
                 onTap: () => onCategoryTap(heroItem.title),
@@ -2923,6 +2930,7 @@ class _MainCategoriesSection extends StatelessWidget {
           width: double.infinity,
           child: _CategoryCard(
             item: heroItem,
+            focusNode: heroFocusNode,
             isLandscape: false,
             isHero: true,
             onTap: () => onCategoryTap(heroItem.title),
@@ -2954,12 +2962,14 @@ class _MainCategoriesSection extends StatelessWidget {
 /// Card de categoria com suporte a foco (D-Pad para Android/Fire TV), hover e toque.
 class _CategoryCard extends StatefulWidget {
   final _CategoryItem item;
+  final FocusNode? focusNode;
   final bool isLandscape;
   final bool isHero;
   final VoidCallback onTap;
 
   const _CategoryCard({
     required this.item,
+    this.focusNode,
     required this.isLandscape,
     this.isHero = false,
     required this.onTap,
@@ -2979,6 +2989,7 @@ class _CategoryCardState extends State<_CategoryCard> {
 
     return FocusableActionDetector(
       key: widget.item.key,
+      focusNode: widget.focusNode,
       autofocus: widget.item.autofocus,
       actions: DeviceUtils.activateAction(widget.onTap),
       shortcuts: DeviceUtils.dpadSelectShortcuts,
