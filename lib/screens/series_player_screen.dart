@@ -7,6 +7,7 @@ import '../services/cloud_progress_sync_service.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
+import '../services/series_identity_verifier.dart';
 import '../services/settings_service.dart';
 import '../services/smart_source_resolver.dart';
 import '../services/url_sanitizer.dart';
@@ -27,6 +28,7 @@ class SeriesPlayerScreen extends StatefulWidget {
   final String accountKey;
   final Duration? initialPosition;
   final VideoPlayerController? testController;
+  final bool seriesInfoIsFresh;
 
   const SeriesPlayerScreen({
     super.key,
@@ -37,6 +39,7 @@ class SeriesPlayerScreen extends StatefulWidget {
     required this.accountKey,
     this.initialPosition,
     this.testController,
+    this.seriesInfoIsFresh = false,
   });
 
   @override
@@ -45,6 +48,7 @@ class SeriesPlayerScreen extends StatefulWidget {
 
 class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     with WidgetsBindingObserver {
+  late int _activeSeriesId;
   late XtreamSeriesInfo _currentSeriesInfo;
   late XtreamSeriesEpisode _currentEpisode;
   VideoPlayerController? _controller;
@@ -85,6 +89,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   Timer? _progressSaveTimer;
   Timer? _initialBufferingWatchdog;
   int _connectionEpoch = 0;
+  int _episodeSessionEpoch = 0;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
 
   // Controle de Próximo Episódio
@@ -99,6 +104,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     DeviceUtils.isPipMode.addListener(_onPipModeChanged);
+    _activeSeriesId = widget.series.seriesId;
     _currentSeriesInfo = widget.seriesInfo;
     _currentEpisode = widget.initialEpisode;
     _resumptionTarget = widget.initialPosition;
@@ -276,15 +282,17 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     if (_isLoading && !force) return;
     if (_isSeekingToInitial) return;
 
+    final sessionEpoch = _episodeSessionEpoch;
+    final activeSeriesId = _activeSeriesId;
+    final epSnapshot = _currentEpisode;
     final pos = c.value.position;
     final dur = c.value.duration;
 
-    // Proteção absoluta: NUNCA sobrescrever posição anterior válida se a reprodução atual ainda não avançou (menos de 5s).
-    // Isso evita que um erro de buffer inicial ou encerramento rápido descarte o progresso salvo.
+    // Proteção absoluta: NUNCA sobrescrever posição anterior válida nem sobrescrever S4E2 com Ep1 (< 10s).
     final resumptionRef = _resumptionTarget;
     if (resumptionRef != null &&
         resumptionRef.inSeconds >= 10 &&
-        pos.inSeconds < 5) {
+        pos.inSeconds < 10) {
       debugPrint('[SERIES PLAYER] [PROGRESSO] Preservando posição salva anterior (${PlaybackProgressService.formatDuration(resumptionRef)}) pois reprodução atual não avançou (${PlaybackProgressService.formatDuration(pos)}).');
       return;
     }
@@ -295,49 +303,58 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
               (pos.inSeconds / dur.inSeconds) >= 0.96);
 
       // Se o episódio atingiu os créditos finais (<= 45s ou >= 96%) e o usuário saiu ou o timer disparou,
-      // promove automaticamente o próximo episódio (se existir) em vez de deixar o item como isCompleted=true
-      // (o que faria saveContinueWatchingItem remover a série do carrossel Continuar Assistindo da Home).
+      // promove automaticamente o próximo episódio (se existir).
       if (isNearEnd) {
         if (!_hasTriggeredCompletion) {
           _hasTriggeredCompletion = true;
-          await _handleEpisodeCompleted();
+          await _handleEpisodeCompleted(sessionEpoch: sessionEpoch);
         }
         return;
       }
 
-      debugPrint('[SERIES PLAYER] [PROGRESSO] Salvando progresso: ep=${_currentEpisode.id}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
+      // Nunca gravar lastWatched nem ContinueWatching para reprodução acidental abaixo de 10s.
+      if (pos.inSeconds < 10) {
+        return;
+      }
+
+      if (sessionEpoch != _episodeSessionEpoch) return;
+      _resumptionTarget = pos;
+
+      debugPrint('[SERIES PLAYER] [PROGRESSO] Salvando progresso: ep=${epSnapshot.id}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveEpisodeProgress(
         accountKey: widget.accountKey,
-        seriesId: widget.series.seriesId,
-        episodeId: _currentEpisode.id,
+        seriesId: activeSeriesId,
+        episodeId: epSnapshot.id,
         position: pos,
         duration: dur,
       );
 
+      if (sessionEpoch != _episodeSessionEpoch) return;
       await _progressService.saveLastWatchedEpisode(
         accountKey: widget.accountKey,
-        seriesId: widget.series.seriesId,
-        episodeId: _currentEpisode.id,
-        seasonNumber: _currentEpisode.seasonNumber,
-        episodeNum: _currentEpisode.episodeNum,
+        seriesId: activeSeriesId,
+        episodeId: epSnapshot.id,
+        seasonNumber: epSnapshot.seasonNumber,
+        episodeNum: epSnapshot.episodeNum,
       );
 
+      if (sessionEpoch != _episodeSessionEpoch) return;
       await _progressService.saveContinueWatchingItem(
         accountKey: widget.accountKey,
         item: ContinueWatchingItem(
-          streamId: _currentEpisode.id,
-          seriesId: widget.series.seriesId,
+          streamId: epSnapshot.id,
+          seriesId: activeSeriesId,
           type: ContinueWatchingType.series,
           title: widget.series.name,
-          subtitle: 'T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} • ${_currentEpisode.title}',
-          coverUrl: _currentEpisode.cover ?? widget.series.cover,
+          subtitle: 'T${epSnapshot.seasonNumber}:E${epSnapshot.episodeNum} • ${epSnapshot.title}',
+          coverUrl: epSnapshot.cover ?? widget.series.cover,
           position: pos,
           duration: dur,
           updatedAt: DateTime.now(),
-          containerExtension: _currentEpisode.containerExtension,
+          containerExtension: epSnapshot.containerExtension,
           categoryId: widget.series.categoryId,
-          seasonNumber: _currentEpisode.seasonNumber,
-          episodeNum: _currentEpisode.episodeNum,
+          seasonNumber: epSnapshot.seasonNumber,
+          episodeNum: epSnapshot.episodeNum,
         ),
       );
     }
@@ -397,7 +414,11 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
   List<String> _buildPriorityUrls(XtreamSeriesEpisode ep) {
     final baseUrls = widget.catalogService.buildSeriesStreamUrls(ep);
-    final cached = SmartSourceResolver.instance.getCachedSource(widget.series.seriesId, ep.id);
+    final cached = SmartSourceResolver.instance.getCachedSource(
+      _activeSeriesId,
+      ep.id,
+      catalogService: widget.catalogService,
+    );
     final direct = ep.directSource?.trim();
 
     final merged = <String>[];
@@ -431,56 +452,66 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
   Future<void> _hydrateSeriesInfoInBackground(
     int seriesId, {
     bool forceRefresh = false,
+    required int sessionEpoch,
   }) async {
     try {
-      final hydratedInfo = await widget.catalogService
-          .fetchSeriesInfo(seriesId, forceRefresh: forceRefresh)
+      final result = await widget.catalogService
+          .fetchSeriesInfoDetailed(
+            seriesId,
+            forceRefresh: forceRefresh,
+            expectedSeriesName: widget.series.name,
+          )
           .timeout(const Duration(seconds: 12));
-      if (!mounted) return;
-      if (hydratedInfo != null && !hydratedInfo.isOrphanedOrStub) {
-        final prevId = _currentEpisode.id;
-        final prevExt = _currentEpisode.containerExtension;
-        // Prioriza a correspondência por temporada e número do episódio quando disponível,
-        // pois em reindexações parciais o ID antigo pode ter sido reaproveitado ou substituído.
-        final hydratedEp = hydratedInfo.findEpisodeBySeasonAndNum(
-              _currentEpisode.seasonNumber,
-              _currentEpisode.episodeNum,
-            ) ??
-            hydratedInfo.findEpisodeById(prevId);
-        setState(() {
-          _currentSeriesInfo = hydratedInfo;
-          if (hydratedEp != null) {
-            _currentEpisode = hydratedEp;
-          }
-          _updateNextEpisode();
-        });
-        if (hydratedEp != null &&
-            (hydratedEp.id != prevId || hydratedEp.containerExtension != prevExt)) {
-          final posToKeep = _resumptionTarget ?? widget.initialPosition ?? Duration.zero;
-          if (posToKeep.inSeconds >= 10) {
-            unawaited(
-              _progressService.saveContinueWatchingItem(
-                accountKey: widget.accountKey,
-                item: ContinueWatchingItem(
-                  type: ContinueWatchingType.series,
-                  streamId: hydratedEp.id,
-                  seriesId: widget.series.seriesId,
-                  title: widget.series.name,
-                  coverUrl: hydratedEp.cover ?? widget.series.cover,
-                  subtitle: 'T${hydratedEp.seasonNumber}:E${hydratedEp.episodeNum} • ${hydratedEp.title}',
-                  position: posToKeep,
-                  duration: hydratedEp.durationSecs != null
-                      ? Duration(seconds: hydratedEp.durationSecs!)
-                      : Duration.zero,
-                  updatedAt: DateTime.now(),
-                  seasonNumber: hydratedEp.seasonNumber,
-                  episodeNum: hydratedEp.episodeNum,
-                  containerExtension: hydratedEp.containerExtension,
-                  categoryId: widget.series.categoryId,
-                ),
+      if (!mounted || sessionEpoch != _episodeSessionEpoch || _isExiting) return;
+      final hydratedInfo = result.info;
+      if (result.identityConsistency == SeriesIdentityConsistency.mismatch ||
+          hydratedInfo == null ||
+          hydratedInfo.isOrphanedOrStub) {
+        return;
+      }
+
+      final prevId = _currentEpisode.id;
+      final prevExt = _currentEpisode.containerExtension;
+      // Prioriza a correspondência por temporada e número do episódio quando disponível,
+      // pois em reindexações parciais o ID antigo pode ter sido reaproveitado ou substituído.
+      final hydratedEp = hydratedInfo.findEpisodeBySeasonAndNum(
+            _currentEpisode.seasonNumber,
+            _currentEpisode.episodeNum,
+          ) ??
+          hydratedInfo.findEpisodeById(prevId);
+      setState(() {
+        _currentSeriesInfo = hydratedInfo;
+        if (hydratedEp != null) {
+          _currentEpisode = hydratedEp;
+        }
+        _updateNextEpisode();
+      });
+      if (hydratedEp != null &&
+          (hydratedEp.id != prevId || hydratedEp.containerExtension != prevExt)) {
+        final posToKeep = _resumptionTarget ?? widget.initialPosition ?? Duration.zero;
+        if (posToKeep.inSeconds >= 10) {
+          unawaited(
+            _progressService.saveContinueWatchingItem(
+              accountKey: widget.accountKey,
+              item: ContinueWatchingItem(
+                type: ContinueWatchingType.series,
+                streamId: hydratedEp.id,
+                seriesId: _activeSeriesId,
+                title: widget.series.name,
+                coverUrl: hydratedEp.cover ?? widget.series.cover,
+                subtitle: 'T${hydratedEp.seasonNumber}:E${hydratedEp.episodeNum} • ${hydratedEp.title}',
+                position: posToKeep,
+                duration: hydratedEp.durationSecs != null
+                    ? Duration(seconds: hydratedEp.durationSecs!)
+                    : Duration.zero,
+                updatedAt: DateTime.now(),
+                seasonNumber: hydratedEp.seasonNumber,
+                episodeNum: hydratedEp.episodeNum,
+                containerExtension: hydratedEp.containerExtension,
+                categoryId: widget.series.categoryId,
               ),
-            );
-          }
+            ),
+          );
         }
       }
     } catch (_) {}
@@ -490,6 +521,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     Duration? initialPosition,
     bool isAutoSessionReload = false,
   }) async {
+    final sessionEpoch = ++_episodeSessionEpoch;
     if (!isAutoSessionReload) {
       _autoSessionReloadAttempted = false;
     }
@@ -505,29 +537,38 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     _smartSourceResolvedUrl = null;
     _isHandlingError = false;
 
-    // Hidratação instantânea do cache local; se ausente, aguarda janela curta pré-conexão (até 2s)
-    // para evitar abrir a 1ª conexão no ExoPlayer com ID/extensão incompletos e mantém em paralelo caso passe de 2s.
-    final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
-    if (knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
+    // Hidratação instantânea do cache local com verificação estrita de identidade;
+    // se vindo de SeriesDetailScreen já validado em rede nesta sessão, evita forceRefresh redundante na abertura.
+    final knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values
+        .fold<int>(0, (sum, list) => sum + list.length);
+    if (knownEpisodesCount <= 1 && _activeSeriesId > 0) {
       try {
-        final cachedInfo = await widget.catalogService.getCachedSeriesInfo(widget.series.seriesId);
-        if (!mounted) return;
+        final cachedInfo = await widget.catalogService.getCachedSeriesInfo(
+          _activeSeriesId,
+          expectedSeriesName: widget.series.name,
+        );
+        if (!mounted || sessionEpoch != _episodeSessionEpoch) return;
         if (cachedInfo != null && !cachedInfo.isOrphanedOrStub) {
           _currentSeriesInfo = cachedInfo;
           final hydratedEp = cachedInfo.findEpisodeById(_currentEpisode.id) ??
-              cachedInfo.findEpisodeBySeasonAndNum(_currentEpisode.seasonNumber, _currentEpisode.episodeNum);
+              cachedInfo.findEpisodeBySeasonAndNum(
+                _currentEpisode.seasonNumber,
+                _currentEpisode.episodeNum,
+              );
           if (hydratedEp != null) {
             _currentEpisode = hydratedEp;
           }
           _updateNextEpisode();
           _hydrationFuture = _hydrateSeriesInfoInBackground(
-            widget.series.seriesId,
+            _activeSeriesId,
             forceRefresh: true,
+            sessionEpoch: sessionEpoch,
           );
         } else {
           _hydrationFuture = _hydrateSeriesInfoInBackground(
-            widget.series.seriesId,
+            _activeSeriesId,
             forceRefresh: true,
+            sessionEpoch: sessionEpoch,
           );
           try {
             await _hydrationFuture!.timeout(
@@ -535,15 +576,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
               onTimeout: () {},
             );
           } catch (_) {}
-          if (!mounted) return;
+          if (!mounted || sessionEpoch != _episodeSessionEpoch) return;
         }
       } catch (_) {}
-    } else if (widget.series.seriesId > 0) {
-      // Mesmo vindo de SeriesDetailScreen (knownEpisodesCount > 1), revalida em segundo plano com forceRefresh: true
-      // para cobrir cache em disco de até 24h cujo episódio tenha mudado de ID/container no servidor.
+    } else if (_activeSeriesId > 0 && !widget.seriesInfoIsFresh) {
       _hydrationFuture = _hydrateSeriesInfoInBackground(
-        widget.series.seriesId,
+        _activeSeriesId,
         forceRefresh: true,
+        sessionEpoch: sessionEpoch,
       );
     }
 
@@ -811,16 +851,31 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     }
 
     // Se a hidratação em background trouxe metadados reais diferentes do snapshot usado
-    // para montar _streamUrls (mesmo que tenha finalizado enquanto o ExoPlayer falhava ou dava timeout),
+    // para montar _streamUrls (ou ainda não revalidou porque seriesInfoIsFresh era true),
     // recria as URLs hidratadas e tenta conectar antes de ir ao SmartSourceResolver.
     if (!isAuthOrForbidden &&
         !_hydratedRetryAttempted &&
-        _hydrationFuture != null &&
         !_isExiting) {
-      try {
-        await _hydrationFuture!.timeout(const Duration(seconds: 6), onTimeout: () {});
-      } catch (_) {}
-      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      final epEpochAtError = _episodeSessionEpoch;
+      final hydration = _hydrationFuture ??
+          (_activeSeriesId > 0
+              ? _hydrateSeriesInfoInBackground(
+                  _activeSeriesId,
+                  forceRefresh: true,
+                  sessionEpoch: epEpochAtError,
+                )
+              : null);
+      if (hydration != null) {
+        try {
+          await hydration.timeout(const Duration(seconds: 6), onTimeout: () {});
+        } catch (_) {}
+      }
+      if (!mounted ||
+          epoch != _connectionEpoch ||
+          epEpochAtError != _episodeSessionEpoch ||
+          _isExiting) {
+        return;
+      }
       if (_hasEpisodeMetadataChangedFromStreamUrls()) {
         _hydratedRetryAttempted = true;
         final refreshedUrls = _buildPriorityUrls(_currentEpisode)
@@ -847,9 +902,15 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         SettingsService.instance.enableSmartSource &&
         !isAuthOrForbidden &&
         !isTimeout) {
+      final epEpochAtResolve = _episodeSessionEpoch;
       _smartSourceAttempted = true;
       await _disposeCurrentController();
-      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      if (!mounted ||
+          epoch != _connectionEpoch ||
+          epEpochAtResolve != _episodeSessionEpoch ||
+          _isExiting) {
+        return;
+      }
 
       setState(() {
         _isLoading = true;
@@ -860,18 +921,25 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       final result = await SmartSourceResolver.instance.resolveBestSource(
         catalogService: widget.catalogService,
         episode: _currentEpisode,
-        seriesId: widget.series.seriesId,
+        seriesId: _activeSeriesId,
         seriesName: widget.series.name,
         categoryId: widget.series.categoryId,
         alreadyFailedUrls: Set<String>.from(_failedStreamUrls),
         onProgressMessage: (msg) {
-          if (mounted && epoch == _connectionEpoch) {
+          if (mounted &&
+              epoch == _connectionEpoch &&
+              epEpochAtResolve == _episodeSessionEpoch) {
             setState(() => _smartSourceStatusMessage = msg);
           }
         },
       );
 
-      if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+      if (!mounted ||
+          epoch != _connectionEpoch ||
+          epEpochAtResolve != _episodeSessionEpoch ||
+          _isExiting) {
+        return;
+      }
 
       if (result.isSuccess && result.workingUrl != null) {
         final workingUrl = result.workingUrl!;
@@ -880,38 +948,53 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           _smartSourceStatusMessage = null;
         });
 
+        if (result.recoveredSeriesId != null && result.recoveredSeriesId! > 0) {
+          _activeSeriesId = result.recoveredSeriesId!;
+        }
+
         if (result.recoveredEpisode != null) {
           _currentEpisode = result.recoveredEpisode!;
+          _updateNextEpisode();
           debugPrint('[SERIES PLAYER] Atualizando episódio ativo para recuperado: ID=${_currentEpisode.id}, T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum}');
-          unawaited(
-            _progressService.saveContinueWatchingItem(
-              accountKey: widget.accountKey,
-              item: ContinueWatchingItem(
-                type: ContinueWatchingType.series,
-                streamId: _currentEpisode.id,
-                seriesId: result.recoveredSeriesId ?? widget.series.seriesId,
-                title: widget.series.name,
-                coverUrl: _currentEpisode.cover ?? widget.series.cover,
-                subtitle: 'T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} • ${_currentEpisode.title}',
-                position: initialPosition ?? Duration.zero,
-                duration: Duration.zero,
-                updatedAt: DateTime.now(),
-                seasonNumber: _currentEpisode.seasonNumber,
-                episodeNum: _currentEpisode.episodeNum,
-                containerExtension: _currentEpisode.containerExtension,
-                categoryId: widget.series.categoryId,
+          if (initialPosition != null && initialPosition.inSeconds >= 10) {
+            unawaited(
+              _progressService.saveContinueWatchingItem(
+                accountKey: widget.accountKey,
+                item: ContinueWatchingItem(
+                  type: ContinueWatchingType.series,
+                  streamId: _currentEpisode.id,
+                  seriesId: _activeSeriesId,
+                  title: widget.series.name,
+                  coverUrl: _currentEpisode.cover ?? widget.series.cover,
+                  subtitle: 'T${_currentEpisode.seasonNumber}:E${_currentEpisode.episodeNum} • ${_currentEpisode.title}',
+                  position: initialPosition,
+                  duration: Duration.zero,
+                  updatedAt: DateTime.now(),
+                  seasonNumber: _currentEpisode.seasonNumber,
+                  episodeNum: _currentEpisode.episodeNum,
+                  containerExtension: _currentEpisode.containerExtension,
+                  categoryId: widget.series.categoryId,
+                ),
               ),
-            ),
-          );
+            );
+          }
         }
 
         _streamUrls = [workingUrl];
         _currentUrlIndex = 0;
         _recordStreamUrlsSource(_currentEpisode);
 
-        PlayerDiagnostics.log('SMART_SOURCE', 'Fonte resolvida com sucesso: $workingUrl');
+        PlayerDiagnostics.log(
+          'SMART_SOURCE',
+          'Fonte resolvida com sucesso: ${UrlSanitizer.sanitize(workingUrl)}',
+        );
         await Future.delayed(const Duration(milliseconds: 350));
-        if (!mounted || epoch != _connectionEpoch || _isExiting) return;
+        if (!mounted ||
+            epoch != _connectionEpoch ||
+            epEpochAtResolve != _episodeSessionEpoch ||
+            _isExiting) {
+          return;
+        }
         await _connectToUrl(workingUrl, initialPosition: initialPosition);
         return;
       }
@@ -1139,43 +1222,64 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           remaining <= 2 &&
           pos.inSeconds > 10) {
         _hasTriggeredCompletion = true;
-        _handleEpisodeCompleted();
-
-        if (_nextEpisode != null &&
-            SettingsService.instance.enableAutoPlayNextEpisode &&
-            _countdownSeconds == null) {
-          _startNextEpisodeCountdown(initialSeconds: 5);
-        }
+        final sessionEpoch = _episodeSessionEpoch;
+        unawaited(_completeEpisodeAndMaybeAutoAdvance(sessionEpoch));
       }
     }
   }
 
-  Future<void> _handleEpisodeCompleted() async {
+  Future<void> _completeEpisodeAndMaybeAutoAdvance(int sessionEpoch) async {
+    await _handleEpisodeCompleted(sessionEpoch: sessionEpoch);
+    if (!mounted || sessionEpoch != _episodeSessionEpoch || _isExiting) return;
+    if (_nextEpisode != null &&
+        SettingsService.instance.enableAutoPlayNextEpisode &&
+        _countdownSeconds == null) {
+      _startNextEpisodeCountdown(initialSeconds: 5);
+    }
+  }
+
+  Future<void> _handleEpisodeCompleted({required int sessionEpoch}) async {
+    if (sessionEpoch != _episodeSessionEpoch) return;
+    final activeSeriesId = _activeSeriesId;
     final completedEp = _currentEpisode;
     // 1. Limpa o progresso salvo do episódio concluído
     await _progressService.clearEpisodeProgress(
       accountKey: widget.accountKey,
-      seriesId: widget.series.seriesId,
+      seriesId: activeSeriesId,
       episodeId: completedEp.id,
     );
 
+    if (sessionEpoch != _episodeSessionEpoch) return;
+
     // Se iniciou a partir de stub da Home (<= 1 episódio conhecido), aguarda/busca a grade completa
-    // antes de concluir que não existe próximo episódio.
+    // com verificação estrita de identidade antes de concluir que não existe próximo episódio.
     var knownEpisodesCount = _currentSeriesInfo.episodesBySeason.values
         .fold<int>(0, (sum, list) => sum + list.length);
-    if (_nextEpisode == null && knownEpisodesCount <= 1 && widget.series.seriesId > 0) {
+    var seriesConfirmedFromNetwork = false;
+    if (_nextEpisode == null && knownEpisodesCount <= 1 && activeSeriesId > 0) {
       if (_hydrationFuture != null) {
         try {
           await _hydrationFuture!.timeout(const Duration(seconds: 6), onTimeout: () {});
+          seriesConfirmedFromNetwork = _currentSeriesInfo.totalEpisodeCount >= 1 &&
+              !_currentSeriesInfo.isOrphanedOrStub;
         } catch (_) {}
       } else {
         try {
-          final fetched = await widget.catalogService
-              .fetchSeriesInfo(widget.series.seriesId)
-              .timeout(const Duration(seconds: 6), onTimeout: () => null);
-          if (fetched != null && !fetched.isOrphanedOrStub) {
-            _currentSeriesInfo = fetched;
-            _updateNextEpisode();
+          final res = await widget.catalogService
+              .fetchSeriesInfoDetailed(
+                activeSeriesId,
+                expectedSeriesName: widget.series.name,
+              )
+              .timeout(const Duration(seconds: 6));
+          final fetched = res.info;
+          if (res.identityConsistency != SeriesIdentityConsistency.mismatch &&
+              fetched != null &&
+              !fetched.isOrphanedOrStub) {
+            seriesConfirmedFromNetwork = fetched.totalEpisodeCount >= 1;
+            if (sessionEpoch == _episodeSessionEpoch) {
+              _currentSeriesInfo = fetched;
+              _updateNextEpisode();
+            }
           }
         } catch (_) {}
       }
@@ -1183,11 +1287,13 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           .fold<int>(0, (sum, list) => sum + list.length);
     }
 
+    if (sessionEpoch != _episodeSessionEpoch) return;
+
     // 2. Se houver próximo episódio na série, promove-o com posição inicial zero
     if (_nextEpisode != null) {
       await _progressService.saveLastWatchedEpisode(
         accountKey: widget.accountKey,
-        seriesId: widget.series.seriesId,
+        seriesId: activeSeriesId,
         episodeId: _nextEpisode!.id,
         seasonNumber: _nextEpisode!.seasonNumber,
         episodeNum: _nextEpisode!.episodeNum,
@@ -1198,7 +1304,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         accountKey: widget.accountKey,
         item: ContinueWatchingItem(
           streamId: _nextEpisode!.id,
-          seriesId: widget.series.seriesId,
+          seriesId: activeSeriesId,
           type: ContinueWatchingType.series,
           title: widget.series.name,
           subtitle: 'T${_nextEpisode!.seasonNumber}:E${_nextEpisode!.episodeNum} • ${_nextEpisode!.title}',
@@ -1214,12 +1320,12 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
           episodeNum: _nextEpisode!.episodeNum,
         ),
       );
-    } else if (knownEpisodesCount > 1) {
-      // Último episódio da série confirmada como hidratada: remove do Continuar Assistindo
-      await _progressService.removeContinueWatchingItem(
+    } else if (knownEpisodesCount > 1 || seriesConfirmedFromNetwork) {
+      // Último episódio da série confirmada como hidratada (inclusive minissérie de 1 ep): marca como concluída
+      await _progressService.markContinueWatchingCompleted(
         accountKey: widget.accountKey,
         type: ContinueWatchingType.series,
-        id: widget.series.seriesId,
+        id: activeSeriesId,
       );
     }
   }
@@ -1236,14 +1342,14 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         return;
       }
 
-      setState(() {
-        if (_countdownSeconds != null && _countdownSeconds! > 1) {
+      if (_countdownSeconds != null && _countdownSeconds! > 1) {
+        setState(() {
           _countdownSeconds = _countdownSeconds! - 1;
-        } else {
-          _cancelCountdown();
-          _playNextEpisode();
-        }
-      });
+        });
+      } else {
+        _cancelCountdown();
+        _playNextEpisode();
+      }
     });
   }
 
@@ -1271,6 +1377,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     XtreamSeriesEpisode next,
     VideoPlayerController? prevController,
   ) async {
+    final activeSeriesId = _activeSeriesId;
     if (prevController != null && prevController.value.isInitialized) {
       final pos = prevController.value.position;
       final dur = prevController.value.duration;
@@ -1280,13 +1387,13 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       if (isNearEnd) {
         await _progressService.clearEpisodeProgress(
           accountKey: widget.accountKey,
-          seriesId: widget.series.seriesId,
+          seriesId: activeSeriesId,
           episodeId: previousEp.id,
         );
       } else if (pos.inSeconds >= 10 && dur > Duration.zero) {
         await _progressService.saveEpisodeProgress(
           accountKey: widget.accountKey,
-          seriesId: widget.series.seriesId,
+          seriesId: activeSeriesId,
           episodeId: previousEp.id,
           position: pos,
           duration: dur,
@@ -1296,7 +1403,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
     await _progressService.saveLastWatchedEpisode(
       accountKey: widget.accountKey,
-      seriesId: widget.series.seriesId,
+      seriesId: activeSeriesId,
       episodeId: next.id,
       seasonNumber: next.seasonNumber,
       episodeNum: next.episodeNum,
@@ -1307,7 +1414,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
       accountKey: widget.accountKey,
       item: ContinueWatchingItem(
         streamId: next.id,
-        seriesId: widget.series.seriesId,
+        seriesId: activeSeriesId,
         type: ContinueWatchingType.series,
         title: widget.series.name,
         subtitle: 'T${next.seasonNumber}:E${next.episodeNum} • ${next.title}',
@@ -1351,17 +1458,27 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
     setState(() {});
   }
 
+  Future<void> _seekToTarget(Duration target) async {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    final sessionEpoch = _episodeSessionEpoch;
+    final clamped = Duration(
+      milliseconds: target.inMilliseconds.clamp(0, c.value.duration.inMilliseconds),
+    );
+    _resumptionTarget = clamped;
+    try {
+      await c.seekTo(clamped);
+    } catch (_) {}
+    if (!mounted || sessionEpoch != _episodeSessionEpoch || _isExiting) return;
+    await _saveCurrentProgress(force: clamped.inSeconds >= 10);
+  }
+
   void _seekRelative(int seconds) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
 
     _cancelCountdown();
-    final newPos = c.value.position + Duration(seconds: seconds);
-    final clamped = Duration(
-      milliseconds: newPos.inMilliseconds.clamp(0, c.value.duration.inMilliseconds),
-    );
-    c.seekTo(clamped);
-    _saveCurrentProgress();
+    unawaited(_seekToTarget(c.value.position + Duration(seconds: seconds)));
   }
 
   void _seekFraction(double fraction) {
@@ -1370,8 +1487,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
 
     _cancelCountdown();
     final targetMs = (fraction * c.value.duration.inMilliseconds).round();
-    c.seekTo(Duration(milliseconds: targetMs));
-    _saveCurrentProgress();
+    unawaited(_seekToTarget(Duration(milliseconds: targetMs)));
   }
 
   String get _displayTitle {

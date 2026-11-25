@@ -377,11 +377,18 @@ class CloudProgressSyncService {
   }
 
   DateTime _effectiveSortTime(ContinueWatchingItem item) {
-    final reset = item.manualResetAt;
-    if (reset != null && reset.isAfter(item.updatedAt)) {
-      return reset;
+    DateTime best = item.updatedAt;
+    for (final candidate in [
+      item.manualResetAt,
+      item.hiddenFromHomeAt,
+      item.completedAt,
+      item.historyClearedAt,
+    ]) {
+      if (candidate != null && candidate.isAfter(best)) {
+        best = candidate;
+      }
     }
-    return item.updatedAt;
+    return best;
   }
 
   String _encodeBoundedItemsJson(Map<String, ContinueWatchingItem> map) {
@@ -479,7 +486,16 @@ class CloudProgressSyncService {
     final effectiveKey = _effectiveAccountKey(accountKey);
     final existingFuture = _inFlightSyncs[effectiveKey];
     if (existingFuture != null) {
-      return existingFuture;
+      if (!force) {
+        return existingFuture;
+      }
+      final firstResult = await existingFuture;
+      final retryChanged = await syncAccount(
+        accountKey,
+        progressService: progressService,
+        force: true,
+      );
+      return firstResult || retryChanged;
     }
 
     final lastSync = _lastSyncAt[effectiveKey];
@@ -489,11 +505,12 @@ class CloudProgressSyncService {
       return false;
     }
 
+    final effectiveProgressService =
+        progressService ?? PlaybackProgressService(prefs: _customPrefs);
     final future = _runSyncAccount(
       accountKey: accountKey,
       effectiveKey: effectiveKey,
-      progressService:
-          progressService ?? PlaybackProgressService(prefs: _customPrefs),
+      progressService: effectiveProgressService,
     );
     _inFlightSyncs[effectiveKey] = future;
     try {
@@ -513,10 +530,12 @@ class CloudProgressSyncService {
     try {
       final syncId = buildSyncId(effectiveKey);
 
-      // 1. Consolidar estado local ativo + ledger persistido
+      // 1. Consolidar estado local ativo + ledger persistido (isolado pelo effectiveKey capturado)
       final localMap = await _loadLedger(effectiveKey);
-      final activeItems =
-          await progressService.getContinueWatchingList(accountKey: accountKey);
+      final activeItems = await progressService.getContinueWatchingList(
+        accountKey: accountKey,
+        effectiveAccountKeyOverride: effectiveKey,
+      );
       for (final active in activeItems) {
         final k = buildItemKey(active);
         final prev = localMap[k];
@@ -574,6 +593,7 @@ class CloudProgressSyncService {
             await progressService.applySyncedItem(
               accountKey: accountKey,
               item: winner,
+              effectiveAccountKeyOverride: effectiveKey,
             );
             localChanged = true;
           }
@@ -586,6 +606,7 @@ class CloudProgressSyncService {
           await progressService.applySyncedItem(
             accountKey: accountKey,
             item: remoteItem,
+            effectiveAccountKeyOverride: effectiveKey,
           );
           localChanged = true;
         } else if (localItem != null) {
@@ -617,21 +638,6 @@ class CloudProgressSyncService {
     ContinueWatchingItem remote,
     ContinueWatchingItem winner,
   ) {
-    final localReset = local.manualResetAt;
-    final remoteReset = remote.manualResetAt;
-    if (localReset != null &&
-        localReset.isAfter(remote.updatedAt) &&
-        (remoteReset == null || localReset.isAfter(remoteReset))) {
-      return false;
-    }
-    if (remoteReset != null &&
-        remoteReset.isAfter(local.updatedAt) &&
-        (localReset == null || remoteReset.isAfter(localReset))) {
-      return _itemsDifferSignificantly(local, winner);
-    }
-    if (PlaybackProgressService.compareAdvancement(local, remote) >= 0) {
-      return false;
-    }
     return _itemsDifferSignificantly(local, winner);
   }
 
@@ -643,7 +649,10 @@ class CloudProgressSyncService {
         (baseline.seasonNumber ?? 1) != (candidate.seasonNumber ?? 1) ||
         (baseline.episodeNum ?? 1) != (candidate.episodeNum ?? 1) ||
         baseline.isCompleted != candidate.isCompleted ||
-        baseline.manualResetAt != candidate.manualResetAt) {
+        baseline.manualResetAt != candidate.manualResetAt ||
+        baseline.hiddenFromHomeAt != candidate.hiddenFromHomeAt ||
+        baseline.completedAt != candidate.completedAt ||
+        baseline.historyClearedAt != candidate.historyClearedAt) {
       return true;
     }
     return (baseline.position.inMilliseconds - candidate.position.inMilliseconds)

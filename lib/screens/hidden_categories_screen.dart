@@ -41,10 +41,17 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
   @override
   void initState() {
     super.initState();
+    HiddenCategoriesService.instance.init().then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
     _searchController.addListener(() {
-      setState(() {
-        _searchQuery = _searchController.text.trim().toLowerCase();
-      });
+      if (mounted) {
+        setState(() {
+          _searchQuery = _searchController.text.trim().toLowerCase();
+        });
+      }
     });
   }
 
@@ -98,8 +105,8 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
 
     if (confirmed == true) {
       await HiddenCategoriesService.instance.restoreAll(widget.scopeKey);
-      setState(() {});
       if (mounted) {
+        setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Todas as categorias foram restauradas como visíveis.'),
@@ -117,7 +124,9 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
     const accent = Color(0xFF00E5FF);
     final hiddenSet = HiddenCategoriesService.instance.getHiddenCategories(widget.scopeKey);
     final totalCount = widget.categories.length;
-    final hiddenCount = hiddenSet.length;
+    final hiddenCount = widget.categories
+        .where((cat) => hiddenSet.contains(cat.id) || hiddenSet.contains(cat.name))
+        .length;
     final filtered = _filteredCategories;
 
     return Scaffold(
@@ -265,7 +274,9 @@ class _HiddenCategoriesScreenState extends State<HiddenCategoriesScreen> {
                               await HiddenCategoriesService.instance.setHidden(widget.scopeKey, cat.name, true);
                             }
                           }
-                          setState(() {});
+                          if (mounted) {
+                            setState(() {});
+                          }
                         },
                       );
                     },

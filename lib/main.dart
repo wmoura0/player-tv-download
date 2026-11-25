@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'models/managed_account.dart';
 import 'models/xtream_account.dart';
 import 'models/xtream_catalog.dart';
 import 'models/xtream_series_info.dart';
@@ -24,6 +25,7 @@ import 'services/pin_service.dart';
 import 'services/playback_progress_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/settings_service.dart';
+import 'services/smart_source_resolver.dart';
 import 'services/user_profile_service.dart';
 import 'services/xtream_catalog_service.dart';
 import 'theme/app_colors.dart';
@@ -102,10 +104,19 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final PlaybackProgressService _progressService = PlaybackProgressService();
   final ScrollController _scrollController = ScrollController();
+  final FocusScopeNode _categoriesScopeNode =
+      FocusScopeNode(debugLabel: 'HomeCategoriesScope');
+  final List<FocusNode> _cwCardFocusNodes = [];
+  int _lastFocusedCwIndex = 0;
 
   List<ContinueWatchingItem> _continuarAssistindo = [];
   List<XtreamVodStream> _recentMovies = [];
   List<XtreamSeriesItem> _recentSeries = [];
+
+  XtreamAccount? _activeAccount;
+  String? _lastManagedAccountId;
+  String _lastProfileId = '';
+  int _homeLoadGeneration = 0;
 
   XtreamCatalogService? _sharedCatalogService;
   String _accountKey = '';
@@ -117,6 +128,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _activeAccount = widget.xtreamAccount;
+    _lastManagedAccountId = AccountManagerService.instance.currentAccount?.id;
+    _lastProfileId = UserProfileService.instance.currentProfile.id;
+    AccountManagerService.instance.addListener(_onAccountOrProfileChanged);
+    UserProfileService.instance.addListener(_onAccountOrProfileChanged);
     _loadHomeData();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -127,10 +143,69 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _homeLoadGeneration++;
     WidgetsBinding.instance.removeObserver(this);
+    AccountManagerService.instance.removeListener(_onAccountOrProfileChanged);
+    UserProfileService.instance.removeListener(_onAccountOrProfileChanged);
     _sharedCatalogService?.removeListener(_onCatalogServiceUpdated);
+    for (final n in _cwCardFocusNodes) {
+      n.dispose();
+    }
+    _cwCardFocusNodes.clear();
+    _categoriesScopeNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _syncCwFocusNodesCount(int count) {
+    while (_cwCardFocusNodes.length < count) {
+      _cwCardFocusNodes.add(
+        FocusNode(debugLabel: 'ContinueWatchingCard_${_cwCardFocusNodes.length}'),
+      );
+    }
+    while (_cwCardFocusNodes.length > count) {
+      _cwCardFocusNodes.removeLast().dispose();
+    }
+  }
+
+  void _onAccountOrProfileChanged() {
+    if (!mounted) return;
+    final managed = AccountManagerService.instance.currentAccount;
+    final currentProfId = UserProfileService.instance.currentProfile.id;
+
+    final accountChanged =
+        managed != null && managed.id != _lastManagedAccountId;
+    final profileChanged = currentProfId != _lastProfileId;
+
+    if (!accountChanged && !profileChanged) return;
+
+    _lastManagedAccountId = managed?.id ?? _lastManagedAccountId;
+    _lastProfileId = currentProfId;
+    _homeLoadGeneration++;
+
+    if (accountChanged) {
+      _activeAccount = managed.type == AccountType.xtream
+          ? XtreamAccount(
+              serverUrl: managed.serverUrl,
+              username: managed.username ?? '',
+              isAuthorized: true,
+              status: 'Ativo',
+            )
+          : null;
+      _accountKey = managed.type == AccountType.xtream &&
+              (managed.username?.isNotEmpty ?? false)
+          ? PlaybackProgressService.buildAccountKey(
+              managed.serverUrl,
+              managed.username!,
+            )
+          : managed.id;
+      _sharedCatalogService?.removeListener(_onCatalogServiceUpdated);
+      _sharedCatalogService?.clearCache();
+      _sharedCatalogService = null;
+      SmartSourceResolver.instance.clearCache();
+      FavoritesService.instance.clearMemoryCache();
+    }
+    unawaited(_loadHomeData());
   }
 
   @override
@@ -139,14 +214,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       OtaUpdateService.instance.onAppResumed();
       final route = ModalRoute.of(context);
       if (_accountKey.isNotEmpty && (route == null || route.isCurrent)) {
-        _syncContinueWatchingInBackground();
+        _syncContinueWatchingInBackground(_homeLoadGeneration);
       }
     }
   }
 
   void _onCatalogServiceUpdated() {
     if (mounted) {
-      _loadRecentCachedMedia();
+      _loadRecentCachedMedia(_homeLoadGeneration);
     }
   }
 
@@ -154,10 +229,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_sharedCatalogService != null || _isInitializingCatalog) return;
     _isInitializingCatalog = true;
     try {
-      if (widget.xtreamAccount != null) {
+      final account = _activeAccount;
+      if (account != null) {
         _accountKey = PlaybackProgressService.buildAccountKey(
-          widget.xtreamAccount!.serverUrl,
-          widget.xtreamAccount!.username,
+          account.serverUrl,
+          account.username,
         );
         final storage = SecureStorageService();
         String? pass = await storage.getPassword().timeout(
@@ -169,15 +245,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (managed != null &&
               managed.password != null &&
               managed.password!.isNotEmpty &&
-              managed.username == widget.xtreamAccount!.username) {
+              managed.username == account.username) {
             pass = managed.password;
           }
         }
         if (!mounted) return;
         if (pass != null && pass.isNotEmpty) {
           _sharedCatalogService = XtreamCatalogService(
-            serverUrl: widget.xtreamAccount!.serverUrl,
-            username: widget.xtreamAccount!.username,
+            serverUrl: account.serverUrl,
+            username: account.username,
             password: pass,
           );
           _sharedCatalogService!.addListener(_onCatalogServiceUpdated);
@@ -195,13 +271,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadHomeData() async {
+    final gen = ++_homeLoadGeneration;
     await _initSharedCatalogService();
+    if (!mounted || gen != _homeLoadGeneration) return;
 
     if (_accountKey.isNotEmpty) {
       await _progressService.reconcileOrphanedSeriesContinueWatching(
         accountKey: _accountKey,
-        getCachedSeriesInfo: (seriesId) async =>
-            await _sharedCatalogService?.getCachedSeriesInfo(seriesId),
+        getCachedSeriesInfo: (seriesId) async {
+          final expectedName =
+              _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.name;
+          return await _sharedCatalogService?.getCachedSeriesInfo(
+            seriesId,
+            expectedSeriesName: expectedName,
+          );
+        },
         getSeriesTitleSync: (seriesId) =>
             _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.name,
         getSeriesCoverSync: (seriesId) =>
@@ -209,56 +293,60 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         getSeriesCategoryIdSync: (seriesId) =>
             _sharedCatalogService?.findCachedSeriesByIdSync(seriesId)?.categoryId,
       );
+      if (!mounted || gen != _homeLoadGeneration) return;
       final items = await _progressService.getContinueWatchingList(accountKey: _accountKey);
-      if (mounted) {
-        setState(() {
-          _continuarAssistindo = items;
-        });
-      }
-      _syncContinueWatchingInBackground();
+      if (!mounted || gen != _homeLoadGeneration) return;
+      setState(() {
+        _continuarAssistindo = items;
+        _syncCwFocusNodesCount(items.length);
+      });
+      _syncContinueWatchingInBackground(gen);
     } else {
-      if (mounted) {
+      if (mounted && gen == _homeLoadGeneration) {
         setState(() {
           _continuarAssistindo = [];
+          _syncCwFocusNodesCount(0);
         });
       }
     }
 
-    await _loadRecentCachedMedia();
+    await _loadRecentCachedMedia(gen);
   }
 
-  void _syncContinueWatchingInBackground() {
+  void _syncContinueWatchingInBackground(int expectedGen) {
     if (_accountKey.isEmpty) return;
+    final keySnapshot = _accountKey;
     unawaited(
       CloudProgressSyncService.instance
-          .syncAccount(_accountKey, progressService: _progressService)
+          .syncAccount(keySnapshot, progressService: _progressService)
           .then((changed) async {
-        if (changed && mounted) {
-          final refreshed = await _progressService.getContinueWatchingList(
-            accountKey: _accountKey,
-          );
-          if (mounted) {
-            setState(() {
-              _continuarAssistindo = refreshed;
-            });
-          }
+        if (!changed || !mounted || expectedGen != _homeLoadGeneration) return;
+        final refreshed = await _progressService.getContinueWatchingList(
+          accountKey: keySnapshot,
+        );
+        if (mounted && expectedGen == _homeLoadGeneration) {
+          setState(() {
+            _continuarAssistindo = refreshed;
+            _syncCwFocusNodesCount(refreshed.length);
+          });
         }
       }).catchError((_) {}),
     );
   }
 
-  Future<void> _loadRecentCachedMedia() async {
+  Future<void> _loadRecentCachedMedia(int expectedGen) async {
+    if (!mounted || expectedGen != _homeLoadGeneration) return;
     if (_sharedCatalogService != null) {
       final movies = await _sharedCatalogService!.getRecentMovies(limit: 5);
       final series = await _sharedCatalogService!.getRecentSeries(limit: 5);
-      if (mounted) {
+      if (mounted && expectedGen == _homeLoadGeneration) {
         setState(() {
           _recentMovies = movies;
           _recentSeries = series;
         });
       }
     } else {
-      if (mounted) {
+      if (mounted && expectedGen == _homeLoadGeneration) {
         setState(() {
           _recentMovies = [];
           _recentSeries = [];
@@ -268,11 +356,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<XtreamCatalogService?> _getOrInitCatalogService() async {
-    if (widget.xtreamAccount == null) return null;
+    final account = _activeAccount;
+    if (account == null) return null;
     if (_accountKey.isEmpty) {
       _accountKey = PlaybackProgressService.buildAccountKey(
-        widget.xtreamAccount!.serverUrl,
-        widget.xtreamAccount!.username,
+        account.serverUrl,
+        account.username,
       );
     }
     if (_sharedCatalogService != null) return _sharedCatalogService;
@@ -300,24 +389,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (managed != null &&
           managed.password != null &&
           managed.password!.isNotEmpty &&
-          managed.username == widget.xtreamAccount!.username) {
+          managed.username == account.username) {
         pass = managed.password;
       }
     }
 
     if (pass != null && pass.isNotEmpty) {
       _sharedCatalogService = XtreamCatalogService(
-        serverUrl: widget.xtreamAccount!.serverUrl,
-        username: widget.xtreamAccount!.username,
+        serverUrl: account.serverUrl,
+        username: account.username,
         password: pass,
       );
+      _sharedCatalogService!.addListener(_onCatalogServiceUpdated);
     }
     return _sharedCatalogService;
   }
 
   Future<void> _onCategorySelected(String categoryTitle) async {
     final service = await _getOrInitCatalogService();
-    final isXtream = widget.xtreamAccount != null && service != null;
+    final isXtream = _activeAccount != null && service != null;
 
     if (!mounted) return;
 
@@ -433,28 +523,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         // Extrai com segurança número da temporada e do episódio com regex multi-formato
         int? season = item.seasonNumber;
         int? epNum = item.episodeNum;
-        if ((season == null || epNum == null) && item.subtitle != null) {
-          final sub = item.subtitle!.trim();
-          final regExp1 = RegExp(r'(?:[sStT]|temp|temporada)[\s.:xX\-]*(\d+)[\s.,:xXeE\-_|•]+(?:[eE]|ep|episodio|episódio)?[\s.:xX\-]*(\d+)', caseSensitive: false);
-          final regExp2 = RegExp(r'(\d+)[\s]*[xX][\s]*(\d+)');
-          final regExp3 = RegExp(r'(?:[eE]|ep|episodio|episódio)[\s.:xX\-]*(\d+)', caseSensitive: false);
-
-          final match1 = regExp1.firstMatch(sub);
-          if (match1 != null) {
-            season ??= int.tryParse(match1.group(1)!);
-            epNum ??= int.tryParse(match1.group(2)!);
-          } else {
-            final match2 = regExp2.firstMatch(sub);
-            if (match2 != null) {
-              season ??= int.tryParse(match2.group(1)!);
-              epNum ??= int.tryParse(match2.group(2)!);
-            } else {
-              final match3 = regExp3.firstMatch(sub);
-              if (match3 != null) {
-                epNum ??= int.tryParse(match3.group(1)!);
-              }
-            }
-          }
+        if (season == null || epNum == null) {
+          final parsed = PlaybackProgressService.parseSeasonEpisodeFromSubtitle(
+            item.subtitle,
+          );
+          season ??= parsed.$1;
+          epNum ??= parsed.$2;
         }
         season ??= 1;
         epNum ??= 1;
@@ -483,11 +557,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           categoryId: item.categoryId ?? '0',
         );
 
-        // Consulta instantânea apenas em memória/disco (sem espera de rede na Home).
-        // Caso o ID ou série precisem de hidratação/recuperação, o SeriesPlayerScreen resolve em paralelo.
+        // Consulta instantânea apenas em memória/disco COM verificação estrita de identidade.
         XtreamSeriesInfo? info;
         try {
-          final candidateInfo = await service.getCachedSeriesInfo(effectiveSeriesId);
+          final candidateInfo = await service.getCachedSeriesInfo(
+            effectiveSeriesId,
+            expectedSeriesName: item.title,
+          );
           if (candidateInfo != null && !candidateInfo.isOrphanedOrStub) {
             info = candidateInfo;
           }
@@ -650,7 +726,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
-          xtreamAccount: widget.xtreamAccount,
+          xtreamAccount: _activeAccount,
           catalogService: service,
         ),
       ),
@@ -663,7 +739,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => FavoritesScreen(
-          xtreamAccount: widget.xtreamAccount,
+          xtreamAccount: _activeAccount,
           catalogService: service,
         ),
       ),
@@ -769,7 +845,103 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _confirmRemoveContinueWatching(ContinueWatchingItem item) async {
+  void _restoreFocusAfterCwRemoval(int removedIndex) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_continuarAssistindo.isNotEmpty && _cwCardFocusNodes.isNotEmpty) {
+        final targetIdx = removedIndex.clamp(0, _cwCardFocusNodes.length - 1);
+        final node = _cwCardFocusNodes[targetIdx];
+        if (node.canRequestFocus) {
+          node.requestFocus();
+          return;
+        }
+      }
+      _categoriesScopeNode.requestFocus();
+    });
+  }
+
+  Future<void> _applyContinueWatchingRemovalAction(
+    ContinueWatchingItem item, {
+    required _ContinueWatchingAction action,
+    int? removedIndex,
+    String? feedbackMessage,
+  }) async {
+    final id = (item.type == ContinueWatchingType.movie)
+        ? item.streamId
+        : (item.seriesId ?? item.streamId);
+    final idx = removedIndex ??
+        _continuarAssistindo.indexWhere(
+          (cw) => cw.streamId == item.streamId && cw.type == item.type,
+        );
+
+    setState(() {
+      _continuarAssistindo.removeWhere(
+        (cw) => cw.streamId == item.streamId && cw.type == item.type,
+      );
+      _syncCwFocusNodesCount(_continuarAssistindo.length);
+    });
+
+    if (idx >= 0) {
+      _restoreFocusAfterCwRemoval(idx);
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            feedbackMessage ?? '"${item.title}" removido de Continuar assistindo.',
+            style: const TextStyle(color: AppColors.textPrimary),
+          ),
+          backgroundColor: AppColors.surfaceSecondary,
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: AppColors.focusCyan, width: 1),
+          ),
+        ),
+      );
+    }
+
+    switch (action) {
+      case _ContinueWatchingAction.hide:
+        await _progressService.hideContinueWatchingItem(
+          accountKey: _accountKey,
+          type: item.type,
+          id: id,
+        );
+        break;
+      case _ContinueWatchingAction.reset:
+        await _progressService.resetPlaybackProgress(
+          accountKey: _accountKey,
+          type: item.type,
+          id: id,
+        );
+        break;
+      case _ContinueWatchingAction.complete:
+        await _progressService.markContinueWatchingCompleted(
+          accountKey: _accountKey,
+          type: item.type,
+          id: id,
+        );
+        break;
+      case _ContinueWatchingAction.clearHistory:
+        await _progressService.clearItemWatchHistory(
+          accountKey: _accountKey,
+          type: item.type,
+          id: id,
+        );
+        break;
+    }
+
+    await _loadHomeData();
+  }
+
+  Future<void> _confirmRemoveContinueWatching(
+    ContinueWatchingItem item, {
+    int? index,
+  }) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) {
@@ -840,48 +1012,232 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
 
     if (confirmed == true && mounted) {
-      final id = (item.type == ContinueWatchingType.movie)
-          ? item.streamId
-          : (item.seriesId ?? item.streamId);
+      await _applyContinueWatchingRemovalAction(
+        item,
+        action: _ContinueWatchingAction.hide,
+        removedIndex: index,
+        feedbackMessage: '"${item.title}" removido de Continuar assistindo.',
+      );
+    }
+  }
 
-      // Atualiza a interface e exibe o feedback imediatamente
-      setState(() {
-        _continuarAssistindo.removeWhere(
-          (cw) => cw.streamId == item.streamId && cw.type == item.type,
-        );
-      });
-
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '"${item.title}" removido de Continuar assistindo.',
-            style: const TextStyle(color: AppColors.textPrimary),
-          ),
-          backgroundColor: AppColors.surfaceSecondary,
-          duration: const Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-            side: const BorderSide(color: AppColors.focusCyan, width: 1),
+  Future<bool> _showSecondaryConfirmDialog({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    Color confirmColor = AppColors.primary,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.borderSubtle, width: 1),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
           ),
         ),
-      );
+        content: Text(
+          message,
+          style: const TextStyle(
+            fontSize: 14,
+            color: AppColors.textSecondary,
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: confirmColor,
+              foregroundColor: confirmColor == AppColors.primary
+                  ? Colors.black
+                  : Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
 
-      await _progressService.removeContinueWatchingItem(
-        accountKey: _accountKey,
-        type: item.type,
-        id: id,
-      );
+  Future<void> _showContinueWatchingOptionsDialog(
+    ContinueWatchingItem item, {
+    int? index,
+  }) async {
+    final selectedAction = await showDialog<_ContinueWatchingAction>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.surfaceSecondary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: AppColors.borderSubtle, width: 1),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.tune_rounded, color: AppColors.focusCyan, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  item.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _CwActionOptionTile(
+                  autofocus: true,
+                  icon: Icons.visibility_off_outlined,
+                  iconColor: AppColors.focusCyan,
+                  title: 'Ocultar da Home',
+                  subtitle: 'Remove o card sem apagar onde você parou',
+                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.hide),
+                ),
+                const SizedBox(height: 6),
+                _CwActionOptionTile(
+                  icon: Icons.replay_rounded,
+                  iconColor: const Color(0xFFFFB74D),
+                  title: 'Reiniciar reprodução',
+                  subtitle: 'Volta a reprodução para o início (00:00)',
+                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.reset),
+                ),
+                const SizedBox(height: 6),
+                _CwActionOptionTile(
+                  icon: Icons.check_circle_outline_rounded,
+                  iconColor: const Color(0xFF4CAF50),
+                  title: 'Marcar como concluído',
+                  subtitle: 'Registra este título como já assistido',
+                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.complete),
+                ),
+                const SizedBox(height: 6),
+                _CwActionOptionTile(
+                  icon: Icons.delete_forever_outlined,
+                  iconColor: AppColors.error,
+                  title: 'Apagar histórico',
+                  subtitle: 'Exclui todo o histórico salvo deste título',
+                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.clearHistory),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text(
+                'Fechar',
+                style: TextStyle(color: AppColors.textSecondary),
+              ),
+            ),
+          ],
+        );
+      },
+    );
 
-      await _loadHomeData();
+    if (selectedAction == null || !mounted) return;
+
+    switch (selectedAction) {
+      case _ContinueWatchingAction.hide:
+        final confirmed = await _showSecondaryConfirmDialog(
+          title: 'Ocultar da Home',
+          message:
+              'Deseja ocultar "${item.title}" da seção Continuar assistindo?\n\nSeu progresso continua salvo e voltará apenas se você reproduzir novamente.',
+          confirmLabel: 'Ocultar',
+          confirmColor: AppColors.primary,
+        );
+        if (!confirmed || !mounted) return;
+        await _applyContinueWatchingRemovalAction(
+          item,
+          action: _ContinueWatchingAction.hide,
+          removedIndex: index,
+          feedbackMessage: '"${item.title}" ocultado de Continuar assistindo.',
+        );
+        break;
+      case _ContinueWatchingAction.reset:
+        final confirmed = await _showSecondaryConfirmDialog(
+          title: 'Reiniciar reprodução',
+          message:
+              'Deseja reiniciar "${item.title}" do começo e zerar a posição atual?',
+          confirmLabel: 'Reiniciar',
+          confirmColor: const Color(0xFFFFB74D),
+        );
+        if (!confirmed || !mounted) return;
+        await _applyContinueWatchingRemovalAction(
+          item,
+          action: _ContinueWatchingAction.reset,
+          removedIndex: index,
+          feedbackMessage: 'Progresso de "${item.title}" reiniciado.',
+        );
+        break;
+      case _ContinueWatchingAction.complete:
+        final confirmed = await _showSecondaryConfirmDialog(
+          title: 'Marcar como concluído',
+          message:
+              'Deseja marcar "${item.title}" como concluído?',
+          confirmLabel: 'Concluir',
+          confirmColor: const Color(0xFF4CAF50),
+        );
+        if (!confirmed || !mounted) return;
+        await _applyContinueWatchingRemovalAction(
+          item,
+          action: _ContinueWatchingAction.complete,
+          removedIndex: index,
+          feedbackMessage: '"${item.title}" marcado como concluído.',
+        );
+        break;
+      case _ContinueWatchingAction.clearHistory:
+        final confirmed = await _showSecondaryConfirmDialog(
+          title: 'Apagar histórico',
+          message:
+              'Atenção: isso apagará permanentemente todo o histórico salvo de "${item.title}" nesta conta e perfil.',
+          confirmLabel: 'Apagar histórico',
+          confirmColor: AppColors.error,
+        );
+        if (!confirmed || !mounted) return;
+        await _applyContinueWatchingRemovalAction(
+          item,
+          action: _ContinueWatchingAction.clearHistory,
+          removedIndex: index,
+          feedbackMessage: 'Histórico de "${item.title}" apagado.',
+        );
+        break;
     }
   }
 
   void _onLogout() {
+    _homeLoadGeneration++;
     _sharedCatalogService?.removeListener(_onCatalogServiceUpdated);
     _sharedCatalogService?.clearCache();
+    _sharedCatalogService?.dispose();
     _sharedCatalogService = null;
+    SmartSourceResolver.instance.clearCache();
+    FavoritesService.instance.clearMemoryCache();
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (context) => const XtreamLoginScreen(autoLogin: false),
@@ -953,7 +1309,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         vertical: 12.0,
                       ),
                       child: _AppHeader(
-                        xtreamAccount: widget.xtreamAccount,
+                        xtreamAccount: _activeAccount,
                         onSearchTap: _onSearchPressed,
                         onProfileTap: _onProfilePressed,
                         onSettingsTap: _onSettingsPressed,
@@ -978,10 +1334,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         horizontal: horizontalPadding,
                         vertical: 8.0,
                       ),
-                      child: _MainCategoriesSection(
-                        isLandscape: isLandscape,
-                        onCategoryTap: _onCategorySelected,
-                        liveCount: _sharedCatalogService?.totalLiveCount,
+                      child: FocusScope(
+                        node: _categoriesScopeNode,
+                        child: _MainCategoriesSection(
+                          isLandscape: isLandscape,
+                          onCategoryTap: _onCategorySelected,
+                          liveCount: _sharedCatalogService?.totalLiveCount,
+                        ),
                       ),
                     ),
                   ),
@@ -993,8 +1352,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         items: _continuarAssistindo,
                         isLandscape: isLandscape,
                         horizontalPadding: horizontalPadding,
+                        itemFocusNodes: _cwCardFocusNodes,
+                        onFocusedIndexChanged: (idx) => _lastFocusedCwIndex = idx,
                         onItemTap: _onSelectContinueWatching,
-                        onItemDelete: _confirmRemoveContinueWatching,
+                        onItemDelete: (item, idx) =>
+                            _confirmRemoveContinueWatching(item, index: idx),
+                        onItemOptions: (item, idx) =>
+                            _showContinueWatchingOptionsDialog(item, index: idx),
+                        onHeaderOptionsTap: () {
+                          if (_continuarAssistindo.isEmpty) return;
+                          final safeIdx = _lastFocusedCwIndex
+                              .clamp(0, _continuarAssistindo.length - 1);
+                          _showContinueWatchingOptionsDialog(
+                            _continuarAssistindo[safeIdx],
+                            index: safeIdx,
+                          );
+                        },
                       ),
                     ),
 
@@ -1040,7 +1413,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         vertical: 12.0,
                       ),
                       child: _AppFooterStatus(
-                        xtreamAccount: widget.xtreamAccount,
+                        xtreamAccount: _activeAccount,
                       ),
                     ),
                   ),
@@ -1415,20 +1788,119 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
   }
 }
 
+enum _ContinueWatchingAction {
+  hide,
+  reset,
+  complete,
+  clearHistory,
+}
+
+class _CwActionOptionTile extends StatefulWidget {
+  final bool autofocus;
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _CwActionOptionTile({
+    this.autofocus = false,
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  State<_CwActionOptionTile> createState() => _CwActionOptionTileState();
+}
+
+class _CwActionOptionTileState extends State<_CwActionOptionTile> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
+      actions: DeviceUtils.activateAction(widget.onTap),
+      onShowFocusHighlight: (v) => setState(() => _focused = v),
+      child: Material(
+        color: _focused
+            ? AppColors.focusCyan.withValues(alpha: 0.16)
+            : AppColors.background.withValues(alpha: 0.45),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(
+            color: _focused ? AppColors.focusCyan : AppColors.borderSubtle,
+            width: _focused ? 2 : 1,
+          ),
+        ),
+        child: InkWell(
+          canRequestFocus: false,
+          borderRadius: BorderRadius.circular(10),
+          onTap: widget.onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Icon(widget.icon, color: widget.iconColor, size: 22),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.subtitle,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Seção horizontal de "Continuar assistindo", exibida somente quando há conteúdo real.
 class _ContinueWatchingSection extends StatelessWidget {
   final List<ContinueWatchingItem> items;
   final bool isLandscape;
   final double horizontalPadding;
+  final List<FocusNode> itemFocusNodes;
+  final ValueChanged<int> onFocusedIndexChanged;
   final ValueChanged<ContinueWatchingItem> onItemTap;
-  final ValueChanged<ContinueWatchingItem> onItemDelete;
+  final void Function(ContinueWatchingItem item, int index) onItemDelete;
+  final void Function(ContinueWatchingItem item, int index) onItemOptions;
+  final VoidCallback onHeaderOptionsTap;
 
   const _ContinueWatchingSection({
     required this.items,
     required this.isLandscape,
     required this.horizontalPadding,
+    required this.itemFocusNodes,
+    required this.onFocusedIndexChanged,
     required this.onItemTap,
     required this.onItemDelete,
+    required this.onItemOptions,
+    required this.onHeaderOptionsTap,
   });
 
   @override
@@ -1464,6 +1936,8 @@ class _ContinueWatchingSection extends StatelessWidget {
                 ),
               ),
               const Spacer(),
+              _CwHeaderOptionsButton(onTap: onHeaderOptionsTap),
+              const SizedBox(width: 10),
               Text(
                 '${items.length} ${items.length == 1 ? 'item' : 'itens'}',
                 style: const TextStyle(
@@ -1482,12 +1956,18 @@ class _ContinueWatchingSection extends StatelessWidget {
               separatorBuilder: (_, _) => const SizedBox(width: 12),
               itemBuilder: (context, index) {
                 final item = items[index];
+                final node = index < itemFocusNodes.length
+                    ? itemFocusNodes[index]
+                    : null;
                 return _ContinueWatchingCard(
                   item: item,
+                  focusNode: node,
                   width: cardWidth,
                   height: cardHeight,
+                  onFocused: () => onFocusedIndexChanged(index),
                   onTap: () => onItemTap(item),
-                  onDelete: () => onItemDelete(item),
+                  onDelete: () => onItemDelete(item, index),
+                  onOptions: () => onItemOptions(item, index),
                 );
               },
             ),
@@ -1498,20 +1978,85 @@ class _ContinueWatchingSection extends StatelessWidget {
   }
 }
 
+class _CwHeaderOptionsButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _CwHeaderOptionsButton({required this.onTap});
+
+  @override
+  State<_CwHeaderOptionsButton> createState() => _CwHeaderOptionsButtonState();
+}
+
+class _CwHeaderOptionsButtonState extends State<_CwHeaderOptionsButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
+      actions: DeviceUtils.activateAction(widget.onTap),
+      onShowFocusHighlight: (v) => setState(() => _focused = v),
+      child: Material(
+        color: _focused
+            ? AppColors.focusCyan.withValues(alpha: 0.2)
+            : AppColors.surfaceSecondary.withValues(alpha: 0.8),
+        shape: StadiumBorder(
+          side: BorderSide(
+            color: _focused ? AppColors.focusCyan : AppColors.borderSubtle,
+            width: _focused ? 2 : 1,
+          ),
+        ),
+        child: InkWell(
+          canRequestFocus: false,
+          onTap: widget.onTap,
+          customBorder: const StadiumBorder(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.tune_rounded,
+                  size: 13,
+                  color: _focused ? AppColors.focusCyan : const Color(0xFF94A3B8),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'Opções',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _focused ? AppColors.focusCyan : const Color(0xFFCBD5E1),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Card compacto para o carrossel de Continuar Assistindo.
 class _ContinueWatchingCard extends StatefulWidget {
   final ContinueWatchingItem item;
+  final FocusNode? focusNode;
   final double width;
   final double height;
+  final VoidCallback? onFocused;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onOptions;
 
   const _ContinueWatchingCard({
     required this.item,
+    this.focusNode,
     required this.width,
     required this.height,
+    this.onFocused,
     required this.onTap,
     required this.onDelete,
+    required this.onOptions,
   });
 
   @override
@@ -1521,53 +2066,147 @@ class _ContinueWatchingCard extends StatefulWidget {
 class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
   bool _isFocused = false;
   bool _isHovered = false;
+  bool _okKeyDown = false;
+  bool _okLongPressTriggered = false;
+  int _okRepeatCount = 0;
+  Timer? _okHoldTimer;
+
+  @override
+  void dispose() {
+    _okHoldTimer?.cancel();
+    super.dispose();
+  }
+
+  void _cancelOkHold() {
+    _okHoldTimer?.cancel();
+    _okHoldTimer = null;
+    _okKeyDown = false;
+    _okLongPressTriggered = false;
+    _okRepeatCount = 0;
+  }
+
+  bool _isSelectKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA;
+  }
+
+  bool _isOptionsKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.contextMenu ||
+        key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.f1 ||
+        key == LogicalKeyboardKey.gameButtonX ||
+        key == LogicalKeyboardKey.delete ||
+        key == LogicalKeyboardKey.backspace;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (_isOptionsKey(key)) {
+      if (event is KeyDownEvent) {
+        _cancelOkHold();
+        widget.onOptions();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (_isSelectKey(key)) {
+      if (event is KeyDownEvent) {
+        _cancelOkHold();
+        _okKeyDown = true;
+        _okHoldTimer = Timer(const Duration(milliseconds: 550), () {
+          if (mounted && _okKeyDown && !_okLongPressTriggered) {
+            _okLongPressTriggered = true;
+            _okKeyDown = false;
+            widget.onOptions();
+          }
+        });
+        return KeyEventResult.handled;
+      } else if (event is KeyRepeatEvent) {
+        if (_okKeyDown && !_okLongPressTriggered) {
+          _okRepeatCount++;
+          if (_okRepeatCount >= 2) {
+            _okLongPressTriggered = true;
+            _okKeyDown = false;
+            _okHoldTimer?.cancel();
+            widget.onOptions();
+          }
+        }
+        return KeyEventResult.handled;
+      } else if (event is KeyUpEvent) {
+        final shouldTap = _okKeyDown && !_okLongPressTriggered;
+        _cancelOkHold();
+        if (shouldTap) {
+          widget.onTap();
+        }
+        return KeyEventResult.handled;
+      }
+    }
+
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
     final isSeries = widget.item.type == ContinueWatchingType.series;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.activateAction(widget.onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
-        duration: const Duration(milliseconds: 160),
-        child: Container(
-          width: widget.width,
-          height: widget.height,
-          decoration: BoxDecoration(
-            color: AppColors.surfaceSecondary,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
-              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
-            ),
-            boxShadow: isHighlighted
-                ? [
-                    BoxShadow(
-                      color: AppColors.focusCyan.withValues(alpha: 0.25),
-                      blurRadius: 12,
-                      offset: const Offset(0, 3),
-                    ),
-                  ]
-                : const [
-                    BoxShadow(
-                      color: Color(0x33000000),
-                      blurRadius: 6,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              canRequestFocus: false,
-              onTap: widget.onTap,
+    return Focus(
+      focusNode: widget.focusNode,
+      onFocusChange: (focused) {
+        if (!focused) {
+          _cancelOkHold();
+        } else {
+          widget.onFocused?.call();
+        }
+        if (mounted) {
+          setState(() => _isFocused = focused);
+        }
+      },
+      onKeyEvent: _handleKeyEvent,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: AnimatedScale(
+          scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
+          duration: const Duration(milliseconds: 160),
+          child: Container(
+            width: widget.width,
+            height: widget.height,
+            decoration: BoxDecoration(
+              color: AppColors.surfaceSecondary,
               borderRadius: BorderRadius.circular(12),
-              child: Stack(
+              border: Border.all(
+                color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+                width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
+              ),
+              boxShadow: isHighlighted
+                  ? [
+                      BoxShadow(
+                        color: AppColors.focusCyan.withValues(alpha: 0.25),
+                        blurRadius: 12,
+                        offset: const Offset(0, 3),
+                      ),
+                    ]
+                  : const [
+                      BoxShadow(
+                        color: Color(0x33000000),
+                        blurRadius: 6,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                canRequestFocus: false,
+                onTap: widget.onTap,
+                onLongPress: widget.onOptions,
+                borderRadius: BorderRadius.circular(12),
+                child: Stack(
                 children: [
                   // Imagem de fundo ou gradiente fallback
                   if (widget.item.coverUrl != null && widget.item.coverUrl!.isNotEmpty)
@@ -1708,6 +2347,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -2608,30 +3248,37 @@ class _AppFooterStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String exp = 'Ativo / Indeterminado';
-    if (xtreamAccount?.expirationDate != null) {
-      final dt = xtreamAccount!.expirationDate!;
-      exp = '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-    }
+    return ListenableBuilder(
+      listenable: UserProfileService.instance,
+      builder: (context, _) {
+        final profileName = UserProfileService.instance.currentProfile.name;
+        String exp = 'Ativo / Indeterminado';
+        if (xtreamAccount?.expirationDate != null) {
+          final dt = xtreamAccount!.expirationDate!;
+          exp =
+              '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+        }
 
-    final info = xtreamAccount != null
-        ? 'Perfil: Padrão   •   Usuário: ${xtreamAccount!.username}   •   Vencimento da lista: $exp'
-        : 'Perfil: Padrão   •   Modo: Listas Locais M3U';
+        final info = xtreamAccount != null
+            ? 'Perfil: $profileName   •   Usuário: ${xtreamAccount!.username}   •   Vencimento da lista: $exp'
+            : 'Perfil: $profileName   •   Modo: Listas Locais M3U';
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Text(
-          info,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-            color: Color(0xFF64748B),
-            letterSpacing: 0.4,
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              info,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF64748B),
+                letterSpacing: 0.4,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ),
-          textAlign: TextAlign.center,
-        ),
-      ),
+        );
+      },
     );
   }
 }

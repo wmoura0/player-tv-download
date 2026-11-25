@@ -221,8 +221,10 @@ class XtreamSeriesSeason {
   });
 
   factory XtreamSeriesSeason.fromJson(Map<String, dynamic> json, {int? fallbackSeasonNumber}) {
-    final rawNumber = json['season_number'] ?? json['season'] ?? json['id'] ?? fallbackSeasonNumber;
-    final seasonNumber = int.tryParse(rawNumber?.toString() ?? '') ?? fallbackSeasonNumber ?? 1;
+    final rawNumber = json['season_number'] ?? json['season'] ?? fallbackSeasonNumber;
+    final parsedNum = int.tryParse(rawNumber?.toString() ?? '') ??
+        int.tryParse(RegExp(r'\d+').firstMatch(rawNumber?.toString() ?? '')?.group(0) ?? '');
+    final seasonNumber = parsedNum ?? fallbackSeasonNumber ?? 1;
 
     final rawName = json['name']?.toString().trim();
     final name = (rawName != null && rawName.isNotEmpty) ? rawName : 'Temporada $seasonNumber';
@@ -252,6 +254,7 @@ class XtreamSeriesSeason {
 
 class XtreamSeriesInfo {
   final String name;
+  final String? serverReturnedName;
   final String? cover;
   final String? plot;
   final String? cast;
@@ -264,9 +267,13 @@ class XtreamSeriesInfo {
   final String? episodeRunTime;
   final List<XtreamSeriesSeason> seasons;
   final Map<int, List<XtreamSeriesEpisode>> episodesBySeason;
+  final String rawEpisodesShape;
+  final int rawEpisodeEntriesCount;
+  final int skippedEpisodeEntriesCount;
 
   const XtreamSeriesInfo({
     required this.name,
+    this.serverReturnedName,
     this.cover,
     this.plot,
     this.cast,
@@ -279,7 +286,34 @@ class XtreamSeriesInfo {
     this.episodeRunTime,
     required this.seasons,
     required this.episodesBySeason,
+    this.rawEpisodesShape = 'unknown',
+    this.rawEpisodeEntriesCount = 0,
+    this.skippedEpisodeEntriesCount = 0,
   });
+
+  int get totalEpisodeCount =>
+      episodesBySeason.values.fold<int>(0, (sum, list) => sum + list.length);
+
+  static int? _parseSeasonKey(dynamic key) {
+    if (key == null) return null;
+    if (key is int) return key;
+    final str = key.toString().trim();
+    if (str.isEmpty) return null;
+    final direct = int.tryParse(str);
+    if (direct != null) return direct;
+    final m = RegExp(r'\d+').firstMatch(str);
+    return m != null ? int.tryParse(m.group(0)!) : null;
+  }
+
+  static bool _looksLikeEpisodeObject(Map raw) {
+    return raw.containsKey('id') ||
+        raw.containsKey('stream_id') ||
+        raw.containsKey('episode_id') ||
+        raw.containsKey('episode_num') ||
+        raw.containsKey('episode_number') ||
+        raw.containsKey('container_extension') ||
+        raw.containsKey('direct_source');
+  }
 
   factory XtreamSeriesInfo.fromJson(
     Map<String, dynamic> json, {
@@ -293,7 +327,14 @@ class XtreamSeriesInfo {
             ? Map<String, dynamic>.from(json['info'] as Map)
             : <String, dynamic>{};
 
-    final name = (info['name']?.toString() ?? fallbackName ?? 'Série sem título').trim();
+    final rawInfoName = info['name']?.toString().trim();
+    final serverReturnedName =
+        (rawInfoName != null && rawInfoName.isNotEmpty) ? rawInfoName : null;
+    final cleanFallback = fallbackName?.trim();
+    final name = serverReturnedName ??
+        ((cleanFallback != null && cleanFallback.isNotEmpty)
+            ? cleanFallback
+            : 'Série sem título');
 
     final rawCover = info['cover']?.toString() ?? info['cover_big']?.toString() ?? fallbackCover;
     final cover = (rawCover != null && rawCover.trim().isNotEmpty) ? rawCover.trim() : null;
@@ -330,48 +371,144 @@ class XtreamSeriesInfo {
     final rawRunTime = info['episode_run_time']?.toString().trim();
     final episodeRunTime = (rawRunTime != null && rawRunTime.isNotEmpty) ? rawRunTime : null;
 
-    // 1. Processar Episódios organizados por temporada
+    // 1. Processar Episódios organizados por temporada (suportando variações reais de servidores Xtream)
     final episodesMap = <int, List<XtreamSeriesEpisode>>{};
     final rawEpisodes = json['episodes'];
+    var rawEpisodesShape = 'null';
+    var rawEntriesCount = 0;
+    var skippedEntriesCount = 0;
+    final perSeasonCounters = <int, int>{};
+
+    void addEpisodeFromMap(
+      Map epRaw, {
+      required int fallbackSeason,
+      int? fallbackEpNum,
+    }) {
+      rawEntriesCount++;
+      final epMap = Map<String, dynamic>.from(epRaw);
+      final epSeasonHint =
+          _parseSeasonKey(epMap['season'] ?? epMap['season_number']) ??
+              fallbackSeason;
+      final nextOrdinal = (perSeasonCounters[epSeasonHint] ?? 0) + 1;
+      final ep = XtreamSeriesEpisode.fromJson(
+        epMap,
+        fallbackSeasonNumber: epSeasonHint,
+        fallbackEpisodeNum: fallbackEpNum ?? nextOrdinal,
+      );
+      if (ep.id <= 0) {
+        skippedEntriesCount++;
+        return;
+      }
+      perSeasonCounters[ep.seasonNumber] =
+          (perSeasonCounters[ep.seasonNumber] ?? 0) + 1;
+      episodesMap.putIfAbsent(ep.seasonNumber, () => []).add(ep);
+    }
 
     if (rawEpisodes is Map) {
-      // Formato padrão: {"1": [ep1, ep2], "2": [ep3, ep4]}
-      rawEpisodes.forEach((key, val) {
-        final seasonNum = int.tryParse(key.toString()) ?? 1;
-        if (val is List) {
-          final list = <XtreamSeriesEpisode>[];
-          for (var i = 0; i < val.length; i++) {
-            final epJson = val[i];
-            if (epJson is Map) {
-              list.add(
-                XtreamSeriesEpisode.fromJson(
-                  Map<String, dynamic>.from(epJson),
-                  fallbackSeasonNumber: seasonNum,
-                  fallbackEpisodeNum: i + 1,
-                ),
-              );
+      if (rawEpisodes.isEmpty) {
+        rawEpisodesShape = 'empty_map';
+      } else {
+        var sawListValue = false;
+        var sawMapValue = false;
+        rawEpisodes.forEach((key, val) {
+          final seasonNum = _parseSeasonKey(key) ?? 1;
+          if (val is List) {
+            sawListValue = true;
+            for (var i = 0; i < val.length; i++) {
+              final epJson = val[i];
+              if (epJson is Map) {
+                addEpisodeFromMap(
+                  epJson,
+                  fallbackSeason: seasonNum,
+                  fallbackEpNum: i + 1,
+                );
+              } else if (epJson != null) {
+                rawEntriesCount++;
+                skippedEntriesCount++;
+              }
+            }
+          } else if (val is Map) {
+            sawMapValue = true;
+            if (_looksLikeEpisodeObject(val)) {
+              addEpisodeFromMap(val, fallbackSeason: seasonNum);
+            } else {
+              // Mapa de episódios indexados por chave (ex.: PHP {"1": {ep1}, "2": {ep2}})
+              var idx = 0;
+              val.forEach((innerKey, innerVal) {
+                if (innerVal is Map) {
+                  idx++;
+                  final innerEpHint = _parseSeasonKey(innerKey) ?? idx;
+                  addEpisodeFromMap(
+                    innerVal,
+                    fallbackSeason: seasonNum,
+                    fallbackEpNum: innerEpHint > 0 && innerEpHint < 10000
+                        ? null
+                        : idx,
+                  );
+                } else if (innerVal != null) {
+                  rawEntriesCount++;
+                  skippedEntriesCount++;
+                }
+              });
             }
           }
-          if (list.isNotEmpty) {
-            episodesMap[seasonNum] = list;
-          }
-        }
-      });
-    } else if (rawEpisodes is List) {
-      // Formato alternativo: lista plana de episódios
-      for (var i = 0; i < rawEpisodes.length; i++) {
-        final epJson = rawEpisodes[i];
-        if (epJson is Map) {
-          final epMap = Map<String, dynamic>.from(epJson);
-          final seasonNum = int.tryParse(epMap['season']?.toString() ?? '') ?? 1;
-          final ep = XtreamSeriesEpisode.fromJson(
-            epMap,
-            fallbackSeasonNumber: seasonNum,
-            fallbackEpisodeNum: i + 1,
-          );
-          episodesMap.putIfAbsent(ep.seasonNumber, () => []).add(ep);
+        });
+        if (sawMapValue && !sawListValue) {
+          rawEpisodesShape = 'map_of_maps';
+        } else if (sawListValue && sawMapValue) {
+          rawEpisodesShape = 'mixed_map';
+        } else if (sawListValue) {
+          rawEpisodesShape = 'map_of_lists';
+        } else {
+          rawEpisodesShape = 'map_other';
         }
       }
+    } else if (rawEpisodes is List) {
+      if (rawEpisodes.isEmpty) {
+        rawEpisodesShape = 'empty_list';
+      } else {
+        var sawNestedList = false;
+        var sawFlatMap = false;
+        for (var i = 0; i < rawEpisodes.length; i++) {
+          final entry = rawEpisodes[i];
+          if (entry is List) {
+            sawNestedList = true;
+            final listSeasonHint = i == 0 && rawEpisodes.first == null ? 1 : i + 1;
+            for (var j = 0; j < entry.length; j++) {
+              final epJson = entry[j];
+              if (epJson is Map) {
+                addEpisodeFromMap(
+                  epJson,
+                  fallbackSeason: listSeasonHint,
+                  fallbackEpNum: j + 1,
+                );
+              } else if (epJson != null) {
+                rawEntriesCount++;
+                skippedEntriesCount++;
+              }
+            }
+          } else if (entry is Map) {
+            sawFlatMap = true;
+            final seasonNum =
+                _parseSeasonKey(entry['season'] ?? entry['season_number']) ?? 1;
+            addEpisodeFromMap(entry, fallbackSeason: seasonNum);
+          } else if (entry != null) {
+            rawEntriesCount++;
+            skippedEntriesCount++;
+          }
+        }
+        if (sawNestedList && !sawFlatMap) {
+          rawEpisodesShape = 'nested_list';
+        } else if (sawNestedList && sawFlatMap) {
+          rawEpisodesShape = 'mixed_list';
+        } else if (sawFlatMap) {
+          rawEpisodesShape = 'flat_list';
+        } else {
+          rawEpisodesShape = 'list_other';
+        }
+      }
+    } else if (rawEpisodes != null) {
+      rawEpisodesShape = 'other_${rawEpisodes.runtimeType}';
     }
 
     // Ordenar episódios dentro de cada temporada pelo número do episódio
@@ -379,45 +516,71 @@ class XtreamSeriesInfo {
       list.sort((a, b) => a.episodeNum.compareTo(b.episodeNum));
     });
 
-    // 2. Processar Temporadas
-    final seasonsList = <XtreamSeriesSeason>[];
+    // 2. Processar e deduplicar Temporadas
+    final seasonsByNumber = <int, XtreamSeriesSeason>{};
     final rawSeasons = json['seasons'];
 
+    void registerSeason(XtreamSeriesSeason s) {
+      final existing = seasonsByNumber[s.seasonNumber];
+      if (existing == null) {
+        seasonsByNumber[s.seasonNumber] = s;
+      } else {
+        // Prefere o registro com mais metadados sem perder contagem real
+        seasonsByNumber[s.seasonNumber] = XtreamSeriesSeason(
+          seasonNumber: s.seasonNumber,
+          name: s.name != 'Temporada ${s.seasonNumber}' ? s.name : existing.name,
+          episodeCount: s.episodeCount ?? existing.episodeCount,
+          airDate: s.airDate ?? existing.airDate,
+          overview: s.overview ?? existing.overview,
+          cover: s.cover ?? existing.cover,
+        );
+      }
+    }
+
     if (rawSeasons is List) {
-      for (var sJson in rawSeasons) {
+      for (var i = 0; i < rawSeasons.length; i++) {
+        final sJson = rawSeasons[i];
         if (sJson is Map) {
-          seasonsList.add(XtreamSeriesSeason.fromJson(Map<String, dynamic>.from(sJson)));
+          registerSeason(
+            XtreamSeriesSeason.fromJson(
+              Map<String, dynamic>.from(sJson),
+            ),
+          );
         }
       }
     } else if (rawSeasons is Map) {
       rawSeasons.forEach((key, val) {
         if (val is Map) {
-          final fallbackNum = int.tryParse(key.toString());
-          seasonsList.add(XtreamSeriesSeason.fromJson(Map<String, dynamic>.from(val), fallbackSeasonNumber: fallbackNum));
+          final fallbackNum = _parseSeasonKey(key);
+          registerSeason(
+            XtreamSeriesSeason.fromJson(
+              Map<String, dynamic>.from(val),
+              fallbackSeasonNumber: fallbackNum,
+            ),
+          );
         }
       });
     }
 
     // Se o servidor não enviou array seasons ou omitiu temporadas existentes nos episódios,
     // sintetiza as temporadas a partir das chaves do mapa de episódios
-    final existingSeasonNumbers = seasonsList.map((s) => s.seasonNumber).toSet();
     for (final seasonNum in episodesMap.keys) {
-      if (!existingSeasonNumbers.contains(seasonNum)) {
-        seasonsList.add(
-          XtreamSeriesSeason(
-            seasonNumber: seasonNum,
-            name: 'Temporada $seasonNum',
-            episodeCount: episodesMap[seasonNum]?.length,
-          ),
+      if (!seasonsByNumber.containsKey(seasonNum)) {
+        seasonsByNumber[seasonNum] = XtreamSeriesSeason(
+          seasonNumber: seasonNum,
+          name: 'Temporada $seasonNum',
+          episodeCount: episodesMap[seasonNum]?.length,
         );
       }
     }
 
     // Ordenar as temporadas crescentemente pelo número da temporada
-    seasonsList.sort((a, b) => a.seasonNumber.compareTo(b.seasonNumber));
+    final seasonsList = seasonsByNumber.values.toList()
+      ..sort((a, b) => a.seasonNumber.compareTo(b.seasonNumber));
 
     return XtreamSeriesInfo(
       name: name,
+      serverReturnedName: serverReturnedName,
       cover: cover,
       plot: plot,
       cast: cast,
@@ -430,6 +593,9 @@ class XtreamSeriesInfo {
       episodeRunTime: episodeRunTime,
       seasons: seasonsList,
       episodesBySeason: episodesMap,
+      rawEpisodesShape: rawEpisodesShape,
+      rawEpisodeEntriesCount: rawEntriesCount,
+      skippedEpisodeEntriesCount: skippedEntriesCount,
     );
   }
 
@@ -475,14 +641,23 @@ class XtreamSeriesInfo {
     }
 
     // Procura na próxima temporada existente que contenha episódios
-    final sortedSeasonNumbers = seasons.map((s) => s.seasonNumber).toList()..sort();
-    final nextSeasonIndex = sortedSeasonNumbers.indexOf(current.seasonNumber) + 1;
+    final sortedSeasonNumbers = <int>{
+      ...seasons.map((s) => s.seasonNumber),
+      ...episodesBySeason.keys,
+    }.toList()
+      ..sort();
+    final idx = sortedSeasonNumbers.indexOf(current.seasonNumber);
+    final nextSeasonIndex = idx >= 0
+        ? idx + 1
+        : sortedSeasonNumbers.indexWhere((s) => s > current.seasonNumber);
 
-    for (var i = nextSeasonIndex; i < sortedSeasonNumbers.length; i++) {
-      final nextSeasonNum = sortedSeasonNumbers[i];
-      final nextSeasonEps = episodesBySeason[nextSeasonNum];
-      if (nextSeasonEps != null && nextSeasonEps.isNotEmpty) {
-        return nextSeasonEps.first;
+    if (nextSeasonIndex >= 0) {
+      for (var i = nextSeasonIndex; i < sortedSeasonNumbers.length; i++) {
+        final nextSeasonNum = sortedSeasonNumbers[i];
+        final nextSeasonEps = episodesBySeason[nextSeasonNum];
+        if (nextSeasonEps != null && nextSeasonEps.isNotEmpty) {
+          return nextSeasonEps.first;
+        }
       }
     }
 

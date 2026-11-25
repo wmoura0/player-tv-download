@@ -3,9 +3,15 @@ import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/playlist.dart';
 import '../models/xtream_catalog.dart';
+import '../services/hidden_categories_service.dart';
+import '../services/pin_service.dart';
 import '../services/playlist_storage.dart';
+import '../services/series_identity_verifier.dart';
+import '../services/url_sanitizer.dart';
+import '../services/user_profile_service.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/device_utils.dart';
 import 'playlist_channels_screen.dart';
 import 'series_detail_screen.dart';
 import 'vod_detail_screen.dart';
@@ -13,9 +19,37 @@ import 'xtream_catalog_screen.dart';
 
 enum SearchFilterTab { all, live, movies, series }
 
+class _SearchListEntry {
+  final String? headerTitle;
+  final IconData? headerIcon;
+  final Color? headerColor;
+  final Object? item;
+  final bool isLoadMore;
+
+  const _SearchListEntry.header({
+    required this.headerTitle,
+    required this.headerIcon,
+    required this.headerColor,
+  })  : item = null,
+        isLoadMore = false;
+
+  const _SearchListEntry.item(this.item)
+      : headerTitle = null,
+        headerIcon = null,
+        headerColor = null,
+        isLoadMore = false;
+
+  const _SearchListEntry.loadMore()
+      : headerTitle = null,
+        headerIcon = null,
+        headerColor = null,
+        item = null,
+        isLoadMore = true;
+}
+
 /// Tela de Pesquisa Global Unificada do Player TV.
 /// Busca simultaneamente em canais de TV ao vivo, filmes e séries
-/// com debounce, seções agrupadas, capas, metadados e navegação nativa.
+/// com debounce, proteção parental, seções agrupadas, paginação virtualizada e D-pad.
 class GlobalSearchScreen extends StatefulWidget {
   final XtreamCatalogService? catalogService;
   final String accountKey;
@@ -33,20 +67,29 @@ class GlobalSearchScreen extends StatefulWidget {
 }
 
 class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
+  static const int _pageIncrement = 100;
+
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
   Timer? _debounceTimer;
   String _currentQuery = '';
   SearchFilterTab _selectedTab = SearchFilterTab.all;
+  int _loadGeneration = 0;
+  int _visibleResultLimit = _pageIncrement;
 
   bool _isLoadingAll = false;
   String? _loadingError;
+  final List<String> _partialErrors = [];
 
   List<XtreamLiveStream> _allLiveStreams = [];
   List<XtreamVodStream> _allVodStreams = [];
   List<XtreamSeriesItem> _allSeries = [];
   List<M3uChannel> _m3uChannels = [];
+
+  Set<String> _restrictedLiveCats = {};
+  Set<String> _restrictedVodCats = {};
+  Set<String> _restrictedSeriesCats = {};
 
   List<XtreamLiveStream> _filteredLive = [];
   List<XtreamVodStream> _filteredVod = [];
@@ -56,6 +99,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
   @override
   void initState() {
     super.initState();
+    PinService.instance.addListener(_onRestrictionChanged);
+    UserProfileService.instance.addListener(_onRestrictionChanged);
+    HiddenCategoriesService.instance.addListener(_onRestrictionChanged);
     _loadCatalogsForSearch();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -66,10 +112,44 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
 
   @override
   void dispose() {
+    _loadGeneration++;
     _debounceTimer?.cancel();
+    PinService.instance.removeListener(_onRestrictionChanged);
+    UserProfileService.instance.removeListener(_onRestrictionChanged);
+    HiddenCategoriesService.instance.removeListener(_onRestrictionChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onRestrictionChanged() {
+    if (!mounted) return;
+    _loadCatalogsForSearch();
+  }
+
+  Set<String> _computeRestrictedCategories(List<XtreamCategory> categories) {
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(
+      widget.accountKey,
+    );
+    final isKids = UserProfileService.instance.currentProfile.isKids;
+    final out = <String>{};
+    for (final cat in categories) {
+      if (cat.id == 'all' || cat.id == 'favorites') continue;
+      if (hidden.contains(cat.id) || hidden.contains(cat.name.trim())) {
+        out.add(cat.id);
+        continue;
+      }
+      final isAdult = XtreamCatalogScreen.isAdultCategory(cat.name) ||
+          PinService.instance.isAdultCategory(cat.name);
+      if (isKids && isAdult) {
+        out.add(cat.id);
+        continue;
+      }
+      if (PinService.instance.isCategoryLocked(cat.id, categoryName: cat.name)) {
+        out.add(cat.id);
+      }
+    }
+    return out;
   }
 
   Future<void> _loadCatalogsForSearch() async {
@@ -77,97 +157,135 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
       return;
     }
 
+    final gen = ++_loadGeneration;
     setState(() {
       _isLoadingAll = true;
       _loadingError = null;
+      _partialErrors.clear();
     });
 
-    try {
-      if (widget.catalogService != null) {
-        final service = widget.catalogService!;
+    if (widget.catalogService != null) {
+      final service = widget.catalogService!;
 
-        // 1. Prioridade imediata: se já existem dados em memória, hidrata instantaneamente sem qualquer delay de rede/disco
-        if (service.cachedAllLiveStreams != null && service.cachedAllLiveStreams!.isNotEmpty) {
-          _allLiveStreams = service.cachedAllLiveStreams!;
-        }
-        if (service.cachedAllVodStreams != null && service.cachedAllVodStreams!.isNotEmpty) {
-          _allVodStreams = service.cachedAllVodStreams!;
-        }
-        if (service.cachedAllSeries != null && service.cachedAllSeries!.isNotEmpty) {
-          _allSeries = service.cachedAllSeries!;
-        }
+      // 1. Hidratação imediata em memória antes da rede
+      if (service.cachedAllLiveStreams != null &&
+          service.cachedAllLiveStreams!.isNotEmpty) {
+        _allLiveStreams = service.cachedAllLiveStreams!;
+      }
+      if (service.cachedAllVodStreams != null &&
+          service.cachedAllVodStreams!.isNotEmpty) {
+        _allVodStreams = service.cachedAllVodStreams!;
+      }
+      if (service.cachedAllSeries != null &&
+          service.cachedAllSeries!.isNotEmpty) {
+        _allSeries = service.cachedAllSeries!;
+      }
 
-        if (mounted && (_allLiveStreams.isNotEmpty || _allVodStreams.isNotEmpty || _allSeries.isNotEmpty)) {
-          setState(() {
-            _isLoadingAll = false;
-            if (_currentQuery.isNotEmpty) _applyFilter();
-          });
-        }
+      if (mounted &&
+          gen == _loadGeneration &&
+          (_allLiveStreams.isNotEmpty ||
+              _allVodStreams.isNotEmpty ||
+              _allSeries.isNotEmpty)) {
+        setState(() {
+          _isLoadingAll = false;
+          if (_currentQuery.isNotEmpty) _applyFilter();
+        });
+      }
 
-        // 2. Carregamento progressivo e sequencial (Live -> VOD -> Séries) evitando picos de RAM concorrentes
+      // 2. Categorias + catálogos isolados e concorrentes com tratamento de erro por tipo
+      Future<void> loadLive() async {
+        try {
+          final liveCats = await service.fetchLiveCategories();
+          if (!mounted || gen != _loadGeneration) return;
+          _restrictedLiveCats = _computeRestrictedCategories(liveCats);
+        } catch (_) {}
+
         if (_allLiveStreams.isEmpty) {
-          final live = await service.fetchLiveStreams(categoryId: 'all');
-          if (mounted) {
-            setState(() {
-              _allLiveStreams = live;
-              if (_currentQuery.isNotEmpty) _applyFilter();
-            });
+          try {
+            final live = await service.fetchLiveStreams(categoryId: 'all');
+            if (!mounted || gen != _loadGeneration) return;
+            _allLiveStreams = live;
+          } catch (e) {
+            _partialErrors.add('TV ao vivo: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
           }
         }
+      }
+
+      Future<void> loadVod() async {
+        try {
+          final vodCats = await service.fetchVodCategories();
+          if (!mounted || gen != _loadGeneration) return;
+          _restrictedVodCats = _computeRestrictedCategories(vodCats);
+        } catch (_) {}
 
         if (_allVodStreams.isEmpty) {
-          final vod = await service.fetchVodStreams(categoryId: 'all');
-          if (mounted) {
-            setState(() {
-              _allVodStreams = vod;
-              if (_currentQuery.isNotEmpty) _applyFilter();
-            });
+          try {
+            final vod = await service.fetchVodStreams(categoryId: 'all');
+            if (!mounted || gen != _loadGeneration) return;
+            _allVodStreams = vod;
+          } catch (e) {
+            _partialErrors.add('Filmes: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
           }
         }
+      }
+
+      Future<void> loadSeries() async {
+        try {
+          final seriesCats = await service.fetchSeriesCategories();
+          if (!mounted || gen != _loadGeneration) return;
+          _restrictedSeriesCats = _computeRestrictedCategories(seriesCats);
+        } catch (_) {}
 
         if (_allSeries.isEmpty) {
-          final series = await service.fetchSeries(categoryId: 'all');
-          if (mounted) {
-            setState(() {
-              _allSeries = series;
-              if (_currentQuery.isNotEmpty) _applyFilter();
-            });
+          try {
+            final series = await service.fetchSeries(categoryId: 'all');
+            if (!mounted || gen != _loadGeneration) return;
+            _allSeries = series;
+          } catch (e) {
+            _partialErrors.add('Séries: ${UrlSanitizer.sanitizeErrorMessage(e.toString())}');
           }
         }
+      }
 
-        if (mounted) {
-          setState(() {
-            _isLoadingAll = false;
-            if (_currentQuery.isNotEmpty) {
-              _applyFilter();
-            }
-          });
-        }
-      } else if (widget.activeM3uPlaylist != null) {
+      await Future.wait<void>([
+        loadLive(),
+        loadVod(),
+        loadSeries(),
+      ]);
+
+      if (mounted && gen == _loadGeneration) {
+        final allFailed = _allLiveStreams.isEmpty &&
+            _allVodStreams.isEmpty &&
+            _allSeries.isEmpty &&
+            _partialErrors.isNotEmpty;
         setState(() {
-          _m3uChannels = widget.activeM3uPlaylist!.channels ?? [];
           _isLoadingAll = false;
+          _loadingError = allFailed
+              ? 'Não foi possível carregar o catálogo para busca (${_partialErrors.first}).'
+              : null;
           if (_currentQuery.isNotEmpty) {
             _applyFilter();
           }
         });
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingAll = false;
-          _loadingError = 'Não foi possível carregar o catálogo para busca: $e';
-        });
-      }
+    } else if (widget.activeM3uPlaylist != null) {
+      setState(() {
+        _m3uChannels = widget.activeM3uPlaylist!.channels ?? [];
+        _isLoadingAll = false;
+        if (_currentQuery.isNotEmpty) {
+          _applyFilter();
+        }
+      });
     }
   }
 
   void _onSearchChanged(String text) {
     _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 350), () {
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
       if (!mounted) return;
       setState(() {
         _currentQuery = text.trim();
+        _visibleResultLimit = _pageIncrement;
         _applyFilter();
       });
     });
@@ -182,27 +300,50 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
       return;
     }
 
-    final query = _currentQuery.toLowerCase();
+    final query = SeriesIdentityVerifier.stripDiacritics(_currentQuery).toLowerCase();
+    final isKids = UserProfileService.instance.currentProfile.isKids;
 
-    _filteredLive = _allLiveStreams
-        .where((s) => s.name.toLowerCase().contains(query))
-        .toList();
+    _filteredLive = _allLiveStreams.where((s) {
+      if (_restrictedLiveCats.contains(s.categoryId)) return false;
+      if (isKids && XtreamCatalogScreen.isAdultCategory(s.name)) return false;
+      return SeriesIdentityVerifier.stripDiacritics(s.name)
+          .toLowerCase()
+          .contains(query);
+    }).toList();
 
-    _filteredVod = _allVodStreams
-        .where((m) => m.name.toLowerCase().contains(query))
-        .toList();
+    _filteredVod = _allVodStreams.where((m) {
+      if (_restrictedVodCats.contains(m.categoryId)) return false;
+      if (isKids && XtreamCatalogScreen.isAdultCategory(m.name)) return false;
+      return SeriesIdentityVerifier.stripDiacritics(m.name)
+          .toLowerCase()
+          .contains(query);
+    }).toList();
 
-    _filteredSeries = _allSeries
-        .where((s) =>
-            s.name.toLowerCase().contains(query) ||
-            (s.genre != null && s.genre!.toLowerCase().contains(query)))
-        .toList();
+    final seenSeriesIds = <int>{};
+    _filteredSeries = _allSeries.where((s) {
+      if (s.seriesId <= 0 || !seenSeriesIds.add(s.seriesId)) return false;
+      if (_restrictedSeriesCats.contains(s.categoryId)) return false;
+      if (isKids && XtreamCatalogScreen.isAdultCategory(s.name)) return false;
+      final normName = SeriesIdentityVerifier.stripDiacritics(s.name).toLowerCase();
+      final normGenre = s.genre != null
+          ? SeriesIdentityVerifier.stripDiacritics(s.genre!).toLowerCase()
+          : '';
+      return normName.contains(query) || normGenre.contains(query);
+    }).toList();
 
-    _filteredM3u = _m3uChannels
-        .where((c) =>
-            c.name.toLowerCase().contains(query) ||
-            c.groupTitle.toLowerCase().contains(query))
-        .toList();
+    _filteredM3u = _m3uChannels.where((c) {
+      if (isKids &&
+          (XtreamCatalogScreen.isAdultCategory(c.groupTitle) ||
+              XtreamCatalogScreen.isAdultCategory(c.name))) {
+        return false;
+      }
+      return SeriesIdentityVerifier.stripDiacritics(c.name)
+              .toLowerCase()
+              .contains(query) ||
+          SeriesIdentityVerifier.stripDiacritics(c.groupTitle)
+              .toLowerCase()
+              .contains(query);
+    }).toList();
   }
 
   int get _totalResultsCount =>
@@ -502,46 +643,116 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
       );
     }
 
-    return ListView(
+    final entries = <_SearchListEntry>[];
+    var remaining = _visibleResultLimit;
+    var hasMore = false;
+
+    void appendSection<T>(
+      String title,
+      IconData icon,
+      Color color,
+      List<T> items,
+    ) {
+      if (items.isEmpty) return;
+      if (remaining <= 0) {
+        hasMore = true;
+        return;
+      }
+      entries.add(_SearchListEntry.header(
+        headerTitle: title,
+        headerIcon: icon,
+        headerColor: color,
+      ));
+      final takeCount = items.length <= remaining ? items.length : remaining;
+      for (var i = 0; i < takeCount; i++) {
+        entries.add(_SearchListEntry.item(items[i] as Object));
+      }
+      remaining -= takeCount;
+      if (takeCount < items.length) {
+        hasMore = true;
+      }
+    }
+
+    if (_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.live) {
+      final combinedLive = <Object>[..._filteredLive, ..._filteredM3u];
+      appendSection(
+        'TV ao vivo (${combinedLive.length})',
+        Icons.live_tv_rounded,
+        accent,
+        combinedLive,
+      );
+    }
+
+    if (_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.movies) {
+      appendSection(
+        'Filmes (${_filteredVod.length})',
+        Icons.movie_outlined,
+        const Color(0xFF29B6F6),
+        _filteredVod,
+      );
+    }
+
+    if (_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.series) {
+      appendSection(
+        'Séries (${_filteredSeries.length})',
+        Icons.video_library_outlined,
+        const Color(0xFF1E88E5),
+        _filteredSeries,
+      );
+    }
+
+    if (hasMore) {
+      entries.add(const _SearchListEntry.loadMore());
+    }
+
+    return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      children: [
-        if ((_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.live) &&
-            (_filteredLive.isNotEmpty || _filteredM3u.isNotEmpty)) ...[
-          _buildSectionHeader(
-            'TV ao vivo (${_filteredLive.length + _filteredM3u.length})',
-            Icons.live_tv_rounded,
-            accent,
-          ),
-          const SizedBox(height: 12),
-          ..._filteredLive.map((ch) => _buildLiveItemTile(ch, accent)),
-          ..._filteredM3u.map((ch) => _buildM3uItemTile(ch, accent)),
-          const SizedBox(height: 20),
-        ],
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        if (entry.headerTitle != null) {
+          return Padding(
+            padding: EdgeInsets.only(top: index == 0 ? 0 : 12, bottom: 12),
+            child: _buildSectionHeader(
+              entry.headerTitle!,
+              entry.headerIcon!,
+              entry.headerColor!,
+            ),
+          );
+        }
+        if (entry.isLoadMore) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.surfaceSecondary,
+                  foregroundColor: AppColors.focusCyan,
+                ),
+                onPressed: () {
+                  setState(() {
+                    _visibleResultLimit += _pageIncrement;
+                  });
+                },
+                icon: const Icon(Icons.expand_more_rounded),
+                label: const Text('Carregar mais resultados'),
+              ),
+            ),
+          );
+        }
 
-        if ((_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.movies) &&
-            _filteredVod.isNotEmpty) ...[
-          _buildSectionHeader(
-            'Filmes (${_filteredVod.length})',
-            Icons.movie_outlined,
-            const Color(0xFF29B6F6),
-          ),
-          const SizedBox(height: 12),
-          ..._filteredVod.map((m) => _buildVodItemTile(m, const Color(0xFF29B6F6))),
-          const SizedBox(height: 20),
-        ],
-
-        if ((_selectedTab == SearchFilterTab.all || _selectedTab == SearchFilterTab.series) &&
-            _filteredSeries.isNotEmpty) ...[
-          _buildSectionHeader(
-            'Séries (${_filteredSeries.length})',
-            Icons.video_library_outlined,
-            const Color(0xFF1E88E5),
-          ),
-          const SizedBox(height: 12),
-          ..._filteredSeries.map((s) => _buildSeriesItemTile(s, const Color(0xFF1E88E5))),
-          const SizedBox(height: 20),
-        ],
-      ],
+        final obj = entry.item;
+        if (obj is XtreamLiveStream) {
+          return _buildLiveItemTile(obj, accent);
+        } else if (obj is M3uChannel) {
+          return _buildM3uItemTile(obj, accent);
+        } else if (obj is XtreamVodStream) {
+          return _buildVodItemTile(obj, const Color(0xFF29B6F6));
+        } else if (obj is XtreamSeriesItem) {
+          return _buildSeriesItemTile(obj, const Color(0xFF1E88E5));
+        }
+        return const SizedBox.shrink();
+      },
     );
   }
 
@@ -665,15 +876,9 @@ class _SearchResultTileState extends State<_SearchResultTile> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: FocusableActionDetector(
+        shortcuts: DeviceUtils.dpadSelectShortcuts,
         onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-        actions: <Type, Action<Intent>>{
-          ActivateIntent: CallbackAction<ActivateIntent>(
-            onInvoke: (_) {
-              widget.onTap();
-              return null;
-            },
-          ),
-        },
+        actions: DeviceUtils.activateAction(widget.onTap),
         child: GestureDetector(
           onTap: widget.onTap,
           child: AnimatedContainer(

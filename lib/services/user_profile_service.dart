@@ -2,6 +2,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_profile.dart';
+import 'pin_service.dart';
 
 /// Serviço responsável pelo gerenciamento de múltiplos perfis de usuário locais,
 /// permitindo que membros da família tenham favoritos, histórico e progresso isolados.
@@ -97,6 +98,7 @@ class UserProfileService extends ChangeNotifier {
 
     _currentProfileId = profileId;
     await _prefs?.setString(_keyCurrentProfileId, profileId);
+    PinService.instance.lockSession();
     notifyListeners();
   }
 
@@ -144,6 +146,7 @@ class UserProfileService extends ChangeNotifier {
 
     if (wasCurrent) {
       _currentProfileId = defaultProfileId;
+      PinService.instance.lockSession();
     }
 
     await _saveToDisk();

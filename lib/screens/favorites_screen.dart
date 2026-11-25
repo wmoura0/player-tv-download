@@ -1,9 +1,13 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/favorite_item.dart';
 import '../models/xtream_account.dart';
+import '../services/account_manager_service.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
 import '../services/secure_storage_service.dart';
+import '../services/user_profile_service.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
@@ -37,19 +41,73 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
   List<FavoriteItem> _movieFavorites = [];
   List<FavoriteItem> _seriesFavorites = [];
 
+  final List<FocusNode> _liveFocusNodes = [];
+  final List<FocusNode> _movieFocusNodes = [];
+  final List<FocusNode> _seriesFocusNodes = [];
+  final FocusNode _undoBannerFocusNode = FocusNode(debugLabel: 'FavoritesUndoBanner');
+  final FocusNode _backButtonFocusNode = FocusNode(debugLabel: 'FavoritesBackButton');
+
+  FavoriteItem? _lastRemovedItem;
+  Timer? _undoHideTimer;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     FavoritesService.instance.addListener(_onFavoritesChanged);
+    UserProfileService.instance.addListener(_onProfileChanged);
+    AccountManagerService.instance.addListener(_onAccountChanged);
     _initialize();
   }
 
   @override
   void dispose() {
+    _undoHideTimer?.cancel();
     _tabController.dispose();
     FavoritesService.instance.removeListener(_onFavoritesChanged);
+    UserProfileService.instance.removeListener(_onProfileChanged);
+    AccountManagerService.instance.removeListener(_onAccountChanged);
+    for (final fn in _liveFocusNodes) {
+      fn.dispose();
+    }
+    for (final fn in _movieFocusNodes) {
+      fn.dispose();
+    }
+    for (final fn in _seriesFocusNodes) {
+      fn.dispose();
+    }
+    _undoBannerFocusNode.dispose();
+    _backButtonFocusNode.dispose();
     super.dispose();
+  }
+
+  void _syncFocusNodes(List<FocusNode> nodes, int count, String prefix) {
+    while (nodes.length > count) {
+      nodes.removeLast().dispose();
+    }
+    while (nodes.length < count) {
+      nodes.add(FocusNode(debugLabel: '${prefix}_${nodes.length}'));
+    }
+  }
+
+  void _onProfileChanged() {
+    _undoHideTimer?.cancel();
+    if (mounted && _lastRemovedItem != null) {
+      setState(() => _lastRemovedItem = null);
+    }
+    _loadFavorites();
+  }
+
+  void _onAccountChanged() {
+    if (widget.xtreamAccount == null && widget.catalogService == null) {
+      _undoHideTimer?.cancel();
+      if (mounted && _lastRemovedItem != null) {
+        setState(() => _lastRemovedItem = null);
+      }
+      _service = null;
+      _accountKey = '';
+      _initialize();
+    }
   }
 
   void _onFavoritesChanged() {
@@ -112,18 +170,82 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
         _liveFavorites = all.where((i) => i.type == FavoriteType.live || i.type == FavoriteType.m3uChannel).toList();
         _movieFavorites = all.where((i) => i.type == FavoriteType.movie).toList();
         _seriesFavorites = all.where((i) => i.type == FavoriteType.series).toList();
+        _syncFocusNodes(_liveFocusNodes, _liveFavorites.length, 'FavLive');
+        _syncFocusNodes(_movieFocusNodes, _movieFavorites.length, 'FavMovie');
+        _syncFocusNodes(_seriesFocusNodes, _seriesFavorites.length, 'FavSeries');
         _isLoading = false;
       });
     }
   }
 
-  Future<void> _removeFavorite(FavoriteItem item) async {
+  Future<void> _undoLastRemoval([FavoriteItem? overrideItem]) async {
+    final target = overrideItem ?? _lastRemovedItem;
+    if (target == null) return;
+    _undoHideTimer?.cancel();
+    if (mounted) {
+      setState(() => _lastRemovedItem = null);
+    }
+    await FavoritesService.instance.addFavorite(target);
+  }
+
+  Future<void> _removeFavorite(
+    FavoriteItem item, {
+    int? tabIndex,
+    int? itemIndex,
+  }) async {
+    final effectiveScopeKey = item.scopeKey.trim().isNotEmpty ? item.scopeKey : _accountKey;
+    final activeTab = tabIndex ?? _tabController.index;
+
     await FavoritesService.instance.removeFavorite(
-      scopeKey: item.scopeKey,
+      scopeKey: effectiveScopeKey,
       type: item.type,
       id: item.id,
     );
     if (!mounted) return;
+
+    _undoHideTimer?.cancel();
+    setState(() {
+      _liveFavorites = _liveFavorites.where((f) => !(f.type == item.type && f.id == item.id)).toList();
+      _movieFavorites = _movieFavorites.where((f) => !(f.type == item.type && f.id == item.id)).toList();
+      _seriesFavorites = _seriesFavorites.where((f) => !(f.type == item.type && f.id == item.id)).toList();
+      _syncFocusNodes(_liveFocusNodes, _liveFavorites.length, 'FavLive');
+      _syncFocusNodes(_movieFocusNodes, _movieFavorites.length, 'FavMovie');
+      _syncFocusNodes(_seriesFocusNodes, _seriesFavorites.length, 'FavSeries');
+      _lastRemovedItem = item;
+    });
+
+    _undoHideTimer = Timer(const Duration(seconds: 6), () {
+      if (mounted && _lastRemovedItem == item) {
+        setState(() => _lastRemovedItem = null);
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final List<FocusNode> nodes;
+      if (activeTab == 0) {
+        nodes = _liveFocusNodes;
+      } else if (activeTab == 1) {
+        nodes = _movieFocusNodes;
+      } else {
+        nodes = _seriesFocusNodes;
+      }
+
+      if (nodes.isNotEmpty) {
+        final targetIndex = (itemIndex ?? 0).clamp(0, nodes.length - 1);
+        final targetNode = nodes[targetIndex];
+        if (targetNode.canRequestFocus) {
+          targetNode.requestFocus();
+          return;
+        }
+      }
+      if (_undoBannerFocusNode.canRequestFocus) {
+        _undoBannerFocusNode.requestFocus();
+      } else if (_backButtonFocusNode.canRequestFocus) {
+        _backButtonFocusNode.requestFocus();
+      }
+    });
+
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -133,8 +255,8 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
         action: SnackBarAction(
           label: 'Desfazer',
           textColor: const Color(0xFF00E5FF),
-          onPressed: () async {
-            await FavoritesService.instance.addFavorite(item);
+          onPressed: () {
+            unawaited(_undoLastRemoval(item));
           },
         ),
       ),
@@ -238,6 +360,12 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
       backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.background,
+        leading: IconButton(
+          focusNode: _backButtonFocusNode,
+          tooltip: 'Voltar',
+          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         title: Row(
           children: [
             const Icon(Icons.favorite_rounded, color: AppColors.error, size: 24),
@@ -299,14 +427,76 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
                   valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
                 ),
               )
-            : TabBarView(
-                controller: _tabController,
+            : Column(
                 children: [
-                  _buildLiveTab(),
-                  _buildMoviesTab(),
-                  _buildSeriesTab(),
+                  if (_lastRemovedItem != null) _buildUndoBanner(_lastRemovedItem!),
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        _buildLiveTab(),
+                        _buildMoviesTab(),
+                        _buildSeriesTab(),
+                      ],
+                    ),
+                  ),
                 ],
               ),
+      ),
+    );
+  }
+
+  Widget _buildUndoBanner(FavoriteItem removedItem) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF162032),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.focusCyan.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.restore_rounded, color: AppColors.focusCyan, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Removido: ${removedItem.name}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            focusNode: _undoBannerFocusNode,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.focusCyan,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              minimumSize: const Size(0, 32),
+            ),
+            onPressed: () => _undoLastRemoval(removedItem),
+            icon: const Icon(Icons.undo_rounded, size: 16),
+            label: const Text(
+              'Desfazer remoção',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Fechar aviso',
+            icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.textSecondary),
+            onPressed: () {
+              _undoHideTimer?.cancel();
+              setState(() => _lastRemovedItem = null);
+            },
+          ),
+        ],
       ),
     );
   }
@@ -339,8 +529,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
               final item = _liveFavorites[index];
               return _FavoriteChannelTile(
                 item: item,
+                focusNode: index < _liveFocusNodes.length ? _liveFocusNodes[index] : null,
                 onTap: () => _onLiveItemTap(item),
-                onRemove: () => _removeFavorite(item),
+                onRemove: () => _removeFavorite(item, tabIndex: 0, itemIndex: index),
               );
             },
           );
@@ -355,8 +546,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
               padding: const EdgeInsets.only(bottom: 8.0),
               child: _FavoriteChannelTile(
                 item: item,
+                focusNode: index < _liveFocusNodes.length ? _liveFocusNodes[index] : null,
                 onTap: () => _onLiveItemTap(item),
-                onRemove: () => _removeFavorite(item),
+                onRemove: () => _removeFavorite(item, tabIndex: 0, itemIndex: index),
               ),
             );
           },
@@ -397,8 +589,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
               rating: item.rating,
               fallbackIcon: Icons.movie_outlined,
               accentColor: const Color(0xFF29B6F6),
+              focusNode: index < _movieFocusNodes.length ? _movieFocusNodes[index] : null,
               onTap: () => _onMovieItemTap(item),
-              onRemove: () => _removeFavorite(item),
+              onRemove: () => _removeFavorite(item, tabIndex: 1, itemIndex: index),
             );
           },
         );
@@ -438,8 +631,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
               rating: item.rating,
               fallbackIcon: Icons.video_library_outlined,
               accentColor: const Color(0xFF1E88E5),
+              focusNode: index < _seriesFocusNodes.length ? _seriesFocusNodes[index] : null,
               onTap: () => _onSeriesItemTap(item),
-              onRemove: () => _removeFavorite(item),
+              onRemove: () => _removeFavorite(item, tabIndex: 2, itemIndex: index),
             );
           },
         );
@@ -495,11 +689,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> with SingleTickerProv
 
 class _FavoriteChannelTile extends StatefulWidget {
   final FavoriteItem item;
+  final FocusNode? focusNode;
   final VoidCallback onTap;
   final VoidCallback onRemove;
 
   const _FavoriteChannelTile({
     required this.item,
+    this.focusNode,
     required this.onTap,
     required this.onRemove,
   });
@@ -511,22 +707,55 @@ class _FavoriteChannelTile extends StatefulWidget {
 class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
   bool _isFocused = false;
   bool _isHovered = false;
+  bool _longPressTriggered = false;
+
+  KeyEventResult _handleExtraKeyEvent(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.delete ||
+        key == LogicalKeyboardKey.backspace ||
+        key == LogicalKeyboardKey.gameButtonY) {
+      if (event is KeyDownEvent) {
+        widget.onRemove();
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      if (event is KeyRepeatEvent) {
+        if (!_longPressTriggered) {
+          _longPressTriggered = true;
+          widget.onRemove();
+        }
+        return KeyEventResult.handled;
+      }
+      if (event is KeyUpEvent) {
+        _longPressTriggered = false;
+      }
+    }
+
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.channelActions(
-        onTap: widget.onTap,
-        onToggleFavorite: widget.onRemove,
-      ),
-      shortcuts: DeviceUtils.dpadChannelShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: isHighlighted ? 1.02 : 1.0,
-        duration: const Duration(milliseconds: 150),
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _handleExtraKeyEvent,
+      child: FocusableActionDetector(
+        focusNode: widget.focusNode,
+        actions: DeviceUtils.channelActions(
+          onTap: widget.onTap,
+          onToggleFavorite: widget.onRemove,
+        ),
+        shortcuts: DeviceUtils.dpadChannelShortcuts,
+        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        onShowHoverHighlight: (v) => setState(() => _isHovered = v),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
@@ -649,6 +878,7 @@ class _FavoritePosterCard extends StatefulWidget {
   final String? rating;
   final IconData fallbackIcon;
   final Color accentColor;
+  final FocusNode? focusNode;
   final VoidCallback onTap;
   final VoidCallback onRemove;
 
@@ -658,6 +888,7 @@ class _FavoritePosterCard extends StatefulWidget {
     this.rating,
     required this.fallbackIcon,
     required this.accentColor,
+    this.focusNode,
     required this.onTap,
     required this.onRemove,
   });
@@ -669,22 +900,55 @@ class _FavoritePosterCard extends StatefulWidget {
 class _FavoritePosterCardState extends State<_FavoritePosterCard> {
   bool _isFocused = false;
   bool _isHovered = false;
+  bool _longPressTriggered = false;
+
+  KeyEventResult _handleExtraKeyEvent(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.delete ||
+        key == LogicalKeyboardKey.backspace ||
+        key == LogicalKeyboardKey.gameButtonY) {
+      if (event is KeyDownEvent) {
+        widget.onRemove();
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      if (event is KeyRepeatEvent) {
+        if (!_longPressTriggered) {
+          _longPressTriggered = true;
+          widget.onRemove();
+        }
+        return KeyEventResult.handled;
+      }
+      if (event is KeyUpEvent) {
+        _longPressTriggered = false;
+      }
+    }
+
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.channelActions(
-        onTap: widget.onTap,
-        onToggleFavorite: widget.onRemove,
-      ),
-      shortcuts: DeviceUtils.dpadChannelShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: isHighlighted ? 1.04 : 1.0,
-        duration: const Duration(milliseconds: 150),
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _handleExtraKeyEvent,
+      child: FocusableActionDetector(
+        focusNode: widget.focusNode,
+        actions: DeviceUtils.channelActions(
+          onTap: widget.onTap,
+          onToggleFavorite: widget.onRemove,
+        ),
+        shortcuts: DeviceUtils.dpadChannelShortcuts,
+        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        onShowHoverHighlight: (v) => setState(() => _isHovered = v),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(

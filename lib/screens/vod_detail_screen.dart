@@ -44,6 +44,9 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
       id: widget.movie.streamId.toString(),
     );
     FavoritesService.instance.addListener(_onFavoritesChanged);
+    FavoritesService.instance.loadFavorites(widget.accountKey).then((_) {
+      _onFavoritesChanged();
+    });
     _loadDetailsAndProgress();
   }
 
@@ -124,6 +127,7 @@ class _VodDetailScreenState extends State<VodDetailScreen> {
     final streamUrls = widget.catalogService.buildVodStreamUrlsById(
       widget.movie.streamId,
       extension: resolvedExt,
+      directSource: widget.movie.directSource,
     );
 
     if (fromBeginning && _savedProgress != null) {
@@ -502,6 +506,7 @@ class _VodBackButtonPillState extends State<_VodBackButtonPill> {
   @override
   Widget build(BuildContext context) {
     return FocusableActionDetector(
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(
@@ -581,6 +586,7 @@ class _VodSiloPrimaryButtonState extends State<_VodSiloPrimaryButton> {
   Widget build(BuildContext context) {
     return FocusableActionDetector(
       autofocus: widget.autofocus,
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(
@@ -664,6 +670,7 @@ class _VodSiloSecondaryButtonState extends State<_VodSiloSecondaryButton> {
   @override
   Widget build(BuildContext context) {
     return FocusableActionDetector(
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(
@@ -744,6 +751,7 @@ class _VodSiloFavoriteButtonState extends State<_VodSiloFavoriteButton> {
   @override
   Widget build(BuildContext context) {
     return FocusableActionDetector(
+      shortcuts: DeviceUtils.dpadSelectShortcuts,
       onShowFocusHighlight: (v) => setState(() => _isFocused = v),
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(

@@ -1,14 +1,17 @@
-﻿import 'dart:convert';
+﻿import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/favorite_item.dart';
+import '../models/xtream_catalog.dart';
+import 'series_identity_verifier.dart';
 import 'user_profile_service.dart';
 
 /// Serviço responsável por persistir e gerenciar favoritos localmente,
-/// garantindo isolamento estrito por conta/servidor Xtream e por lista M3U.
+/// garantindo isolamento estrito por conta/servidor Xtream, por lista M3U e por perfil.
 ///
-/// Herda de [ChangeNotifier] para notificar a UI de alterações em tempo real
-/// sem exigir reinicialização do aplicativo ou recargas completas.
+/// Todas as gravações são serializadas em fila e o cache em memória é isolado
+/// pelo escopo efetivo (conta + perfil ativo), evitando mistura ou duplicação.
 class FavoritesService extends ChangeNotifier {
   static FavoritesService? _instance;
 
@@ -22,14 +25,18 @@ class FavoritesService extends ChangeNotifier {
 
   final SharedPreferences? _prefsOverride;
 
-  // Cache em memória de chaves compostas para checagens O(1): '$scopeKey#${type.name}#$id'
+  // Chaves compostas indexadas por escopo efetivo (conta + perfil):
+  // '$effectiveCacheKey#${type.name}#$id'
   final Set<String> _cachedCompositeKeys = <String>{};
 
-  // Cache em memória dos itens por scopeKey para acesso rápido
+  // Cache em memória dos itens por effectiveCacheKey (conta + perfil)
   final Map<String, List<FavoriteItem>> _cachedItems = <String, List<FavoriteItem>>{};
 
-  // Controle de carregamento por scopeKey
+  // Controle de carregamento por effectiveCacheKey
   final Set<String> _loadedScopes = <String>{};
+
+  // Fila sequencial para evitar condições de corrida entre alterações simultâneas
+  Future<void>? _writeQueue;
 
   FavoritesService({SharedPreferences? prefs}) : _prefsOverride = prefs;
 
@@ -37,13 +44,55 @@ class FavoritesService extends ChangeNotifier {
     return _prefsOverride ?? await SharedPreferences.getInstance();
   }
 
-  /// Limpa caches em memória ao alternar perfis ou fontes
+  Future<T> _enqueueWrite<T>(Future<T> Function() action) {
+    final prev = _writeQueue;
+    if (prev == null) {
+      final current = action();
+      late final Future<void> tail;
+      tail = current.then<void>(
+        (_) {
+          if (identical(_writeQueue, tail)) {
+            _writeQueue = null;
+          }
+        },
+        onError: (Object _, StackTrace _) {
+          if (identical(_writeQueue, tail)) {
+            _writeQueue = null;
+          }
+        },
+      );
+      _writeQueue = tail;
+      return current;
+    }
+
+    final completer = Completer<T>();
+    final tail = prev.whenComplete(() async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    late final Future<void> trackedTail;
+    trackedTail = tail.whenComplete(() {
+      if (identical(_writeQueue, trackedTail)) {
+        _writeQueue = null;
+      }
+    });
+    _writeQueue = trackedTail;
+    return completer.future;
+  }
+
+  /// Limpa caches em memória ao alternar perfis, contas ou fontes
   void clearCache() {
     _cachedCompositeKeys.clear();
     _cachedItems.clear();
     _loadedScopes.clear();
     notifyListeners();
   }
+
+  /// Alias explícito para limpeza de cache em memória no logout ou troca de perfil/conta.
+  void clearMemoryCache() => clearCache();
 
   /// Gera a chave de armazenamento isolada por escopo e perfil
   static String buildStorageKey(String scopeKey) {
@@ -52,15 +101,20 @@ class FavoritesService extends ChangeNotifier {
     return 'player_fav_${cleanScope}_v1';
   }
 
-  /// Carrega os favoritos do escopo para o cache em memória caso ainda não tenham sido lidos
-  Future<List<FavoriteItem>> loadFavorites(String scopeKey) async {
-    if (_loadedScopes.contains(scopeKey) && _cachedItems.containsKey(scopeKey)) {
-      return List.unmodifiable(_cachedItems[scopeKey]!);
+  String _effectiveCacheKey(String scopeKey) => buildStorageKey(scopeKey);
+
+  String _compositeKeyFor(String effectiveKey, FavoriteType type, String id) =>
+      '$effectiveKey#${type.name}#$id';
+
+  Future<List<FavoriteItem>> _loadFavoritesUnlocked(String scopeKey) async {
+    final effectiveKey = _effectiveCacheKey(scopeKey);
+    if (_loadedScopes.contains(effectiveKey) &&
+        _cachedItems.containsKey(effectiveKey)) {
+      return List.unmodifiable(_cachedItems[effectiveKey]!);
     }
 
     final prefs = await _getPrefs();
-    final storageKey = buildStorageKey(scopeKey);
-    final jsonList = prefs.getStringList(storageKey) ?? [];
+    final jsonList = prefs.getStringList(effectiveKey) ?? [];
 
     final items = <FavoriteItem>[];
     for (final jsonStr in jsonList) {
@@ -68,7 +122,9 @@ class FavoritesService extends ChangeNotifier {
         final map = jsonDecode(jsonStr) as Map<String, dynamic>;
         final item = FavoriteItem.fromJson(map);
         items.add(item);
-        _cachedCompositeKeys.add(item.compositeKey);
+        _cachedCompositeKeys.add(
+          _compositeKeyFor(effectiveKey, item.type, item.id),
+        );
       } catch (_) {
         // Ignorar itens corrompidos para não quebrar a carga
       }
@@ -77,68 +133,81 @@ class FavoritesService extends ChangeNotifier {
     // Ordenar pelos mais recentemente adicionados
     items.sort((a, b) => b.addedAt.compareTo(a.addedAt));
 
-    _cachedItems[scopeKey] = items;
-    _loadedScopes.add(scopeKey);
+    _cachedItems[effectiveKey] = items;
+    _loadedScopes.add(effectiveKey);
     return List.unmodifiable(items);
   }
 
-  /// Retorna de forma síncrona se um item é favorito (a partir do cache em memória)
+  /// Carrega os favoritos do escopo (isolado pelo perfil ativo) para o cache em memória
+  Future<List<FavoriteItem>> loadFavorites(String scopeKey) =>
+      _loadFavoritesUnlocked(scopeKey);
+
+  /// Retorna de forma síncrona se um item é favorito no perfil ativo (cache em memória)
   bool isFavorite({
     required String scopeKey,
     required FavoriteType type,
     required String id,
   }) {
-    final key = '$scopeKey#${type.name}#$id';
-    return _cachedCompositeKeys.contains(key);
+    final effectiveKey = _effectiveCacheKey(scopeKey);
+    return _cachedCompositeKeys.contains(
+      _compositeKeyFor(effectiveKey, type, id),
+    );
   }
 
-  /// Retorna todos os IDs favoritos de um determinado tipo para o escopo
+  /// Retorna todos os IDs favoritos de um determinado tipo para o escopo e perfil ativo
   Set<String> getFavoriteIdsSync({
     required String scopeKey,
     required FavoriteType type,
   }) {
-    final items = _cachedItems[scopeKey] ?? [];
+    final effectiveKey = _effectiveCacheKey(scopeKey);
+    final items = _cachedItems[effectiveKey] ?? [];
     return items.where((i) => i.type == type).map((i) => i.id).toSet();
   }
 
   /// Alterna o estado de favorito de um item.
   /// Retorna `true` se o item foi adicionado e `false` se foi removido.
-  Future<bool> toggleFavorite(FavoriteItem item) async {
-    // Garante que o escopo está carregado
-    await loadFavorites(item.scopeKey);
+  Future<bool> toggleFavorite(FavoriteItem item) {
+    return _enqueueWrite(() async {
+      await _loadFavoritesUnlocked(item.scopeKey);
 
-    final currentlyFavorite = isFavorite(
-      scopeKey: item.scopeKey,
-      type: item.type,
-      id: item.id,
-    );
-
-    if (currentlyFavorite) {
-      await removeFavorite(
+      final currentlyFavorite = isFavorite(
         scopeKey: item.scopeKey,
         type: item.type,
         id: item.id,
       );
-      return false;
-    } else {
-      await addFavorite(item);
-      return true;
-    }
+
+      if (currentlyFavorite) {
+        await _removeFavoriteUnlocked(
+          scopeKey: item.scopeKey,
+          type: item.type,
+          id: item.id,
+        );
+        return false;
+      } else {
+        await _addFavoriteUnlocked(item);
+        return true;
+      }
+    });
   }
 
-  /// Adiciona um item aos favoritos com persistência local
-  Future<void> addFavorite(FavoriteItem item) async {
-    await loadFavorites(item.scopeKey);
+  /// Adiciona um item aos favoritos mantendo ordenação por [addedAt] (suporta Desfazer na posição original)
+  Future<void> addFavorite(FavoriteItem item) {
+    return _enqueueWrite(() => _addFavoriteUnlocked(item));
+  }
 
-    final currentList = _cachedItems[item.scopeKey] ?? <FavoriteItem>[];
+  Future<void> _addFavoriteUnlocked(FavoriteItem item) async {
+    final effectiveKey = _effectiveCacheKey(item.scopeKey);
+    await _loadFavoritesUnlocked(item.scopeKey);
 
-    // Remove eventual duplicidade pré-existente
+    final currentList = _cachedItems[effectiveKey] ?? <FavoriteItem>[];
     currentList.removeWhere((i) => i.type == item.type && i.id == item.id);
+    currentList.add(item);
+    currentList.sort((a, b) => b.addedAt.compareTo(a.addedAt));
 
-    // Insere no início (mais recente)
-    currentList.insert(0, item);
-    _cachedItems[item.scopeKey] = currentList;
-    _cachedCompositeKeys.add(item.compositeKey);
+    _cachedItems[effectiveKey] = currentList;
+    _cachedCompositeKeys.add(
+      _compositeKeyFor(effectiveKey, item.type, item.id),
+    );
 
     await _persistScope(item.scopeKey, currentList);
     notifyListeners();
@@ -149,16 +218,114 @@ class FavoritesService extends ChangeNotifier {
     required String scopeKey,
     required FavoriteType type,
     required String id,
-  }) async {
-    await loadFavorites(scopeKey);
+  }) {
+    return _enqueueWrite(
+      () => _removeFavoriteUnlocked(scopeKey: scopeKey, type: type, id: id),
+    );
+  }
 
-    final currentList = _cachedItems[scopeKey] ?? <FavoriteItem>[];
+  Future<void> _removeFavoriteUnlocked({
+    required String scopeKey,
+    required FavoriteType type,
+    required String id,
+  }) async {
+    final effectiveKey = _effectiveCacheKey(scopeKey);
+    await _loadFavoritesUnlocked(scopeKey);
+
+    final currentList = _cachedItems[effectiveKey] ?? <FavoriteItem>[];
     currentList.removeWhere((i) => i.type == type && i.id == id);
-    _cachedItems[scopeKey] = currentList;
-    _cachedCompositeKeys.remove('$scopeKey#${type.name}#$id');
+    _cachedItems[effectiveKey] = currentList;
+    _cachedCompositeKeys.remove(_compositeKeyFor(effectiveKey, type, id));
 
     await _persistScope(scopeKey, currentList);
     notifyListeners();
+  }
+
+  /// Migra o ID de uma série já favoritada após reindexação confirmada no servidor,
+  /// removendo o ID antigo (sem duplicar) e preservando o timestamp [addedAt] original.
+  /// Nunca adiciona favorito se [oldSeriesId] não estiver favoritado.
+  Future<void> migrateSeriesFavoriteId({
+    required String accountKey,
+    required int oldSeriesId,
+    required XtreamSeriesItem newSeries,
+  }) {
+    return _enqueueWrite(() async {
+      if (accountKey.trim().isEmpty ||
+          oldSeriesId <= 0 ||
+          newSeries.seriesId <= 0 ||
+          oldSeriesId == newSeries.seriesId) {
+        return;
+      }
+
+      final effectiveKey = _effectiveCacheKey(accountKey);
+      await _loadFavoritesUnlocked(accountKey);
+
+      final currentList = _cachedItems[effectiveKey] ?? <FavoriteItem>[];
+      final oldIdStr = oldSeriesId.toString();
+      final newIdStr = newSeries.seriesId.toString();
+
+      final oldIdx = currentList.indexWhere(
+        (i) => i.type == FavoriteType.series && i.id == oldIdStr,
+      );
+      if (oldIdx < 0) return;
+
+      final existingOld = currentList[oldIdx];
+      final existingNewIdx = currentList.indexWhere(
+        (i) => i.type == FavoriteType.series && i.id == newIdStr,
+      );
+      final preservedAddedAt = existingNewIdx >= 0 &&
+              currentList[existingNewIdx].addedAt.isAfter(existingOld.addedAt)
+          ? currentList[existingNewIdx].addedAt
+          : existingOld.addedAt;
+
+      currentList.removeWhere(
+        (i) =>
+            i.type == FavoriteType.series &&
+            (i.id == oldIdStr || i.id == newIdStr),
+      );
+      _cachedCompositeKeys.remove(
+        _compositeKeyFor(effectiveKey, FavoriteType.series, oldIdStr),
+      );
+
+      final updated = FavoriteItem(
+        id: newIdStr,
+        scopeKey: accountKey,
+        type: FavoriteType.series,
+        name: newSeries.name.isNotEmpty ? newSeries.name : existingOld.name,
+        iconUrl: newSeries.cover ?? existingOld.iconUrl,
+        categoryId: newSeries.categoryId.isNotEmpty
+            ? newSeries.categoryId
+            : existingOld.categoryId,
+        rating: newSeries.rating ?? existingOld.rating,
+        addedAt: preservedAddedAt,
+      );
+      currentList.add(updated);
+      currentList.sort((a, b) => b.addedAt.compareTo(a.addedAt));
+
+      _cachedItems[effectiveKey] = currentList;
+      _cachedCompositeKeys.add(
+        _compositeKeyFor(effectiveKey, FavoriteType.series, newIdStr),
+      );
+
+      await _persistScope(accountKey, currentList);
+      notifyListeners();
+    });
+  }
+
+  /// Localiza um favorito de série por correspondência estrita e inequívoca de identidade.
+  Future<FavoriteItem?> findSeriesFavoriteByIdentity({
+    required String scopeKey,
+    required String seriesName,
+  }) async {
+    final seriesFavs = await getFavorites(
+      scopeKey: scopeKey,
+      type: FavoriteType.series,
+    );
+    final matches = seriesFavs
+        .where((f) => SeriesIdentityVerifier.areSameSeriesIdentity(seriesName, f.name))
+        .toList();
+    if (matches.length == 1) return matches.first;
+    return null;
   }
 
   /// Retorna a lista de itens favoritos filtrada por tipo (ou todos se type == null)
@@ -166,7 +333,7 @@ class FavoritesService extends ChangeNotifier {
     required String scopeKey,
     FavoriteType? type,
   }) async {
-    final all = await loadFavorites(scopeKey);
+    final all = await _loadFavoritesUnlocked(scopeKey);
     if (type == null) return all;
     return all.where((item) => item.type == type).toList();
   }
@@ -180,37 +347,44 @@ class FavoritesService extends ChangeNotifier {
     return items.map((i) => i.id).toSet();
   }
 
-  /// Limpa todos os favoritos de um escopo (ou apenas de um tipo específico)
+  /// Limpa todos os favoritos de um escopo e perfil (ou apenas de um tipo específico)
   Future<void> clearFavorites({
     required String scopeKey,
     FavoriteType? type,
-  }) async {
-    await loadFavorites(scopeKey);
+  }) {
+    return _enqueueWrite(() async {
+      final effectiveKey = _effectiveCacheKey(scopeKey);
+      await _loadFavoritesUnlocked(scopeKey);
 
-    final currentList = _cachedItems[scopeKey] ?? <FavoriteItem>[];
-    if (type == null) {
-      for (final item in currentList) {
-        _cachedCompositeKeys.remove(item.compositeKey);
-      }
-      currentList.clear();
-    } else {
-      currentList.removeWhere((item) {
-        if (item.type == type) {
-          _cachedCompositeKeys.remove(item.compositeKey);
-          return true;
+      final currentList = _cachedItems[effectiveKey] ?? <FavoriteItem>[];
+      if (type == null) {
+        for (final item in currentList) {
+          _cachedCompositeKeys.remove(
+            _compositeKeyFor(effectiveKey, item.type, item.id),
+          );
         }
-        return false;
-      });
-    }
+        currentList.clear();
+      } else {
+        currentList.removeWhere((item) {
+          if (item.type == type) {
+            _cachedCompositeKeys.remove(
+              _compositeKeyFor(effectiveKey, item.type, item.id),
+            );
+            return true;
+          }
+          return false;
+        });
+      }
 
-    _cachedItems[scopeKey] = currentList;
-    await _persistScope(scopeKey, currentList);
-    notifyListeners();
+      _cachedItems[effectiveKey] = currentList;
+      await _persistScope(scopeKey, currentList);
+      notifyListeners();
+    });
   }
 
   Future<void> _persistScope(String scopeKey, List<FavoriteItem> items) async {
     final prefs = await _getPrefs();
-    final storageKey = buildStorageKey(scopeKey);
+    final storageKey = _effectiveCacheKey(scopeKey);
     final stringList = items.map((i) => jsonEncode(i.toJson())).toList();
     await prefs.setStringList(storageKey, stringList);
   }

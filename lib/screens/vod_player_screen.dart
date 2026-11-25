@@ -70,6 +70,8 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   bool _smartSourceConnectRetryAttempted = false;
   bool _autoSessionReloadAttempted = false;
   String? _smartSourceResolvedUrl;
+  String? _activeConnectionUrl;
+  final Set<String> _failedUrls = <String>{};
 
   Timer? _progressSaveTimer;
   LiveVideoFitMode _fitMode = SettingsService.instance.defaultAspectRatio;
@@ -266,6 +268,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     }
 
     if (dur > Duration.zero && (pos.inSeconds >= 5 || force)) {
+      if (pos.inSeconds >= 5) {
+        _resumptionTarget = pos;
+      }
       debugPrint('[VOD PLAYER] [PROGRESSO] Salvando progresso: streamId=${_currentMovie.streamId}, pos=${PlaybackProgressService.formatDuration(pos)}, dur=${PlaybackProgressService.formatDuration(dur)}');
       await _progressService.saveProgress(
         accountKey: widget.accountKey,
@@ -344,7 +349,11 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     _currentUrlIndex = 0;
 
     if ((_streamUrls.isEmpty || isAutoSessionReload) && widget.catalogService != null) {
-      _streamUrls = widget.catalogService!.buildVodStreamUrls(_currentMovie);
+      _streamUrls = widget.catalogService!.buildVodStreamUrlsById(
+        _currentMovie.streamId,
+        extension: _currentMovie.containerExtension,
+        directSource: _currentMovie.directSource,
+      );
     }
 
     debugPrint('[VOD PLAYER] Início de fluxo: streamId=${_currentMovie.streamId}, título="${_currentMovie.name}"');
@@ -363,6 +372,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
 
   Future<void> _connectToUrl(String url) async {
     final epoch = ++_connectionEpoch;
+    _activeConnectionUrl = url;
     _isHandlingError = false;
     _postPlaySeekTimer?.cancel();
     _postPlaySeekTimer = null;
@@ -518,6 +528,10 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
   Future<void> _handleConnectionError(Object e, {required int epoch}) async {
     if (!mounted || epoch != _connectionEpoch || _isExiting) return;
 
+    if (_activeConnectionUrl != null && _activeConnectionUrl!.isNotEmpty) {
+      _failedUrls.add(_activeConnectionUrl!);
+    }
+
     final quickDetails = PlayerDiagnostics.analyzeError(e);
 
     final isPluginUnavailable =
@@ -608,6 +622,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
       final result = await SmartSourceResolver.instance.resolveBestVodSource(
         catalogService: widget.catalogService!,
         movie: _currentMovie,
+        alreadyFailedUrls: _failedUrls,
         onProgressMessage: (msg) {
           if (mounted && epoch == _connectionEpoch) {
             setState(() => _smartSourceStatusMessage = msg);
@@ -816,7 +831,17 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         if (val.isPlaying) {
           _syncPipState(true);
           DeviceUtils.setKeepScreenOn(true, force: true);
+        } else {
+          _syncPipState(false);
+          DeviceUtils.setKeepScreenOn(false);
         }
+      }
+
+      if (!val.isPlaying &&
+          val.duration > Duration.zero &&
+          val.position >= val.duration - const Duration(seconds: 1)) {
+        _syncPipState(false);
+        DeviceUtils.setKeepScreenOn(false);
       }
 
       if (val.isBuffering != _isBuffering) {
@@ -826,7 +851,9 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         } else {
           _metrics.markBufferingEnd();
         }
-        setState(() => _isBuffering = val.isBuffering);
+        if (mounted) {
+          setState(() => _isBuffering = val.isBuffering);
+        }
       }
     }
   }
@@ -838,13 +865,16 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     if (c.value.isPlaying) {
       await c.pause();
       _syncPipState(false);
+      DeviceUtils.setKeepScreenOn(false);
       await _saveCurrentProgress(); // Salva imediatamente ao pausar
     } else {
       await c.play();
       _syncPipState(true);
       DeviceUtils.setKeepScreenOn(true, force: true);
     }
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _seekRelative(int seconds) async {
@@ -859,9 +889,12 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
         ? Duration.zero
         : (target > total ? total : target);
 
+    _resumptionTarget = clamped;
     await c.seekTo(clamped);
     await _saveCurrentProgress();
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _seekToFraction(double fraction) async {
@@ -872,9 +905,12 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
     final targetMs = (total.inMilliseconds * fraction).round();
     final target = Duration(milliseconds: targetMs);
 
+    _resumptionTarget = target;
     await c.seekTo(target);
     await _saveCurrentProgress();
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
@@ -900,6 +936,7 @@ class _VodPlayerScreenState extends State<VodPlayerScreen>
           _currentUrlIndex = 0;
           _smartSourceAttempted = false;
           _smartSourceStatusMessage = null;
+          _failedUrls.clear();
           _resumptionTarget ??= widget.initialPosition;
           _initPlayer();
         },

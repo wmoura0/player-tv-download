@@ -12,6 +12,7 @@ class PinEntryDialog extends StatefulWidget {
   final String subtitle;
   final bool isCreatingNewPin;
   final ValueChanged<String>? onPinCreated;
+  final ValueChanged<String>? onPinVerified;
 
   const PinEntryDialog({
     super.key,
@@ -19,6 +20,7 @@ class PinEntryDialog extends StatefulWidget {
     this.subtitle = 'Digite o PIN de 4 dígitos para acessar este conteúdo.',
     this.isCreatingNewPin = false,
     this.onPinCreated,
+    this.onPinVerified,
   });
 
   /// Exibe o diálogo e retorna true se o PIN foi autenticado com sucesso
@@ -28,6 +30,7 @@ class PinEntryDialog extends StatefulWidget {
     String subtitle = 'Digite o PIN de 4 dígitos para acessar este conteúdo.',
     bool isCreatingNewPin = false,
     ValueChanged<String>? onPinCreated,
+    ValueChanged<String>? onPinVerified,
   }) async {
     final result = await showDialog<bool>(
       context: context,
@@ -37,6 +40,7 @@ class PinEntryDialog extends StatefulWidget {
         subtitle: subtitle,
         isCreatingNewPin: isCreatingNewPin,
         onPinCreated: onPinCreated,
+        onPinVerified: onPinVerified,
       ),
     );
     return result ?? false;
@@ -137,6 +141,7 @@ class _PinEntryDialogState extends State<PinEntryDialog> {
 
     final isValid = PinService.instance.verifyPin(pin);
     if (isValid) {
+      widget.onPinVerified?.call(pin);
       Navigator.of(context).pop(true);
     } else {
       setState(() {

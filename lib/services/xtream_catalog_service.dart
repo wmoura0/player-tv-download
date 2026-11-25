@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import '../models/xtream_catalog.dart';
 import '../models/xtream_series_info.dart';
 import '../models/xtream_vod_info.dart';
+import 'player_diagnostics.dart';
+import 'series_identity_verifier.dart';
 import 'url_sanitizer.dart';
 import 'xtream_auth_service.dart';
 
@@ -21,14 +23,56 @@ class XtreamCatalogException implements Exception {
   String toString() => message;
 }
 
+/// Resultado diagnóstico detalhado de uma consulta `get_series_info`.
+class SeriesInfoFetchResult {
+  final XtreamSeriesInfo? info;
+  final SeriesInfoErrorCategory category;
+  final DiagnosticClassification classification;
+  final SeriesIdentityConsistency identityConsistency;
+  final int? httpStatus;
+  final int elapsedMs;
+  final bool fromCache;
+  final String? userMessage;
+  final String? technicalSummary;
+
+  const SeriesInfoFetchResult({
+    this.info,
+    required this.category,
+    required this.classification,
+    this.identityConsistency = SeriesIdentityConsistency.notApplicable,
+    this.httpStatus,
+    this.elapsedMs = 0,
+    this.fromCache = false,
+    this.userMessage,
+    this.technicalSummary,
+  });
+
+  bool get isSuccess =>
+      info != null &&
+      !info!.isOrphanedOrStub &&
+      category == SeriesInfoErrorCategory.none &&
+      identityConsistency != SeriesIdentityConsistency.mismatch;
+
+  bool get hasUsableEpisodes =>
+      info != null && info!.seasons.isNotEmpty && info!.totalEpisodeCount > 0;
+}
+
 /// Serviço responsável por consultar os catálogos reais da API Xtream Codes
 /// (Categorias e listagens de TV ao vivo, Filmes e Séries) com cache em memória
 /// e decodificação em segundo plano (Isolate.run).
 class XtreamCatalogService extends ChangeNotifier {
+  static const int _maxSeriesInfoMemoryEntries = 25;
+  static const int _maxVodInfoMemoryEntries = 50;
+
   final String serverUrl;
   final String username;
   final String password;
   final http.Client _client;
+  final bool _ownsClient;
+
+  int _cacheGeneration = 0;
+  final Map<String, Future<List<XtreamSeriesItem>>> _inFlightSeriesFetches = {};
+  final Map<String, Future<SeriesInfoFetchResult>> _inFlightSeriesInfoFetches = {};
 
   // Cache em memória durante a sessão
   List<XtreamCategory>? _liveCategoriesCache;
@@ -55,6 +99,7 @@ class XtreamCatalogService extends ChangeNotifier {
   int get seriesStreamsCacheCount => _seriesCache.length;
   int get vodInfoCacheCount => _vodInfoCache.length;
   int get seriesInfoCacheCount => _seriesInfoCache.length;
+  String get accountCacheKey => _accountCachePrefix;
 
   int? get totalLiveCount => _liveStreamsCache['all']?.length;
   int? get totalVodCount => _vodStreamsCache['all']?.length;
@@ -81,14 +126,25 @@ class XtreamCatalogService extends ChangeNotifier {
 
   final Directory? cacheDirectoryOverride;
 
-
   XtreamCatalogService({
     required this.serverUrl,
     required this.username,
     required this.password,
     http.Client? client,
     this.cacheDirectoryOverride,
-  }) : _client = client ?? http.Client();
+  })  : _client = client ?? http.Client(),
+        _ownsClient = client == null;
+
+  @override
+  void dispose() {
+    _cacheGeneration++;
+    _inFlightSeriesFetches.clear();
+    _inFlightSeriesInfoFetches.clear();
+    if (_ownsClient) {
+      _client.close();
+    }
+    super.dispose();
+  }
 
   /// Prefixo seguro de cache derivado do servidor e usuário (sem expor senhas em plain text)
   String get _accountCachePrefix {
@@ -196,6 +252,20 @@ class XtreamCatalogService extends ChangeNotifier {
     }
   }
 
+  void _putBoundedIntMap<V>(
+    Map<int, V> cache,
+    int key,
+    V value, {
+    required int maxEntries,
+  }) {
+    // Reinsere no fim para manter ordem aproximada de uso recente (LRU).
+    cache.remove(key);
+    cache[key] = value;
+    while (cache.length > maxEntries) {
+      cache.remove(cache.keys.first);
+    }
+  }
+
   Future<void> _pruneDiskCache(String categoryPrefix, {int maxFiles = 30}) async {
     try {
       final dir = await _getCacheDirectory();
@@ -256,6 +326,23 @@ class XtreamCatalogService extends ChangeNotifier {
     return _seriesCache[categoryId];
   }
 
+  /// Retorna a união deduplicada (por [seriesId]) de todas as séries atualmente em cache de memória.
+  /// Não realiza nenhuma chamada de rede.
+  List<XtreamSeriesItem> getAllCachedSeriesUnionSync() {
+    if (_seriesCache.containsKey('all')) {
+      return List<XtreamSeriesItem>.unmodifiable(_seriesCache['all']!);
+    }
+    final byId = <int, XtreamSeriesItem>{};
+    for (final list in _seriesCache.values) {
+      for (final item in list) {
+        if (item.seriesId > 0) {
+          byId.putIfAbsent(item.seriesId, () => item);
+        }
+      }
+    }
+    return byId.values.toList(growable: false);
+  }
+
   /// Localiza um item de série pelo [seriesId] em qualquer categoria já carregada em memória.
   XtreamSeriesItem? findCachedSeriesByIdSync(int seriesId) {
     if (seriesId <= 0) return null;
@@ -272,6 +359,7 @@ class XtreamCatalogService extends ChangeNotifier {
     required String type,
     required String categoryId,
   }) async {
+    final gen = _cacheGeneration;
     final cacheKey = (categoryId.isEmpty) ? 'all' : categoryId;
     if (type == 'movies') {
       if (_vodStreamsCache.containsKey(cacheKey)) return _vodStreamsCache[cacheKey];
@@ -282,8 +370,10 @@ class XtreamCatalogService extends ChangeNotifier {
         final movies = disk
             .map((item) => XtreamVodStream.fromJson(item as Map<String, dynamic>))
             .toList();
-        _vodStreamsCache[cacheKey] = movies;
-        _enforceMemoryLimit(_vodStreamsCache);
+        if (gen == _cacheGeneration) {
+          _vodStreamsCache[cacheKey] = movies;
+          _enforceMemoryLimit(_vodStreamsCache);
+        }
         return movies;
       }
     } else if (type == 'series') {
@@ -295,8 +385,10 @@ class XtreamCatalogService extends ChangeNotifier {
         final series = disk
             .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
             .toList();
-        _seriesCache[cacheKey] = series;
-        _enforceMemoryLimit(_seriesCache);
+        if (gen == _cacheGeneration) {
+          _seriesCache[cacheKey] = series;
+          _enforceMemoryLimit(_seriesCache);
+        }
         return series;
       }
     } else if (type == 'live') {
@@ -308,8 +400,10 @@ class XtreamCatalogService extends ChangeNotifier {
         final streams = disk
             .map((item) => XtreamLiveStream.fromJson(item as Map<String, dynamic>))
             .toList();
-        _liveStreamsCache[cacheKey] = streams;
-        _enforceMemoryLimit(_liveStreamsCache);
+        if (gen == _cacheGeneration) {
+          _liveStreamsCache[cacheKey] = streams;
+          _enforceMemoryLimit(_liveStreamsCache);
+        }
         return streams;
       }
     }
@@ -353,8 +447,23 @@ class XtreamCatalogService extends ChangeNotifier {
     return '$day/$month/$year às $hour:$minute';
   }
 
+  /// Invalida o cache em memória e disco dos detalhes de uma série específica.
+  Future<void> invalidateSeriesInfoCache(int seriesId) async {
+    _seriesInfoCache.remove(seriesId);
+    _inFlightSeriesInfoFetches.removeWhere((key, _) => key.startsWith('$seriesId|'));
+    try {
+      final file = await _getCacheFile('series_info_$seriesId');
+      if (file != null && await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
+  }
+
   /// Limpa o cache da sessão em memória.
   void clearCache() {
+    _cacheGeneration++;
+    _inFlightSeriesFetches.clear();
+    _inFlightSeriesInfoFetches.clear();
     _liveCategoriesCache = null;
     _vodCategoriesCache = null;
     _seriesCategoriesCache = null;
@@ -919,7 +1028,12 @@ class XtreamCatalogService extends ChangeNotifier {
       if (data.isEmpty) return null;
 
       final info = XtreamVodInfo.fromJson(data, fallbackStreamId: vodId);
-      _vodInfoCache[vodId] = info;
+      _putBoundedIntMap(
+        _vodInfoCache,
+        vodId,
+        info,
+        maxEntries: _maxVodInfoMemoryEntries,
+      );
       return info;
     } catch (e) {
       debugPrint('[VOD INFO] Detalhes adicionais não disponíveis para vod_id=$vodId');
@@ -990,13 +1104,39 @@ class XtreamCatalogService extends ChangeNotifier {
   }) async {
     final cacheKey = (categoryId == null || categoryId.isEmpty) ? 'all' : categoryId;
 
-    // 1. Verificação em memória
+    // 1. Verificação imediata em memória antes de reutilizar/iniciar Future em voo.
     if (!forceRefresh && _seriesCache.containsKey(cacheKey)) {
       final cached = _seriesCache[cacheKey]!;
       debugPrint('[CATALOG][SERIES] [CACHE HIT MEMORY] cat: $cacheKey -> ${cached.length} séries');
       return cached;
     }
 
+    final inFlightKey = '$cacheKey|$forceRefresh';
+    final existing = _inFlightSeriesFetches[inFlightKey];
+    if (existing != null) {
+      return existing;
+    }
+
+    final gen = _cacheGeneration;
+    late final Future<List<XtreamSeriesItem>> future;
+    future = _fetchSeriesImpl(
+      cacheKey,
+      forceRefresh: forceRefresh,
+      expectedGen: gen,
+    ).whenComplete(() {
+      if (identical(_inFlightSeriesFetches[inFlightKey], future)) {
+        _inFlightSeriesFetches.remove(inFlightKey);
+      }
+    });
+    _inFlightSeriesFetches[inFlightKey] = future;
+    return future;
+  }
+
+  Future<List<XtreamSeriesItem>> _fetchSeriesImpl(
+    String cacheKey, {
+    required bool forceRefresh,
+    required int expectedGen,
+  }) async {
     // 2. Verificação em disco (específica por categoria ou geral)
     if (!forceRefresh) {
       if (cacheKey != 'all') {
@@ -1005,8 +1145,10 @@ class XtreamCatalogService extends ChangeNotifier {
           final series = diskCat
               .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
               .toList();
-          _seriesCache[cacheKey] = series;
-          _enforceMemoryLimit(_seriesCache);
+          if (expectedGen == _cacheGeneration) {
+            _seriesCache[cacheKey] = series;
+            _enforceMemoryLimit(_seriesCache);
+          }
           debugPrint('[CATALOG][SERIES] [CACHE HIT DISK] cat: $cacheKey -> ${series.length} séries');
           return series;
         }
@@ -1020,7 +1162,9 @@ class XtreamCatalogService extends ChangeNotifier {
               : diskAll
                   .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
                   .toList();
-          _seriesCache['all'] = allSeries;
+          if (expectedGen == _cacheGeneration) {
+            _seriesCache['all'] = allSeries;
+          }
           debugPrint('[CATALOG][SERIES] [CACHE HIT DISK] get_series all -> ${allSeries.length} séries');
           return allSeries;
         }
@@ -1044,23 +1188,29 @@ class XtreamCatalogService extends ChangeNotifier {
         timeout: cacheKey == 'all' ? const Duration(seconds: 35) : const Duration(seconds: 20),
       );
     } catch (e) {
-      // Se houver falha de rede/timeout mas tínhamos cache em memória ou disco,
-      // preserva o cache existente sem quebrar a tela (Stale-While-Revalidate fallback)
-      if (_seriesCache.containsKey(cacheKey) && _seriesCache[cacheKey]!.isNotEmpty) {
+      // Se houver falha de rede/timeout mas tínhamos cache em memória ou disco
+      // (da mesma geração), preserva o cache existente sem quebrar a tela.
+      if (expectedGen == _cacheGeneration &&
+          _seriesCache.containsKey(cacheKey) &&
+          _seriesCache[cacheKey]!.isNotEmpty) {
         debugPrint('[CATALOG][SERIES] Falha na rede para cat $cacheKey. Mantendo dados em cache: $e');
         return _seriesCache[cacheKey]!;
       }
-      final diskFallback = cacheKey != 'all'
-          ? await _readDiskCache('series_cat_$cacheKey')
-          : await _readDiskCache('series_all');
-      if (diskFallback != null && diskFallback.isNotEmpty) {
-        final series = diskFallback
-            .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
-            .toList();
-        _seriesCache[cacheKey] = series;
-        _enforceMemoryLimit(_seriesCache);
-        debugPrint('[CATALOG][SERIES] Falha na rede para cat $cacheKey. Recuperado do disco: $e');
-        return series;
+      if (expectedGen == _cacheGeneration) {
+        final diskFallback = cacheKey != 'all'
+            ? await _readDiskCache('series_cat_$cacheKey')
+            : await _readDiskCache('series_all');
+        if (diskFallback != null && diskFallback.isNotEmpty) {
+          final series = diskFallback
+              .map((item) => XtreamSeriesItem.fromJson(item as Map<String, dynamic>))
+              .toList();
+          if (expectedGen == _cacheGeneration) {
+            _seriesCache[cacheKey] = series;
+            _enforceMemoryLimit(_seriesCache);
+          }
+          debugPrint('[CATALOG][SERIES] Falha na rede para cat $cacheKey. Recuperado do disco: $e');
+          return series;
+        }
       }
       rethrow;
     }
@@ -1093,10 +1243,12 @@ class XtreamCatalogService extends ChangeNotifier {
         '${filtered.length} séries retornadas em ${swNet.elapsedMilliseconds}ms (parse: ${swMap.elapsedMilliseconds}ms)',
       );
 
-      _seriesCache[cacheKey] = filtered;
-      _enforceMemoryLimit(_seriesCache);
-      await _writeDiskCache('series_cat_$cacheKey', filtered.map((s) => s.toJson()).toList());
-      _pruneDiskCache('series_cat_');
+      if (expectedGen == _cacheGeneration) {
+        _seriesCache[cacheKey] = filtered;
+        _enforceMemoryLimit(_seriesCache);
+        await _writeDiskCache('series_cat_$cacheKey', filtered.map((s) => s.toJson()).toList());
+        _pruneDiskCache('series_cat_');
+      }
       return filtered;
     }
 
@@ -1107,67 +1259,376 @@ class XtreamCatalogService extends ChangeNotifier {
     );
 
     // 5. Atualização de Cache em Memória e Disco (para 'all')
-    _seriesCache[cacheKey] = series;
-    _enforceMemoryLimit(_seriesCache);
+    if (expectedGen == _cacheGeneration) {
+      _seriesCache[cacheKey] = series;
+      _enforceMemoryLimit(_seriesCache);
 
-    await _writeDiskCache('series_all', series.map((s) => s.toJson()).toList());
-    final recent = getRecentCachedSeries(limit: 20);
-    if (recent.isNotEmpty) {
-      await _writeDiskCache('recent_series', recent.map((m) => m.toJson()).toList());
+      await _writeDiskCache('series_all', series.map((s) => s.toJson()).toList());
+      final recent = getRecentCachedSeries(limit: 20);
+      if (recent.isNotEmpty) {
+        await _writeDiskCache('recent_series', recent.map((m) => m.toJson()).toList());
+      }
     }
 
     return series;
   }
 
   /// Retorna imediatamente metadados da série disponíveis em memória ou disco (sem consultar rede).
-  Future<XtreamSeriesInfo?> getCachedSeriesInfo(int seriesId) async {
+  /// Quando [expectedSeriesName] é informado e o cache pertence a outra série, o cache é invalidado.
+  Future<XtreamSeriesInfo?> getCachedSeriesInfo(
+    int seriesId, {
+    String? expectedSeriesName,
+  }) async {
+    final gen = _cacheGeneration;
+    XtreamSeriesInfo? candidate;
+    var fromDisk = false;
+
     if (_seriesInfoCache.containsKey(seriesId)) {
       debugPrint('[PERF] [CACHE HIT] get_series_info (series_id: $seriesId)');
-      return _seriesInfoCache[seriesId];
-    }
-
-    final diskData = await _readDiskCacheMap(
-      'series_info_$seriesId',
-      maxAge: const Duration(hours: 24),
-    );
-    if (diskData != null && diskData.isNotEmpty) {
-      final diskInfo = XtreamSeriesInfo.fromJson(diskData);
-      if (!diskInfo.isOrphanedOrStub) {
-        _seriesInfoCache[seriesId] = diskInfo;
-        debugPrint('[PERF] [CACHE HIT DISK] get_series_info (series_id: $seriesId)');
-        return diskInfo;
+      candidate = _seriesInfoCache[seriesId];
+    } else {
+      final diskData = await _readDiskCacheMap(
+        'series_info_$seriesId',
+        maxAge: const Duration(hours: 24),
+      );
+      if (diskData != null && diskData.isNotEmpty) {
+        final diskInfo = XtreamSeriesInfo.fromJson(diskData);
+        if (!diskInfo.isOrphanedOrStub) {
+          candidate = diskInfo;
+          fromDisk = true;
+        }
       }
     }
-    return null;
+
+    if (candidate == null) return null;
+
+    if (expectedSeriesName != null && expectedSeriesName.trim().isNotEmpty) {
+      final consistency = SeriesIdentityVerifier.verifySeriesInfoIdentity(
+        requestedTitle: expectedSeriesName,
+        serverReturnedName: candidate.serverReturnedName,
+      );
+      if (consistency == SeriesIdentityConsistency.mismatch) {
+        PlayerDiagnostics.logSeriesDiagnostic(
+          SeriesDiagnosticRecord(
+            timestamp: DateTime.now(),
+            requestType: 'get_series_info_cache',
+            anonymizedId: UrlSanitizer.anonymizeId(seriesId.toString()),
+            cacheSource: fromDisk ? 'disk' : 'memory',
+            elapsedMs: 0,
+            seasonCount: candidate.seasons.length,
+            episodeCount: candidate.totalEpisodeCount,
+            rawEpisodesShape: candidate.rawEpisodesShape,
+            rawEpisodeEntriesCount: candidate.rawEpisodeEntriesCount,
+            errorCategory: SeriesInfoErrorCategory.staleOrIncoherentCache,
+            identityConsistency: consistency,
+            classification: DiagnosticClassification.confirmedAppBug,
+            sanitizedNote: 'Cache local incompatível com identidade solicitada; invalidando.',
+          ),
+        );
+        await invalidateSeriesInfoCache(seriesId);
+        return null;
+      }
+    }
+
+    if (fromDisk && gen == _cacheGeneration) {
+      _putBoundedIntMap(
+        _seriesInfoCache,
+        seriesId,
+        candidate,
+        maxEntries: _maxSeriesInfoMemoryEntries,
+      );
+      debugPrint('[PERF] [CACHE HIT DISK] get_series_info (series_id: $seriesId)');
+    }
+    return candidate;
+  }
+
+  /// Consulta os detalhes de uma série (`action=get_series_info&series_id=...`) com
+  /// verificação estrita de identidade e diagnóstico granular P4/P8 sem vazar credenciais.
+  Future<SeriesInfoFetchResult> fetchSeriesInfoDetailed(
+    int seriesId, {
+    bool forceRefresh = false,
+    String? expectedSeriesName,
+  }) async {
+    if (!forceRefresh) {
+      final cached = await getCachedSeriesInfo(
+        seriesId,
+        expectedSeriesName: expectedSeriesName,
+      );
+      if (cached != null) {
+        final consistency = (expectedSeriesName != null && expectedSeriesName.trim().isNotEmpty)
+            ? SeriesIdentityVerifier.verifySeriesInfoIdentity(
+                requestedTitle: expectedSeriesName,
+                serverReturnedName: cached.serverReturnedName,
+              )
+            : SeriesIdentityConsistency.notApplicable;
+        return SeriesInfoFetchResult(
+          info: cached,
+          category: SeriesInfoErrorCategory.none,
+          classification: DiagnosticClassification.indeterminate,
+          identityConsistency: consistency,
+          fromCache: true,
+        );
+      }
+    }
+
+    final inFlightKey = '$seriesId|$forceRefresh|${expectedSeriesName?.trim() ?? ''}';
+    final existing = _inFlightSeriesInfoFetches[inFlightKey];
+    if (existing != null) {
+      return existing;
+    }
+
+    final gen = _cacheGeneration;
+    late final Future<SeriesInfoFetchResult> future;
+    future = _fetchSeriesInfoNetworkDetailed(
+      seriesId,
+      expectedSeriesName: expectedSeriesName,
+      expectedGen: gen,
+    ).whenComplete(() {
+      if (identical(_inFlightSeriesInfoFetches[inFlightKey], future)) {
+        _inFlightSeriesInfoFetches.remove(inFlightKey);
+      }
+    });
+    _inFlightSeriesInfoFetches[inFlightKey] = future;
+    return future;
+  }
+
+  Future<SeriesInfoFetchResult> _fetchSeriesInfoNetworkDetailed(
+    int seriesId, {
+    String? expectedSeriesName,
+    required int expectedGen,
+  }) async {
+    final anonId = UrlSanitizer.anonymizeId(seriesId.toString());
+    final outcome = await _fetchApiMapDetailed(
+      'get_series_info',
+      extraParams: {'series_id': seriesId.toString()},
+    );
+
+    if (outcome.category != SeriesInfoErrorCategory.none || outcome.data == null) {
+      PlayerDiagnostics.logSeriesDiagnostic(
+        SeriesDiagnosticRecord(
+          timestamp: DateTime.now(),
+          requestType: 'get_series_info',
+          anonymizedId: anonId,
+          cacheSource: 'network',
+          httpStatus: outcome.httpStatus,
+          elapsedMs: outcome.elapsedMs,
+          seasonCount: 0,
+          episodeCount: 0,
+          rawEpisodesShape: 'none',
+          rawEpisodeEntriesCount: 0,
+          errorCategory: outcome.category,
+          identityConsistency: SeriesIdentityConsistency.notApplicable,
+          classification: outcome.classification,
+          sanitizedNote: outcome.technicalSummary,
+        ),
+      );
+      return SeriesInfoFetchResult(
+        info: null,
+        category: outcome.category,
+        classification: outcome.classification,
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        userMessage: outcome.userMessage,
+        technicalSummary: outcome.technicalSummary,
+      );
+    }
+
+    final data = outcome.data!;
+    if (data.isEmpty) {
+      PlayerDiagnostics.logSeriesDiagnostic(
+        SeriesDiagnosticRecord(
+          timestamp: DateTime.now(),
+          requestType: 'get_series_info',
+          anonymizedId: anonId,
+          cacheSource: 'network',
+          httpStatus: outcome.httpStatus,
+          elapsedMs: outcome.elapsedMs,
+          seasonCount: 0,
+          episodeCount: 0,
+          rawEpisodesShape: 'empty_map',
+          rawEpisodeEntriesCount: 0,
+          errorCategory: SeriesInfoErrorCategory.serverReturnedNoEpisodes,
+          identityConsistency: SeriesIdentityConsistency.unverifiedMissingServerName,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          sanitizedNote: 'Objeto JSON vazio em get_series_info.',
+        ),
+      );
+      return SeriesInfoFetchResult(
+        info: null,
+        category: SeriesInfoErrorCategory.serverReturnedNoEpisodes,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        identityConsistency: SeriesIdentityConsistency.unverifiedMissingServerName,
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        userMessage: 'O servidor retornou resposta vazia (sem episódios) para esta série.',
+        technicalSummary: 'Objeto JSON vazio em get_series_info.',
+      );
+    }
+
+    final info = XtreamSeriesInfo.fromJson(data);
+    final consistency = (expectedSeriesName != null && expectedSeriesName.trim().isNotEmpty)
+        ? SeriesIdentityVerifier.verifySeriesInfoIdentity(
+            requestedTitle: expectedSeriesName,
+            serverReturnedName: info.serverReturnedName,
+          )
+        : SeriesIdentityConsistency.notApplicable;
+
+    if (consistency == SeriesIdentityConsistency.mismatch) {
+      _seriesInfoCache.remove(seriesId);
+      try {
+        final file = await _getCacheFile('series_info_$seriesId');
+        if (file != null && await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {}
+
+      PlayerDiagnostics.logSeriesDiagnostic(
+        SeriesDiagnosticRecord(
+          timestamp: DateTime.now(),
+          requestType: 'get_series_info',
+          anonymizedId: anonId,
+          cacheSource: 'network',
+          httpStatus: outcome.httpStatus,
+          elapsedMs: outcome.elapsedMs,
+          seasonCount: info.seasons.length,
+          episodeCount: info.totalEpisodeCount,
+          rawEpisodesShape: info.rawEpisodesShape,
+          rawEpisodeEntriesCount: info.rawEpisodeEntriesCount,
+          errorCategory: SeriesInfoErrorCategory.identityMismatch,
+          identityConsistency: consistency,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          sanitizedNote: 'Divergência de identidade no retorno de get_series_info.',
+        ),
+      );
+      return SeriesInfoFetchResult(
+        info: null,
+        category: SeriesInfoErrorCategory.identityMismatch,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        identityConsistency: consistency,
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        userMessage:
+            'O servidor retornou dados incompatíveis com esta série. Atualize ou tente novamente.',
+        technicalSummary: 'Divergência de identidade entre título solicitado e resposta do servidor.',
+      );
+    }
+
+    if (info.rawEpisodeEntriesCount > 0 && info.totalEpisodeCount == 0) {
+      PlayerDiagnostics.logSeriesDiagnostic(
+        SeriesDiagnosticRecord(
+          timestamp: DateTime.now(),
+          requestType: 'get_series_info',
+          anonymizedId: anonId,
+          cacheSource: 'network',
+          httpStatus: outcome.httpStatus,
+          elapsedMs: outcome.elapsedMs,
+          seasonCount: info.seasons.length,
+          episodeCount: 0,
+          rawEpisodesShape: info.rawEpisodesShape,
+          rawEpisodeEntriesCount: info.rawEpisodeEntriesCount,
+          errorCategory: SeriesInfoErrorCategory.parserIgnoredEpisodes,
+          identityConsistency: consistency,
+          classification: DiagnosticClassification.confirmedAppBug,
+          sanitizedNote:
+              'raw=${info.rawEpisodeEntriesCount}, skipped=${info.skippedEpisodeEntriesCount}',
+        ),
+      );
+      return SeriesInfoFetchResult(
+        info: info,
+        category: SeriesInfoErrorCategory.parserIgnoredEpisodes,
+        classification: DiagnosticClassification.confirmedAppBug,
+        identityConsistency: consistency,
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        userMessage:
+            'O servidor enviou ${info.rawEpisodeEntriesCount} entrada(s) de episódios, mas em formato não suportado pelo leitor.',
+        technicalSummary:
+            'shape=${info.rawEpisodesShape}, raw=${info.rawEpisodeEntriesCount}, skipped=${info.skippedEpisodeEntriesCount}',
+      );
+    }
+
+    if (info.seasons.isEmpty || info.totalEpisodeCount == 0) {
+      PlayerDiagnostics.logSeriesDiagnostic(
+        SeriesDiagnosticRecord(
+          timestamp: DateTime.now(),
+          requestType: 'get_series_info',
+          anonymizedId: anonId,
+          cacheSource: 'network',
+          httpStatus: outcome.httpStatus,
+          elapsedMs: outcome.elapsedMs,
+          seasonCount: info.seasons.length,
+          episodeCount: 0,
+          rawEpisodesShape: info.rawEpisodesShape,
+          rawEpisodeEntriesCount: info.rawEpisodeEntriesCount,
+          errorCategory: SeriesInfoErrorCategory.serverReturnedNoEpisodes,
+          identityConsistency: consistency,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          sanitizedNote: 'Servidor retornou 0 episódios válidos.',
+        ),
+      );
+      return SeriesInfoFetchResult(
+        info: info,
+        category: SeriesInfoErrorCategory.serverReturnedNoEpisodes,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        identityConsistency: consistency,
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        userMessage: 'O servidor retornou 0 episódios cadastrados para esta série.',
+        technicalSummary: 'shape=${info.rawEpisodesShape}, seasons=0, eps=0',
+      );
+    }
+
+    if (!info.isOrphanedOrStub && expectedGen == _cacheGeneration) {
+      _putBoundedIntMap(
+        _seriesInfoCache,
+        seriesId,
+        info,
+        maxEntries: _maxSeriesInfoMemoryEntries,
+      );
+      unawaited(_writeDiskCacheMap('series_info_$seriesId', data));
+      unawaited(_pruneDiskCache('series_info_', maxFiles: 25));
+    }
+
+    PlayerDiagnostics.logSeriesDiagnostic(
+      SeriesDiagnosticRecord(
+        timestamp: DateTime.now(),
+        requestType: 'get_series_info',
+        anonymizedId: anonId,
+        cacheSource: 'network',
+        httpStatus: outcome.httpStatus,
+        elapsedMs: outcome.elapsedMs,
+        seasonCount: info.seasons.length,
+        episodeCount: info.totalEpisodeCount,
+        rawEpisodesShape: info.rawEpisodesShape,
+        rawEpisodeEntriesCount: info.rawEpisodeEntriesCount,
+        errorCategory: SeriesInfoErrorCategory.none,
+        identityConsistency: consistency,
+        classification: DiagnosticClassification.indeterminate,
+      ),
+    );
+
+    return SeriesInfoFetchResult(
+      info: info,
+      category: SeriesInfoErrorCategory.none,
+      classification: DiagnosticClassification.indeterminate,
+      identityConsistency: consistency,
+      httpStatus: outcome.httpStatus,
+      elapsedMs: outcome.elapsedMs,
+    );
   }
 
   /// Consulta os detalhes e episódios de uma série (`action=get_series_info&series_id=...`).
-  Future<XtreamSeriesInfo?> fetchSeriesInfo(int seriesId, {bool forceRefresh = false}) async {
-    if (!forceRefresh) {
-      final cached = await getCachedSeriesInfo(seriesId);
-      if (cached != null) return cached;
-    }
-
-    try {
-      final data = await _fetchApiMap(
-        'get_series_info',
-        extraParams: {'series_id': seriesId.toString()},
-      );
-
-      if (data.isEmpty) return null;
-
-      final info = XtreamSeriesInfo.fromJson(data);
-      // Não retém em cache séries órfãs ou stubs para permitir auto-recuperação
-      if (!info.isOrphanedOrStub) {
-        _seriesInfoCache[seriesId] = info;
-        unawaited(_writeDiskCacheMap('series_info_$seriesId', data));
-        unawaited(_pruneDiskCache('series_info_', maxFiles: 25));
-      }
-      return info;
-    } catch (e) {
-      debugPrint('[SERIES INFO] Detalhes não disponíveis para series_id=$seriesId: $e');
-      return null;
-    }
+  Future<XtreamSeriesInfo?> fetchSeriesInfo(
+    int seriesId, {
+    bool forceRefresh = false,
+    String? expectedSeriesName,
+  }) async {
+    final result = await fetchSeriesInfoDetailed(
+      seriesId,
+      forceRefresh: forceRefresh,
+      expectedSeriesName: expectedSeriesName,
+    );
+    return result.info;
   }
 
   /// Consulta o Guia Eletrônico de Programação (EPG) para um canal ao vivo (`action=get_short_epg&stream_id=...`).
@@ -1500,17 +1961,25 @@ class XtreamCatalogService extends ChangeNotifier {
     return urls;
   }
 
-  Future<Map<String, dynamic>> _fetchApiMap(
+  Future<_ApiMapOutcome> _fetchApiMapDetailed(
     String action, {
     Map<String, String>? extraParams,
     Duration timeout = const Duration(seconds: 25),
   }) async {
+    final sw = Stopwatch()..start();
     final cleanServer = XtreamAuthService.normalizeServerUrl(serverUrl);
     final sanitizedBase = UrlSanitizer.sanitize(cleanServer);
 
     final uri = Uri.tryParse('$cleanServer/player_api.php');
     if (uri == null || (!uri.isScheme('http') && !uri.isScheme('https'))) {
-      throw const XtreamCatalogException('Endereço de servidor inválido.');
+      sw.stop();
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.invalidServerUrl,
+        classification: DiagnosticClassification.confirmedAppBug,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Endereço de servidor inválido.',
+        technicalSummary: 'URL do servidor inválida para ação $action.',
+      );
     }
 
     final query = <String, String>{
@@ -1536,22 +2005,62 @@ class XtreamCatalogService extends ChangeNotifier {
           )
           .timeout(timeout);
 
-      if (response.statusCode == 401 || response.statusCode == 403) {
-        throw XtreamCatalogException(
-          'Sessão expirada ou acesso negado pelo servidor.',
-          statusCode: response.statusCode,
+      sw.stop();
+      final status = response.statusCode;
+
+      if (status == 401 || status == 403) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.authDenied,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'Sessão expirada ou acesso negado pelo servidor (HTTP $status).',
+          technicalSummary: 'HTTP $status em $action.',
         );
       }
 
-      if (response.statusCode != 200) {
-        throw XtreamCatalogException(
-          'O servidor retornou erro HTTP ${response.statusCode}.',
-          statusCode: response.statusCode,
+      if (status == 404) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.httpNotFound,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'Série ou endpoint não encontrado no servidor (HTTP 404).',
+          technicalSummary: 'HTTP 404 em $action.',
+        );
+      }
+
+      if (status >= 500) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.httpServerError,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou erro interno (HTTP $status).',
+          technicalSummary: 'HTTP $status em $action.',
+        );
+      }
+
+      if (status != 200) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.httpOtherError,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou erro HTTP $status.',
+          technicalSummary: 'HTTP $status em $action.',
         );
       }
 
       if (response.bodyBytes.isEmpty) {
-        return {};
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.emptyBody,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou resposta vazia.',
+          technicalSummary: 'Corpo HTTP vazio em $action.',
+        );
       }
 
       String text;
@@ -1562,25 +2071,196 @@ class XtreamCatalogService extends ChangeNotifier {
       }
 
       final trimmed = text.trim();
-      if (trimmed.isEmpty) return {};
-
-      final decoded = jsonDecode(trimmed);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
-      } else if (decoded is Map) {
-        return Map<String, dynamic>.from(decoded);
+      if (trimmed.isEmpty) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.emptyBody,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou resposta em branco.',
+          technicalSummary: 'Corpo JSON em branco em $action.',
+        );
       }
-      return {};
-    } on XtreamCatalogException {
-      rethrow;
+
+      if (trimmed.startsWith('<')) {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.htmlErrorPage,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou uma página HTML em vez de JSON.',
+          technicalSummary: 'Resposta HTML recebida em $action.',
+        );
+      }
+
+      final dynamic decoded;
+      try {
+        decoded = trimmed.length > 30720
+            ? await Isolate.run(() => jsonDecode(trimmed))
+            : jsonDecode(trimmed);
+      } on FormatException {
+        return _ApiMapOutcome(
+          category: SeriesInfoErrorCategory.invalidJson,
+          classification: DiagnosticClassification.confirmedServerIssue,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+          userMessage: 'O servidor retornou JSON inválido ou truncado.',
+          technicalSummary: 'FormatException ao decodificar $action (${trimmed.length} chars).',
+        );
+      }
+
+      if (decoded is Map<String, dynamic>) {
+        return _ApiMapOutcome(
+          data: decoded,
+          category: SeriesInfoErrorCategory.none,
+          classification: DiagnosticClassification.indeterminate,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+        );
+      } else if (decoded is Map) {
+        return _ApiMapOutcome(
+          data: Map<String, dynamic>.from(decoded),
+          category: SeriesInfoErrorCategory.none,
+          classification: DiagnosticClassification.indeterminate,
+          httpStatus: status,
+          elapsedMs: sw.elapsedMilliseconds,
+        );
+      }
+
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.unexpectedJsonStructure,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        httpStatus: status,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Estrutura JSON inesperada (${decoded.runtimeType}) retornada pelo servidor.',
+        technicalSummary: 'Tipo raiz ${decoded.runtimeType} inesperado em $action.',
+      );
     } on TimeoutException {
-      throw XtreamCatalogException('Tempo limite esgotado ao consultar $action em $sanitizedBase.');
-    } on SocketException catch (e) {
-      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.message);
-      throw XtreamCatalogException('Erro de conexão ao acessar $sanitizedBase: $safeErr');
-    } catch (e) {
+      sw.stop();
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.timeout,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Tempo limite esgotado ao consultar $action em $sanitizedBase.',
+        technicalSummary: 'Timeout após ${sw.elapsedMilliseconds}ms em $action.',
+      );
+    } on HandshakeException catch (e) {
+      sw.stop();
       final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
-      throw XtreamCatalogException('Erro ao processar dados de $action: $safeErr');
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.tlsError,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Falha SSL/TLS ao acessar $sanitizedBase.',
+        technicalSummary: 'HandshakeException em $action: $safeErr',
+      );
+    } on TlsException catch (e) {
+      sw.stop();
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.tlsError,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Falha de certificado TLS ao acessar $sanitizedBase.',
+        technicalSummary: 'TlsException em $action: $safeErr',
+      );
+    } on SocketException catch (e) {
+      sw.stop();
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.message);
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.networkError,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Erro de conexão ao acessar $sanitizedBase: $safeErr',
+        technicalSummary: 'SocketException em $action: $safeErr',
+      );
+    } on HttpException catch (e) {
+      sw.stop();
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.message);
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.networkError,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Erro de transporte HTTP ao acessar $sanitizedBase: $safeErr',
+        technicalSummary: 'HttpException em $action: $safeErr',
+      );
+    } on http.ClientException catch (e) {
+      sw.stop();
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.message);
+      final lower = safeErr.toLowerCase();
+      final isTls = lower.contains('handshake') || lower.contains('certificate') || lower.contains('tls');
+      return _ApiMapOutcome(
+        category: isTls ? SeriesInfoErrorCategory.tlsError : SeriesInfoErrorCategory.networkError,
+        classification: DiagnosticClassification.networkFailure,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Erro de cliente HTTP ao acessar $sanitizedBase: $safeErr',
+        technicalSummary: 'ClientException em $action: $safeErr',
+      );
+    } on FormatException {
+      sw.stop();
+      return _ApiMapOutcome(
+        category: SeriesInfoErrorCategory.invalidJson,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'O servidor retornou JSON inválido em $action.',
+        technicalSummary: 'FormatException ao processar $action.',
+      );
+    } catch (e) {
+      sw.stop();
+      final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
+      final isFormat = safeErr.contains('FormatException');
+      return _ApiMapOutcome(
+        category: isFormat ? SeriesInfoErrorCategory.invalidJson : SeriesInfoErrorCategory.unknown,
+        classification: isFormat
+            ? DiagnosticClassification.confirmedServerIssue
+            : DiagnosticClassification.indeterminate,
+        elapsedMs: sw.elapsedMilliseconds,
+        userMessage: 'Erro ao processar dados de $action: $safeErr',
+        technicalSummary: safeErr,
+      );
     }
   }
+
+  Future<Map<String, dynamic>> _fetchApiMap(
+    String action, {
+    Map<String, String>? extraParams,
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    final outcome = await _fetchApiMapDetailed(
+      action,
+      extraParams: extraParams,
+      timeout: timeout,
+    );
+    if (outcome.data != null) {
+      return outcome.data!;
+    }
+    if (outcome.category == SeriesInfoErrorCategory.emptyBody ||
+        outcome.category == SeriesInfoErrorCategory.unexpectedJsonStructure) {
+      return {};
+    }
+    throw XtreamCatalogException(
+      outcome.userMessage ?? 'Erro ao processar dados de $action.',
+      statusCode: outcome.httpStatus,
+    );
+  }
+}
+
+class _ApiMapOutcome {
+  final Map<String, dynamic>? data;
+  final SeriesInfoErrorCategory category;
+  final DiagnosticClassification classification;
+  final int? httpStatus;
+  final int elapsedMs;
+  final String? userMessage;
+  final String? technicalSummary;
+
+  const _ApiMapOutcome({
+    this.data,
+    required this.category,
+    required this.classification,
+    this.httpStatus,
+    this.elapsedMs = 0,
+    this.userMessage,
+    this.technicalSummary,
+  });
 }

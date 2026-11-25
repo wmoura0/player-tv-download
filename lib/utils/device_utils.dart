@@ -9,9 +9,9 @@ class DeviceUtils {
   static bool? _mockIsPipSupported;
   static bool? _mockIsMultiWindowOrPip;
 
-  // Versão instalada real (padrão v1.2.16+19 com sincronização dinâmica via MainActivity)
-  static int _installedVersionCode = 19;
-  static String _installedVersionName = '1.2.16';
+  // Versão instalada real (padrão v1.2.17+20 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 20;
+  static String _installedVersionName = '1.2.17';
 
   /// Versão de build (versionCode) da aplicação instalada no dispositivo.
   static int get installedVersionCode => _installedVersionCode;
@@ -385,9 +385,9 @@ class DeviceUtils {
     SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
-    SingleActivator(LogicalKeyboardKey.contextMenu): FavoriteToggleIntent(),
-    SingleActivator(LogicalKeyboardKey.info): FavoriteToggleIntent(),
-    SingleActivator(LogicalKeyboardKey.gameButtonX): FavoriteToggleIntent(),
+    SingleActivator(LogicalKeyboardKey.contextMenu, includeRepeats: false): FavoriteToggleIntent(),
+    SingleActivator(LogicalKeyboardKey.info, includeRepeats: false): FavoriteToggleIntent(),
+    SingleActivator(LogicalKeyboardKey.gameButtonX, includeRepeats: false): FavoriteToggleIntent(),
   };
 
   /// Cria o mapa de ações padrão para acionar um [onTap] a partir de um [ActivateIntent]

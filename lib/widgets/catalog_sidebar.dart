@@ -9,13 +9,15 @@ import '../utils/device_utils.dart';
 /// e as categorias retornadas pelo servidor Xtream.
 ///
 /// Oferece suporte completo a controle remoto de Smart TV / Fire TV (D-Pad e atalhos de seleção),
-/// rolagem vertical para listas extensas de categorias e toque em celulares.
-class CatalogSidebar extends StatelessWidget {
+/// foco determinístico preservado ao navegar esquerda/direita, rolagem automática para categoria
+/// selecionada (ex.: "Lançamentos") e toque em celulares.
+class CatalogSidebar extends StatefulWidget {
   final List<XtreamCategory> categories;
   final String selectedCategoryId;
   final ValueChanged<String> onCategorySelected;
   final VoidCallback onHomeTap;
   final VoidCallback? onCloseTap;
+  final VoidCallback? onFocusContentGrid;
   final Color accentColor;
   final bool isCompact;
   final bool isLoading;
@@ -30,6 +32,7 @@ class CatalogSidebar extends StatelessWidget {
     required this.onCategorySelected,
     required this.onHomeTap,
     this.onCloseTap,
+    this.onFocusContentGrid,
     this.accentColor = AppColors.primary,
     required this.isCompact,
     this.isLoading = false,
@@ -39,8 +42,112 @@ class CatalogSidebar extends StatelessWidget {
   });
 
   @override
+  State<CatalogSidebar> createState() => CatalogSidebarState();
+}
+
+class CatalogSidebarState extends State<CatalogSidebar> {
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, FocusNode> _categoryFocusNodes = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _scrollToCategory(widget.selectedCategoryId);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant CatalogSidebar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final activeIds = widget.categories.map((c) => c.id).toSet();
+    final staleIds =
+        _categoryFocusNodes.keys.where((k) => !activeIds.contains(k)).toList();
+    for (final k in staleIds) {
+      _categoryFocusNodes.remove(k)?.dispose();
+    }
+
+    if (oldWidget.selectedCategoryId != widget.selectedCategoryId ||
+        (oldWidget.categories.isEmpty && widget.categories.isNotEmpty)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _scrollToCategory(widget.selectedCategoryId);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    for (final node in _categoryFocusNodes.values) {
+      node.dispose();
+    }
+    _categoryFocusNodes.clear();
+    super.dispose();
+  }
+
+  FocusNode _focusNodeFor(String categoryId) {
+    return _categoryFocusNodes.putIfAbsent(
+      categoryId,
+      () => FocusNode(debugLabel: 'sidebar_cat_$categoryId'),
+    );
+  }
+
+  void _scrollToCategory(String categoryId) {
+    final idx = widget.categories.indexWhere((c) => c.id == categoryId);
+    if (idx < 0 || !_scrollController.hasClients) return;
+
+    final node = _categoryFocusNodes[categoryId];
+    final nodeCtx = node?.context;
+    if (nodeCtx != null) {
+      Scrollable.ensureVisible(
+        nodeCtx,
+        alignment: 0.3,
+        duration: Duration.zero,
+      );
+      return;
+    }
+
+    const estimatedExtent = 44.0;
+    final pos = _scrollController.position;
+    final targetOffset = (idx * estimatedExtent - pos.viewportDimension * 0.3)
+        .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+    if ((pos.pixels - targetOffset).abs() > pos.viewportDimension * 0.45) {
+      _scrollController.jumpTo(targetOffset);
+    }
+  }
+
+  /// Move explicitamente o foco D-Pad para a categoria [categoryId] (rolando-a se preciso),
+  /// evitando o reset geométrico do Flutter para o primeiro item da lista ("Todas").
+  void focusCategory(String categoryId) {
+    if (!mounted) return;
+    final targetId = widget.categories.any((c) => c.id == categoryId)
+        ? categoryId
+        : (widget.categories.isNotEmpty ? widget.categories.first.id : null);
+    if (targetId == null) return;
+
+    _scrollToCategory(targetId);
+    final node = _focusNodeFor(targetId);
+    if (node.context != null && node.canRequestFocus) {
+      node.requestFocus();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scrollToCategory(targetId);
+        final mountedNode = _focusNodeFor(targetId);
+        if (mountedNode.canRequestFocus) {
+          mountedNode.requestFocus();
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final width = isCompact ? 170.0 : 220.0;
+    final width = widget.isCompact ? 170.0 : 220.0;
 
     return Container(
       width: width,
@@ -63,14 +170,14 @@ class CatalogSidebar extends StatelessWidget {
               children: [
                 // Botão de Início / Voltar à Home
                 _HomeSidebarButton(
-                  onTap: onHomeTap,
-                  isCompact: isCompact,
+                  onTap: widget.onHomeTap,
+                  isCompact: widget.isCompact,
                 ),
 
                 const Spacer(),
 
                 // Botão de fechar barra no celular (se fornecido)
-                if (onCloseTap != null)
+                if (widget.onCloseTap != null)
                   Tooltip(
                     message: 'Fechar barra lateral',
                     child: IconButton(
@@ -82,7 +189,7 @@ class CatalogSidebar extends StatelessWidget {
                       ),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      onPressed: onCloseTap,
+                      onPressed: widget.onCloseTap,
                     ),
                   ),
               ],
@@ -90,28 +197,28 @@ class CatalogSidebar extends StatelessWidget {
           ),
 
           // Campo de busca integrado à barra lateral (otimizado para TV e toque)
-          if (onSearchChanged != null)
+          if (widget.onSearchChanged != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: _SidebarTvSearchBar(
-                controller: searchController,
-                query: searchQuery,
-                accentColor: accentColor,
-                isCompact: isCompact,
-                onChanged: onSearchChanged!,
+                controller: widget.searchController,
+                query: widget.searchQuery,
+                accentColor: widget.accentColor,
+                isCompact: widget.isCompact,
+                onChanged: widget.onSearchChanged!,
               ),
             ),
 
           // Título sutil da seção
           Padding(
             padding: EdgeInsets.symmetric(
-              horizontal: isCompact ? 10 : 12,
+              horizontal: widget.isCompact ? 10 : 12,
               vertical: 4,
             ),
             child: Text(
               'CATEGORIAS',
               style: TextStyle(
-                fontSize: isCompact ? 10 : 11,
+                fontSize: widget.isCompact ? 10 : 11,
                 fontWeight: FontWeight.bold,
                 color: const Color(0xFF64748B),
                 letterSpacing: 1.0,
@@ -125,18 +232,18 @@ class CatalogSidebar extends StatelessWidget {
 
           // Lista rolável de categorias do catálogo selecionado
           Expanded(
-            child: isLoading
+            child: widget.isLoading
                 ? Center(
                     child: SizedBox(
                       width: 24,
                       height: 24,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+                        valueColor: AlwaysStoppedAnimation<Color>(widget.accentColor),
                       ),
                     ),
                   )
-                : (categories.isEmpty
+                : (widget.categories.isEmpty
                     ? const Center(
                         child: Padding(
                           padding: EdgeInsets.all(12),
@@ -148,23 +255,27 @@ class CatalogSidebar extends StatelessWidget {
                         ),
                       )
                     : Scrollbar(
+                        controller: _scrollController,
                         thumbVisibility: false,
                         child: ListView.builder(
+                          controller: _scrollController,
                           padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
-                          itemCount: categories.length,
+                          itemCount: widget.categories.length,
                           itemBuilder: (context, index) {
-                            final cat = categories[index];
-                            final isSelected = cat.id == selectedCategoryId;
+                            final cat = widget.categories[index];
+                            final isSelected = cat.id == widget.selectedCategoryId;
 
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 4),
                               child: _CategorySidebarItem(
                                 key: Key('sidebar_cat_${cat.id}'),
                                 category: cat,
+                                focusNode: _focusNodeFor(cat.id),
                                 isSelected: isSelected,
-                                accentColor: accentColor,
-                                isCompact: isCompact,
-                                onTap: () => onCategorySelected(cat.id),
+                                accentColor: widget.accentColor,
+                                isCompact: widget.isCompact,
+                                onMoveRight: widget.onFocusContentGrid,
+                                onTap: () => widget.onCategorySelected(cat.id),
                               ),
                             );
                           },
@@ -261,17 +372,21 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
 /// Item individual de categoria na barra lateral com foco por D-Pad e destaque de seleção
 class _CategorySidebarItem extends StatefulWidget {
   final XtreamCategory category;
+  final FocusNode focusNode;
   final bool isSelected;
   final Color accentColor;
   final bool isCompact;
+  final VoidCallback? onMoveRight;
   final VoidCallback onTap;
 
   const _CategorySidebarItem({
     super.key,
     required this.category,
+    required this.focusNode,
     required this.isSelected,
     required this.accentColor,
     required this.isCompact,
+    this.onMoveRight,
     required this.onTap,
   });
 
@@ -310,12 +425,25 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.activateAction(widget.onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: Tooltip(
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.arrowRight &&
+            widget.onMoveRight != null) {
+          widget.onMoveRight!();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: FocusableActionDetector(
+        focusNode: widget.focusNode,
+        actions: DeviceUtils.activateAction(widget.onTap),
+        shortcuts: DeviceUtils.dpadSelectShortcuts,
+        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        onShowHoverHighlight: (v) => setState(() => _isHovered = v),
+        child: Tooltip(
         message: widget.category.name,
         waitDuration: const Duration(milliseconds: 500),
         child: Material(
@@ -422,6 +550,7 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -467,6 +596,15 @@ class _SidebarTvSearchBarState extends State<_SidebarTvSearchBar> {
       _isOwnController = true;
     }
     _textFocusNode.skipTraversal = true;
+    _textFocusNode.addListener(_onTextFocusChanged);
+  }
+
+  void _onTextFocusChanged() {
+    if (!mounted) return;
+    if (!_textFocusNode.hasFocus && _isEditing) {
+      _textFocusNode.skipTraversal = true;
+      setState(() => _isEditing = false);
+    }
   }
 
   @override
@@ -479,6 +617,7 @@ class _SidebarTvSearchBarState extends State<_SidebarTvSearchBar> {
 
   @override
   void dispose() {
+    _textFocusNode.removeListener(_onTextFocusChanged);
     if (_isOwnController) {
       _controller.dispose();
     }

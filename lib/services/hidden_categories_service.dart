@@ -21,12 +21,26 @@ class HiddenCategoriesService extends ChangeNotifier {
     _prefs = prefs ?? await SharedPreferences.getInstance();
   }
 
+  Future<void> _ensureInitialized() async {
+    if (_prefs == null) {
+      await init();
+    }
+  }
+
   /// Retorna o conjunto de IDs ou nomes de categorias ocultas para a fonte especificada.
   Set<String> getHiddenCategories(String scopeKey) {
     if (_hiddenMap.containsKey(scopeKey)) {
       return _hiddenMap[scopeKey]!;
     }
-    final raw = _prefs?.getStringList('hidden_cats_$scopeKey') ?? [];
+    final raw = _prefs?.getStringList('hidden_cats_$scopeKey');
+    if (raw == null) {
+      if (_prefs == null) {
+        return <String>{};
+      }
+      final emptySet = <String>{};
+      _hiddenMap[scopeKey] = emptySet;
+      return emptySet;
+    }
     final set = raw.toSet();
     _hiddenMap[scopeKey] = set;
     return set;
@@ -42,6 +56,7 @@ class HiddenCategoriesService extends ChangeNotifier {
   Future<void> setHidden(String scopeKey, String categoryIdOrName, bool hidden) async {
     final clean = categoryIdOrName.trim();
     if (clean.isEmpty) return;
+    await _ensureInitialized();
     final set = getHiddenCategories(scopeKey);
     if (hidden) {
       set.add(clean);
@@ -56,6 +71,7 @@ class HiddenCategoriesService extends ChangeNotifier {
   Future<void> toggleHidden(String scopeKey, String categoryIdOrName) async {
     final clean = categoryIdOrName.trim();
     if (clean.isEmpty) return;
+    await _ensureInitialized();
     final set = getHiddenCategories(scopeKey);
     if (set.contains(clean)) {
       set.remove(clean);
@@ -68,6 +84,7 @@ class HiddenCategoriesService extends ChangeNotifier {
 
   /// Restaura todas as categorias da fonte para a condição visível.
   Future<void> restoreAll(String scopeKey) async {
+    await _ensureInitialized();
     final set = getHiddenCategories(scopeKey);
     set.clear();
     await _save(scopeKey);

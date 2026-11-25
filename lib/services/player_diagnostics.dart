@@ -2,7 +2,87 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'series_identity_verifier.dart';
 import 'url_sanitizer.dart';
+
+/// Categoria estruturada de resultado/erro para `get_series_info` (P4 / P8).
+enum SeriesInfoErrorCategory {
+  none,
+  invalidServerUrl,
+  authDenied,
+  httpNotFound,
+  httpServerError,
+  httpOtherError,
+  timeout,
+  networkError,
+  tlsError,
+  emptyBody,
+  htmlErrorPage,
+  invalidJson,
+  unexpectedJsonStructure,
+  serverReturnedNoEpisodes,
+  parserIgnoredEpisodes,
+  reindexedSeriesId,
+  staleOrIncoherentCache,
+  identityMismatch,
+  unknown,
+}
+
+/// Classificação objetiva de responsabilidade da falha (P8).
+enum DiagnosticClassification {
+  confirmedAppBug,
+  confirmedServerIssue,
+  networkFailure,
+  indeterminate,
+}
+
+/// Registro de diagnóstico estruturado e estritamente não-sensível para consultas de séries (P8).
+@immutable
+class SeriesDiagnosticRecord {
+  final DateTime timestamp;
+  final String requestType;
+  final String anonymizedId;
+  final String cacheSource;
+  final int? httpStatus;
+  final int elapsedMs;
+  final int seasonCount;
+  final int episodeCount;
+  final String rawEpisodesShape;
+  final int rawEpisodeEntriesCount;
+  final SeriesInfoErrorCategory errorCategory;
+  final SeriesIdentityConsistency identityConsistency;
+  final DiagnosticClassification classification;
+  final String? sanitizedNote;
+
+  const SeriesDiagnosticRecord({
+    required this.timestamp,
+    required this.requestType,
+    required this.anonymizedId,
+    required this.cacheSource,
+    this.httpStatus,
+    required this.elapsedMs,
+    required this.seasonCount,
+    required this.episodeCount,
+    required this.rawEpisodesShape,
+    required this.rawEpisodeEntriesCount,
+    required this.errorCategory,
+    required this.identityConsistency,
+    required this.classification,
+    this.sanitizedNote,
+  });
+
+  String toLogSummary() {
+    final safeNote = sanitizedNote != null && sanitizedNote!.trim().isNotEmpty
+        ? UrlSanitizer.sanitizeErrorMessage(sanitizedNote!)
+        : '';
+    return 'type=$requestType id=$anonymizedId src=$cacheSource '
+        'http=${httpStatus?.toString() ?? 'N/D'} ms=$elapsedMs '
+        'seasons=$seasonCount eps=$episodeCount shape=$rawEpisodesShape '
+        'rawEps=$rawEpisodeEntriesCount err=${errorCategory.name} '
+        'identity=${identityConsistency.name} class=${classification.name}'
+        '${safeNote.isNotEmpty ? ' note=$safeNote' : ''}';
+  }
+}
 
 /// Resultado estruturado da sondagem HTTP de diagnóstico do stream
 class HttpProbeResult {
@@ -87,10 +167,29 @@ class DiagnosticErrorDetails {
 /// e extrai com precisão as causas técnicas ocultadas por trás de mensagens genéricas.
 class PlayerDiagnostics {
   static const MethodChannel _channel = MethodChannel('com.player.m3u/device');
+  static const int _maxSeriesDiagnostics = 50;
+  static final List<SeriesDiagnosticRecord> _seriesDiagnostics = [];
+
+  /// Histórico recente (limitado e não-sensível) de diagnósticos de séries (P8).
+  static List<SeriesDiagnosticRecord> get recentSeriesDiagnostics =>
+      List.unmodifiable(_seriesDiagnostics);
+
+  @visibleForTesting
+  static void clearSeriesDiagnostics() => _seriesDiagnostics.clear();
+
+  /// Registra um diagnóstico estruturado e não-sensível de consulta/identidade de séries.
+  static void logSeriesDiagnostic(SeriesDiagnosticRecord record) {
+    if (_seriesDiagnostics.length >= _maxSeriesDiagnostics) {
+      _seriesDiagnostics.removeAt(0);
+    }
+    _seriesDiagnostics.add(record);
+    log('SERIES_DIAG', record.toLogSummary());
+  }
 
   /// Registra uma mensagem diagnóstica no console Flutter e no Android Logcat sob a tag JESSFLIX_PLAYER
   static void log(String subTag, String message) {
-    final formatted = '[$subTag] $message';
+    final safeMessage = UrlSanitizer.sanitizeErrorMessage(message);
+    final formatted = '[$subTag] $safeMessage';
     debugPrint('[JESSFLIX_PLAYER]$formatted');
     try {
       _channel.invokeMethod('logPlayer', {'message': formatted}).catchError((_) {});
@@ -116,9 +215,9 @@ class PlayerDiagnostics {
     final sanitized = UrlSanitizer.sanitize(rawUrl);
     log('HTTP_PROBE', 'Iniciando sondagem HTTP para: $sanitized');
 
+    final client = http.Client();
     try {
       final uri = Uri.parse(rawUrl);
-      final client = http.Client();
 
       final reqHeaders = <String, String>{
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
@@ -135,6 +234,7 @@ class PlayerDiagnostics {
       // Xtream frequentemente retornam HTTP 200 com 0 bytes para HEAD mesmo quando o arquivo não existe.
       if (streamedResponse.statusCode == 405 || streamedResponse.statusCode == 501) {
         try {
+          unawaited(streamedResponse.stream.listen((_) {}).cancel().catchError((_) {}));
           final fallbackHeaders = <String, String>{
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlayerTV/1.0',
             ...?headers,
@@ -144,8 +244,12 @@ class PlayerDiagnostics {
           final headLen = headRes.contentLength;
           if (headRes.statusCode >= 200 && headRes.statusCode < 400 && (headLen == null || headLen > 0)) {
             streamedResponse = headRes;
+          } else {
+            unawaited(headRes.stream.listen((_) {}).cancel().catchError((_) {}));
           }
         } catch (_) {}
+      } else {
+        unawaited(streamedResponse.stream.listen((_) {}).cancel().catchError((_) {}));
       }
 
       sw.stop();
@@ -155,8 +259,6 @@ class PlayerDiagnostics {
       final contentLength = streamedResponse.contentLength;
       final server = streamedResponse.headers['server'];
       final location = streamedResponse.headers['location'];
-
-      client.close();
 
       final result = HttpProbeResult(
         statusCode: statusCode,
@@ -182,6 +284,8 @@ class PlayerDiagnostics {
         errorMessage: safeErr,
         elapsedMs: sw.elapsedMilliseconds,
       );
+    } finally {
+      client.close();
     }
   }
 

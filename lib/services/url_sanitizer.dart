@@ -1,4 +1,7 @@
-﻿/// Utilitário de segurança para mascarar credenciais sensíveis em URLs.
+﻿import 'dart:convert';
+import 'package:crypto/crypto.dart';
+
+/// Utilitário de segurança para mascarar credenciais sensíveis em URLs.
 class UrlSanitizer {
   static final _sensitiveParamKeys = {
     'username',
@@ -76,6 +79,14 @@ class UrlSanitizer {
     });
   }
 
+  /// Gera um identificador anonimizado determinístico (12 chars hex) para logs seguros.
+  static String anonymizeId(String raw) {
+    final normalized = raw.trim();
+    if (normalized.isEmpty) return 'none';
+    final digest = sha256.convert(utf8.encode('jf_diag_v1:$normalized')).toString();
+    return digest.substring(0, 12);
+  }
+
   static String _maskRegexFallback(String text) {
     // Fallback com regex caso o Uri.tryParse falhe
     var result = text;
@@ -89,6 +100,6 @@ class UrlSanitizer {
       RegExp(r'(https?://)([^:@\s]+):([^@\s]+)@', caseSensitive: false),
       (match) => '${match.group(1)}***:***@',
     );
-    return result;
+    return _maskXtreamPath(result);
   }
 }

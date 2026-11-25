@@ -15,8 +15,10 @@ import 'playlists_screen.dart';
 import 'xtream_login_screen.dart';
 import '../models/managed_account.dart';
 import '../services/account_manager_service.dart';
+import '../services/favorites_service.dart';
 import '../services/pin_service.dart';
 import '../services/settings_service.dart';
+import '../services/smart_source_resolver.dart';
 import '../services/user_profile_service.dart';
 import '../services/webview_player_service.dart';
 import '../widgets/pin_entry_dialog.dart';
@@ -118,75 +120,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _openManifestUrlDialog() async {
     final service = OtaUpdateService.instance;
     final currentUrl = await service.getManifestUrl();
+    if (!mounted) return;
     final controller = TextEditingController(text: currentUrl);
 
-    if (!mounted) return;
-
-    final updated = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surfaceSecondary,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: AppColors.borderSubtle),
-        ),
-        title: const Text(
-          'Servidor de Manifesto OTA',
-          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Endereço HTTPS do arquivo JSON com as versões publicadas:',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: AppColors.background,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: AppColors.borderSubtle),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
-                ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    bool? updated;
+    try {
+      updated = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surfaceSecondary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: AppColors.borderSubtle),
+          ),
+          title: const Text(
+            'Servidor de Manifesto OTA',
+            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Endereço HTTPS do arquivo JSON com as versões publicadas:',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: AppColors.background,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: AppColors.borderSubtle),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: AppColors.focusCyan, width: AppColors.focusBorderWidth),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await service.resetManifestUrl();
+                if (ctx.mounted) Navigator.of(ctx).pop(true);
+              },
+              child: const Text('Restaurar Padrão', style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                final newUrl = controller.text.trim();
+                if (newUrl.isNotEmpty) {
+                  await service.setManifestUrl(newUrl);
+                  if (ctx.mounted) Navigator.of(ctx).pop(true);
+                }
+              },
+              child: const Text('Salvar'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await service.resetManifestUrl();
-              if (ctx.mounted) Navigator.of(ctx).pop(true);
-            },
-            child: const Text('Restaurar Padrão', style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () async {
-              final newUrl = controller.text.trim();
-              if (newUrl.isNotEmpty) {
-                await service.setManifestUrl(newUrl);
-                if (ctx.mounted) Navigator.of(ctx).pop(true);
-              }
-            },
-            child: const Text('Salvar'),
-          ),
-        ],
-      ),
-    );
+      );
+    } finally {
+      controller.dispose();
+    }
 
     if (updated == true && mounted) {
       _showSnackbar('URL do manifesto atualizada com sucesso.');
@@ -989,13 +995,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         accentColor: AppColors.error,
                         isDanger: true,
                         onTap: () async {
+                          String? verifiedPin;
                           final ok = await PinEntryDialog.show(
                             context,
                             title: 'Remover PIN',
                             subtitle: 'Digite o PIN atual para desativar a proteção:',
+                            onPinVerified: (pin) => verifiedPin = pin,
                           );
-                          if (!ok) return;
+                          if (!ok || verifiedPin == null) return;
+                          final removed = await pinService.removePin(verifiedPin!);
+                          if (!removed) return;
                           await pinService.setHideAdultContent(false);
+                          if (!mounted) return;
                           _showSnackbar('PIN e proteção parental removidos.');
                         },
                       ),
@@ -1105,6 +1116,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onTap: () async {
                             if (!isSelected) {
                               await profileService.switchProfile(p.id);
+                              SmartSourceResolver.instance.clearCache();
+                              FavoritesService.instance.clearMemoryCache();
+                              widget.catalogService?.clearCache();
+                              if (!mounted) return;
                               _showSnackbar('Perfil alterado para "${p.name}".');
                             }
                           },
@@ -1229,6 +1244,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   TextButton(
                                     onPressed: () async {
                                       await accService.switchAccount(acc.id);
+                                      SmartSourceResolver.instance.clearCache();
+                                      FavoritesService.instance.clearMemoryCache();
+                                      widget.catalogService?.clearCache();
+                                      PinService.instance.lockSession();
+                                      if (!mounted) return;
                                       _showSnackbar('Conta alternada para "${acc.name}".');
                                     },
                                     child: const Text('Alternar'),
@@ -1252,62 +1272,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final nameCtrl = TextEditingController();
     bool isKids = false;
 
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: AppColors.surfaceSecondary,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: AppColors.borderSubtle),
-          ),
-          title: const Text('Novo Perfil Familiar', style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                style: const TextStyle(color: AppColors.textPrimary),
-                decoration: InputDecoration(
-                  labelText: 'Nome do Perfil',
-                  labelStyle: const TextStyle(color: AppColors.textSecondary),
-                  filled: true,
-                  fillColor: AppColors.background,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+    try {
+      await showDialog(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            backgroundColor: AppColors.surfaceSecondary,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: AppColors.borderSubtle),
+            ),
+            title: const Text('Novo Perfil Familiar', style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: AppColors.textPrimary),
+                  decoration: InputDecoration(
+                    labelText: 'Nome do Perfil',
+                    labelStyle: const TextStyle(color: AppColors.textSecondary),
+                    filled: true,
+                    fillColor: AppColors.background,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
                 ),
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeColor: AppColors.focusCyan,
+                  title: const Text('Perfil Infantil (Kids)', style: TextStyle(color: AppColors.textPrimary)),
+                  subtitle: const Text('Bloqueia automaticamente todo conteúdo adulto (+18)', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                  value: isKids,
+                  onChanged: (val) => setDialogState(() => isKids = val ?? false),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancelar', style: TextStyle(color: AppColors.textSecondary)),
               ),
-              const SizedBox(height: 12),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                activeColor: AppColors.focusCyan,
-                title: const Text('Perfil Infantil (Kids)', style: TextStyle(color: AppColors.textPrimary)),
-                subtitle: const Text('Bloqueia automaticamente todo conteúdo adulto (+18)', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-                value: isKids,
-                onChanged: (val) => setDialogState(() => isKids = val ?? false),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                onPressed: () async {
+                  final name = nameCtrl.text.trim();
+                  if (name.isNotEmpty) {
+                    await UserProfileService.instance.createProfile(name: name, isKids: isKids);
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                    if (mounted) {
+                      _showSnackbar('Perfil "$name" criado com sucesso.');
+                    }
+                  }
+                },
+                child: const Text('Criar'),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancelar', style: TextStyle(color: AppColors.textSecondary)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-              onPressed: () async {
-                final name = nameCtrl.text.trim();
-                if (name.isNotEmpty) {
-                  await UserProfileService.instance.createProfile(name: name, isKids: isKids);
-                  if (ctx.mounted) Navigator.of(ctx).pop();
-                  _showSnackbar('Perfil "$name" criado com sucesso.');
-                }
-              },
-              child: const Text('Criar'),
-            ),
-          ],
         ),
-      ),
-    );
+      );
+    } finally {
+      nameCtrl.dispose();
+    }
   }
 
   Widget _buildGeneralInfoPanel(Color accent) {

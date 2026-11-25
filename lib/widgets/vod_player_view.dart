@@ -923,8 +923,16 @@ class _VodPlayerViewState extends State<VodPlayerView> {
 
     final c = widget.controller;
     if (c != null && c.value.isInitialized) {
-      c.seekTo(target);
-      c.play();
+      final totalMs = c.value.duration.inMilliseconds;
+      if (widget.onSeekFraction != null && totalMs > 0) {
+        final fraction = (_continuousSeekTargetMs / totalMs).clamp(0.0, 1.0);
+        widget.onSeekFraction!.call(fraction);
+      } else {
+        c.seekTo(target);
+      }
+      if (!c.value.isPlaying) {
+        c.play();
+      }
     } else {
       widget.onSeekRelative?.call(deltaSecs);
     }

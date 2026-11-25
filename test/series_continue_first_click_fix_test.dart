@@ -1000,10 +1000,11 @@ void main() {
       (tester) async {
         final httpClient = MockClient((req) async {
           if (req.url.queryParameters['action'] == 'get_series_info') {
-            return http.Response(
-              jsonEncode(hydratedSeriesJson(episodeId: 3001, ext: 'mp4')),
-              200,
+            final payload = Map<String, dynamic>.from(
+              hydratedSeriesJson(episodeId: 3001, ext: 'mp4'),
             );
+            payload['info'] = {'name': 'Matéria Escura'};
+            return http.Response(jsonEncode(payload), 200);
           }
           return http.Response('{}', 200);
         });

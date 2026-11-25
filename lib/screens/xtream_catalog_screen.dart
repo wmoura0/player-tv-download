@@ -9,12 +9,15 @@ import '../models/xtream_catalog.dart';
 import '../services/epg_service.dart';
 import '../services/favorites_service.dart';
 import '../services/hidden_categories_service.dart';
+import '../services/pin_service.dart';
 import '../services/playback_metrics.dart';
 import '../services/playback_progress_service.dart';
 import '../services/player_diagnostics.dart';
 import '../services/player_stability_manager.dart';
 import '../services/secure_storage_service.dart';
+import '../services/series_identity_verifier.dart';
 import '../services/url_sanitizer.dart';
+import '../services/user_profile_service.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/device_utils.dart';
@@ -170,6 +173,13 @@ class XtreamCatalogScreen extends StatefulWidget {
 
 class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     with WidgetsBindingObserver {
+  final GlobalKey<CatalogSidebarState> _sidebarKey =
+      GlobalKey<CatalogSidebarState>();
+  final FocusScopeNode _contentGridScopeNode =
+      FocusScopeNode(debugLabel: 'CatalogContentGridScope');
+  final FocusNode _firstContentFocusNode =
+      FocusNode(debugLabel: 'CatalogFirstItemFocus');
+
   XtreamCatalogService? _service;
   bool _isInitLoading = true;
   String? _initError;
@@ -183,6 +193,19 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  Timer? _seriesSearchDebounce;
+  int _seriesSearchGeneration = 0;
+  List<XtreamSeriesItem>? _globalSeriesSearchResults;
+  bool _isGlobalSeriesSearching = false;
+  String? _categoryBeforeSeriesSearch;
+
+  // Cache de memoização de _filteredItems (evita O(N) em cada rebuild)
+  List<dynamic>? _memoFilteredItems;
+  List<dynamic>? _memoSourceItems;
+  List<XtreamSeriesItem>? _memoGlobalSeries;
+  String _memoQuery = '';
+  String _memoCatId = '';
+  String _memoRestrictionSig = '';
 
   // Estado de reprodução de TV ao vivo (compartilhado entre mini player e tela cheia)
   XtreamLiveStream? _activeLiveStream;
@@ -245,6 +268,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     );
     FavoritesService.instance.addListener(_onFavoritesChanged);
     HiddenCategoriesService.instance.addListener(_onHiddenCategoriesChanged);
+    PinService.instance.addListener(_onRestrictionStateChanged);
+    UserProfileService.instance.addListener(_onRestrictionStateChanged);
     DeviceUtils.isPipMode.addListener(_onPipModeChanged);
     _initialize();
   }
@@ -314,6 +339,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   @override
   void dispose() {
     _connectionGeneration++;
+    _seriesSearchGeneration++;
+    _seriesSearchDebounce?.cancel();
     DeviceUtils.updateScreenKeepAlive(shouldKeepOn: false, immediate: true);
     DeviceUtils.setPipState(enabled: false);
     DeviceUtils.isPipMode.removeListener(_onPipModeChanged);
@@ -321,8 +348,12 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     _stabilityManager.dispose();
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     HiddenCategoriesService.instance.removeListener(_onHiddenCategoriesChanged);
+    PinService.instance.removeListener(_onRestrictionStateChanged);
+    UserProfileService.instance.removeListener(_onRestrictionStateChanged);
     _searchController.dispose();
     _channelScrollController.dispose();
+    _contentGridScopeNode.dispose();
+    _firstContentFocusNode.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
@@ -332,8 +363,24 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     super.dispose();
   }
 
+  void _invalidateMemoizedFilter() {
+    _memoFilteredItems = null;
+  }
+
+  void _onRestrictionStateChanged() {
+    if (!mounted) return;
+    _invalidateMemoizedFilter();
+    if (_currentType == XtreamCatalogType.series &&
+        _searchQuery.trim().isNotEmpty) {
+      _onSearchChanged(_searchQuery);
+    } else {
+      setState(() {});
+    }
+  }
+
   void _onFavoritesChanged() {
     if (!mounted) return;
+    _invalidateMemoizedFilter();
     if (_selectedCategoryId == 'favorites') {
       _loadItemsForCategory('favorites');
     } else {
@@ -343,6 +390,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
 
   void _onHiddenCategoriesChanged() {
     if (!mounted) return;
+    _invalidateMemoizedFilter();
     if (_currentType == XtreamCatalogType.live) {
       final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
       if (_selectedCategoryId != 'all' &&
@@ -443,26 +491,85 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }
   }
 
-  Future<void> _loadCategories() async {
+  bool _isCategoryRestricted(String categoryId, String categoryName) {
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+    if (categoryId != 'all' &&
+        categoryId != 'favorites' &&
+        (hidden.contains(categoryId) ||
+            hidden.contains(categoryName.trim()))) {
+      return true;
+    }
+    final isAdult = XtreamCatalogScreen.isAdultCategory(categoryName) ||
+        PinService.instance.isAdultCategory(categoryName);
+    if (UserProfileService.instance.currentProfile.isKids && isAdult) {
+      return true;
+    }
+    if (PinService.instance.isCategoryLocked(
+      categoryId,
+      categoryName: categoryName,
+    )) {
+      return true;
+    }
+    return false;
+  }
+
+  Set<String> _restrictedCategoryIds() {
+    final out = <String>{};
+    for (final c in _categories) {
+      if (c.id == 'all' || c.id == 'favorites') continue;
+      if (_isCategoryRestricted(c.id, c.name)) {
+        out.add(c.id);
+      }
+    }
+    return out;
+  }
+
+  List<dynamic> _excludeRestrictedAllItems(
+    List<dynamic> items,
+    String categoryId,
+  ) {
+    if (categoryId != 'all' || _currentType == XtreamCatalogType.live) {
+      return items;
+    }
+    final restricted = <String>{
+      ..._restrictedCategoryIds(),
+      for (final c in _categories)
+        if (c.id != 'all' &&
+            c.id != 'favorites' &&
+            (XtreamCatalogScreen.isAdultCategory(c.name) ||
+                PinService.instance.isAdultCategory(c.name)))
+          c.id,
+    };
+    if (restricted.isEmpty) return items;
+    return items.where((it) {
+      if (it is XtreamVodStream) return !restricted.contains(it.categoryId);
+      if (it is XtreamSeriesItem) return !restricted.contains(it.categoryId);
+      return true;
+    }).toList();
+  }
+
+  Future<void> _loadCategories({bool forceRefresh = false}) async {
     try {
       List<XtreamCategory> cats;
       switch (_currentType) {
         case XtreamCatalogType.live:
-          cats = await _service!.fetchLiveCategories();
+          cats = await _service!.fetchLiveCategories(forceRefresh: forceRefresh);
           break;
         case XtreamCatalogType.movies:
-          cats = await _service!.fetchVodCategories();
+          cats = await _service!.fetchVodCategories(forceRefresh: forceRefresh);
           break;
         case XtreamCatalogType.series:
-          cats = await _service!.fetchSeriesCategories();
+          cats = await _service!.fetchSeriesCategories(forceRefresh: forceRefresh);
           break;
       }
 
       // Organização de categorias:
       // - Categorias seguras no topo.
       // - Categorias adultas protegidas e realocadas ao final da lista.
-      final safeServerCats = cats.where((c) => !XtreamCatalogScreen.isAdultCategory(c.name)).toList();
-      final adultServerCats = cats.where((c) => XtreamCatalogScreen.isAdultCategory(c.name)).toList();
+      final safeServerCats =
+          cats.where((c) => !XtreamCatalogScreen.isAdultCategory(c.name)).toList();
+      final adultServerCats =
+          cats.where((c) => XtreamCatalogScreen.isAdultCategory(c.name)).toList();
 
       final list = <XtreamCategory>[
         const XtreamCategory(id: 'all', name: 'Todas'),
@@ -471,27 +578,36 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         ...adultServerCats,
       ];
 
-      final String initialId;
-      if (_currentType == XtreamCatalogType.movies) {
-        initialId = XtreamCatalogScreen.determineInitialVodCategory(safeServerCats);
+      final String targetId;
+      if (forceRefresh && list.any((c) => c.id == _selectedCategoryId)) {
+        targetId = _selectedCategoryId;
+      } else if (_currentType == XtreamCatalogType.movies) {
+        targetId = XtreamCatalogScreen.determineInitialVodCategory(safeServerCats);
       } else if (_currentType == XtreamCatalogType.series) {
-        initialId = XtreamCatalogScreen.determineInitialSeriesCategory(safeServerCats);
+        targetId = XtreamCatalogScreen.determineInitialSeriesCategory(safeServerCats);
       } else {
-        initialId = 'all';
+        targetId = 'all';
       }
 
       final typeTag = _currentType == XtreamCatalogType.movies
           ? 'MOVIES'
           : (_currentType == XtreamCatalogType.series ? 'SERIES' : 'LIVE');
-      debugPrint('[CATALOG][$typeTag] [SELECT_CAT] Categoria inicial selecionada: "$initialId"');
+      debugPrint('[CATALOG][$typeTag] [SELECT_CAT] Categoria selecionada: "$targetId"');
 
       if (mounted) {
         setState(() {
           _categories = list;
-          _selectedCategoryId = initialId;
+          _selectedCategoryId = targetId;
           _isInitLoading = false;
         });
-        _loadItemsForCategory(initialId);
+        if (!forceRefresh && widget.initialLiveStream == null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _sidebarKey.currentState?.focusCategory(targetId);
+            }
+          });
+        }
+        _loadItemsForCategory(targetId, forceRefresh: forceRefresh);
       }
     } catch (e) {
       if (mounted) {
@@ -587,19 +703,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             : _service?.getCachedLiveStreamsSync(categoryId));
 
     if (!forceRefresh && memCache != null && memCache.isNotEmpty) {
-      List<dynamic> displayItems = memCache;
-      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
-        final adultCategoryIds = _categories
-            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
-            .map((c) => c.id)
-            .toSet();
-        if (adultCategoryIds.isNotEmpty) {
-          displayItems = displayItems.where((it) {
-            if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
-            return true;
-          }).toList();
-        }
-      }
+      final displayItems = _excludeRestrictedAllItems(memCache, categoryId);
       setState(() {
         _currentItems = displayItems;
         _isItemsLoading = false;
@@ -622,19 +726,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       final localItems = await _service!.getLocalItems(type: typeKey, categoryId: categoryId);
       if (!mounted || _itemRequestToken != currentToken) return;
       if (localItems != null && localItems.isNotEmpty) {
-        List<dynamic> displayItems = localItems;
-        if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
-          final adultCategoryIds = _categories
-              .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
-              .map((c) => c.id)
-              .toSet();
-          if (adultCategoryIds.isNotEmpty) {
-            displayItems = displayItems.where((it) {
-              if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
-              return true;
-            }).toList();
-          }
-        }
+        final displayItems = _excludeRestrictedAllItems(localItems, categoryId);
         setState(() {
           _currentItems = displayItems;
           _isItemsLoading = false;
@@ -674,22 +766,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       if (!mounted || _itemRequestToken != currentToken) return;
       sw.stop();
 
-      // Em Filmes, quando o usuário seleciona 'all' (Todas) manualmente,
-      // filtra títulos de categorias adultas para proteção consistente contra exposição
-      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
-        final adultCategoryIds = _categories
-            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
-            .map((c) => c.id)
-            .toSet();
-        if (adultCategoryIds.isNotEmpty) {
-          items = items.where((it) {
-            if (it is XtreamVodStream) {
-              return !adultCategoryIds.contains(it.categoryId);
-            }
-            return true;
-          }).toList();
-        }
-      }
+      items = _excludeRestrictedAllItems(items, categoryId);
 
       debugPrint(
         '[PERF] [UI RENDER] Categoria "$categoryId" exibida com ${items.length} itens em ${sw.elapsedMilliseconds}ms',
@@ -723,18 +800,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
       }
       if (!mounted || _itemRequestToken != token || fresh.isEmpty) return;
 
-      if (_currentType == XtreamCatalogType.movies && categoryId == 'all') {
-        final adultCategoryIds = _categories
-            .where((c) => XtreamCatalogScreen.isAdultCategory(c.name))
-            .map((c) => c.id)
-            .toSet();
-        if (adultCategoryIds.isNotEmpty) {
-          fresh = fresh.where((it) {
-            if (it is XtreamVodStream) return !adultCategoryIds.contains(it.categoryId);
-            return true;
-          }).toList();
-        }
-      }
+      fresh = _excludeRestrictedAllItems(fresh, categoryId);
       if (mounted && _itemRequestToken == token) {
         setState(() {
           _currentItems = fresh;
@@ -743,6 +809,127 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     } catch (e) {
       debugPrint('[STALE-WHILE-REVALIDATE] Revalidação silenciosa para "$categoryId" preservou cache existente: $e');
     }
+  }
+
+  List<XtreamSeriesItem> _filterSeriesListGlobally(
+    Iterable<XtreamSeriesItem> source,
+    String query, {
+    required Set<String> restrictedCatIds,
+  }) {
+    final normQ = SeriesIdentityVerifier.stripDiacritics(query).toLowerCase().trim();
+    if (normQ.isEmpty) return const [];
+
+    final prefixMatches = <XtreamSeriesItem>[];
+    final containsMatches = <XtreamSeriesItem>[];
+    final seenIds = <int>{};
+
+    for (final s in source) {
+      if (s.seriesId <= 0 || !seenIds.add(s.seriesId)) continue;
+      if (restrictedCatIds.contains(s.categoryId)) continue;
+      final normName = SeriesIdentityVerifier.stripDiacritics(s.name).toLowerCase();
+      if (normName.startsWith(normQ)) {
+        prefixMatches.add(s);
+      } else if (normName.contains(normQ)) {
+        containsMatches.add(s);
+      }
+    }
+    return [...prefixMatches, ...containsMatches];
+  }
+
+  void _onSearchChanged(String rawQuery) {
+    final trimmed = rawQuery.trim();
+
+    if (_currentType != XtreamCatalogType.series) {
+      setState(() {
+        _searchQuery = rawQuery;
+      });
+      return;
+    }
+
+    // Pesquisa global em TODAS as séries (independente da categoria atual), com debounce e geração
+    if (trimmed.isEmpty) {
+      _seriesSearchDebounce?.cancel();
+      _seriesSearchGeneration++;
+      final restoredCat = _categoryBeforeSeriesSearch;
+      _categoryBeforeSeriesSearch = null;
+      setState(() {
+        _searchQuery = '';
+        _globalSeriesSearchResults = null;
+        _isGlobalSeriesSearching = false;
+        if (restoredCat != null && restoredCat != _selectedCategoryId) {
+          _selectedCategoryId = restoredCat;
+        }
+      });
+      return;
+    }
+
+    _categoryBeforeSeriesSearch ??= _selectedCategoryId;
+    final restricted = _restrictedCategoryIds();
+    final cachedAll = _service?.cachedAllSeries;
+    final seedSource = cachedAll ?? _service?.getAllCachedSeriesUnionSync() ?? const <XtreamSeriesItem>[];
+    final interim = _filterSeriesListGlobally(
+      seedSource,
+      trimmed,
+      restrictedCatIds: restricted,
+    );
+
+    setState(() {
+      _searchQuery = rawQuery;
+      _globalSeriesSearchResults = interim;
+      _isGlobalSeriesSearching = _service != null && cachedAll == null;
+    });
+
+    if (_service == null || cachedAll != null) return;
+
+    _seriesSearchDebounce?.cancel();
+    final gen = ++_seriesSearchGeneration;
+    _seriesSearchDebounce = Timer(const Duration(milliseconds: 250), () async {
+      if (!mounted || gen != _seriesSearchGeneration) return;
+      try {
+        final allSeries = await _service!.fetchSeries(categoryId: 'all');
+        if (!mounted || gen != _seriesSearchGeneration || _searchQuery.trim().isEmpty) {
+          return;
+        }
+        final ranked = _filterSeriesListGlobally(
+          allSeries,
+          _searchQuery.trim(),
+          restrictedCatIds: _restrictedCategoryIds(),
+        );
+        setState(() {
+          _globalSeriesSearchResults = ranked;
+          _isGlobalSeriesSearching = false;
+        });
+      } catch (_) {
+        if (!mounted || gen != _seriesSearchGeneration) return;
+        setState(() {
+          _isGlobalSeriesSearching = false;
+        });
+      }
+    });
+  }
+
+  void _focusContentGridFirstItem() {
+    if (!mounted) return;
+    if (_firstContentFocusNode.context != null &&
+        _firstContentFocusNode.canRequestFocus) {
+      _firstContentFocusNode.requestFocus();
+    } else {
+      _contentGridScopeNode.requestFocus();
+    }
+  }
+
+  void _focusSelectedSidebarCategory() {
+    if (!mounted) return;
+    if (!_isSidebarVisible) {
+      setState(() => _isSidebarVisible = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _sidebarKey.currentState?.focusCategory(_selectedCategoryId);
+        }
+      });
+      return;
+    }
+    _sidebarKey.currentState?.focusCategory(_selectedCategoryId);
   }
 
   List<XtreamCategory> get _visibleCategories {
@@ -776,32 +963,83 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     }).toList();
   }
 
-  List<dynamic> get _filteredItems {
-    final hidden = _currentType == XtreamCatalogType.live
-        ? HiddenCategoriesService.instance.getHiddenCategories(_accountKey)
-        : const <String>{};
+  String _buildRestrictionSignature() {
+    final hidden = HiddenCategoriesService.instance.getHiddenCategories(_accountKey);
+    return '${UserProfileService.instance.currentProfile.id}|'
+        '${UserProfileService.instance.currentProfile.isKids}|'
+        '${PinService.instance.isPinSet}|'
+        '${PinService.instance.isAdultContentHidden}|'
+        '${PinService.instance.lockedCategories.length}|'
+        '${hidden.length}';
+  }
 
-    final items = _currentItems.where((item) {
-      if (_currentType == XtreamCatalogType.live && item is XtreamLiveStream) {
-        // Preserva favoritos existentes mesmo que sua categoria original esteja oculta
-        if (_selectedCategoryId != 'favorites' && hidden.isNotEmpty) {
-          if (hidden.contains(item.categoryId) ||
-              hidden.contains(_getCategoryName(item.categoryId).trim())) {
-            return false;
+  List<dynamic> get _filteredItems {
+    final trimmedQ = _searchQuery.trim();
+    final restrictionSig = _buildRestrictionSignature();
+    final usingGlobalSeries =
+        _currentType == XtreamCatalogType.series &&
+        trimmedQ.isNotEmpty &&
+        _globalSeriesSearchResults != null;
+
+    if (_memoFilteredItems != null &&
+        identical(_memoSourceItems, _currentItems) &&
+        identical(_memoGlobalSeries, _globalSeriesSearchResults) &&
+        _memoQuery == _searchQuery &&
+        _memoCatId == _selectedCategoryId &&
+        _memoRestrictionSig == restrictionSig) {
+      return _memoFilteredItems!;
+    }
+
+    late final List<dynamic> computed;
+    if (usingGlobalSeries) {
+      computed = _globalSeriesSearchResults!;
+    } else {
+      final hidden = _currentType == XtreamCatalogType.live
+          ? HiddenCategoriesService.instance.getHiddenCategories(_accountKey)
+          : const <String>{};
+
+      final items = _currentItems.where((item) {
+        if (_currentType == XtreamCatalogType.live && item is XtreamLiveStream) {
+          // Preserva favoritos existentes mesmo que sua categoria original esteja oculta
+          if (_selectedCategoryId != 'favorites' && hidden.isNotEmpty) {
+            if (hidden.contains(item.categoryId) ||
+                hidden.contains(_getCategoryName(item.categoryId).trim())) {
+              return false;
+            }
           }
         }
-      }
-      return true;
-    }).toList();
+        return true;
+      }).toList();
 
-    if (_searchQuery.trim().isEmpty) return items;
-    final q = _searchQuery.toLowerCase();
-    return items.where((item) {
-      if (item is XtreamLiveStream) return item.name.toLowerCase().contains(q);
-      if (item is XtreamVodStream) return item.name.toLowerCase().contains(q);
-      if (item is XtreamSeriesItem) return item.name.toLowerCase().contains(q);
-      return false;
-    }).toList();
+      if (trimmedQ.isEmpty) {
+        computed = items;
+      } else {
+        final q = SeriesIdentityVerifier.stripDiacritics(trimmedQ).toLowerCase();
+        computed = items.where((item) {
+          final String name;
+          if (item is XtreamLiveStream) {
+            name = item.name;
+          } else if (item is XtreamVodStream) {
+            name = item.name;
+          } else if (item is XtreamSeriesItem) {
+            name = item.name;
+          } else {
+            return false;
+          }
+          return SeriesIdentityVerifier.stripDiacritics(name)
+              .toLowerCase()
+              .contains(q);
+        }).toList();
+      }
+    }
+
+    _memoSourceItems = _currentItems;
+    _memoGlobalSeries = _globalSeriesSearchResults;
+    _memoQuery = _searchQuery;
+    _memoCatId = _selectedCategoryId;
+    _memoRestrictionSig = restrictionSig;
+    _memoFilteredItems = computed;
+    return computed;
   }
 
   Future<void> _toggleLiveFavorite(XtreamLiveStream stream) async {
@@ -1390,10 +1628,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         }
 
         if (_searchQuery.isNotEmpty || _searchController.text.isNotEmpty) {
-          setState(() {
-            _searchQuery = '';
-            _searchController.clear();
-          });
+          _searchController.clear();
+          _onSearchChanged('');
           return;
         }
 
@@ -1435,7 +1671,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     icon: Icon(Icons.refresh_rounded, color: _accentColor),
                     onPressed: () {
                       _service?.clearCache();
-                      _loadCategories();
+                      _loadCategories(forceRefresh: true);
                     },
                   ),
                 ],
@@ -1508,14 +1744,27 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     children: [
                       if (_isSidebarVisible)
                         CatalogSidebar(
+                          key: _sidebarKey,
                           categories: _visibleCategories,
                           selectedCategoryId: _selectedCategoryId,
                           searchQuery: _searchQuery,
                           searchController: _searchController,
-                          onSearchChanged: (q) => setState(() => _searchQuery = q),
+                          onFocusContentGrid: _focusContentGridFirstItem,
+                          onSearchChanged: _onSearchChanged,
                           onCategorySelected: (catId) {
-                            if (_selectedCategoryId != catId) {
+                            final hadSearch = _searchQuery.isNotEmpty ||
+                                _searchController.text.isNotEmpty;
+                            if (_selectedCategoryId != catId || hadSearch) {
+                              _seriesSearchDebounce?.cancel();
+                              _seriesSearchGeneration++;
+                              if (hadSearch) {
+                                _searchController.clear();
+                              }
                               setState(() {
+                                _searchQuery = '';
+                                _globalSeriesSearchResults = null;
+                                _isGlobalSeriesSearching = false;
+                                _categoryBeforeSeriesSearch = null;
                                 _selectedCategoryId = catId;
                               });
                               _loadItemsForCategory(catId);
@@ -1530,7 +1779,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                           isLoading: _isInitLoading,
                         ),
                       Expanded(
-                        child: catalogContent,
+                        child: FocusScope(
+                          node: _contentGridScopeNode,
+                          child: catalogContent,
+                        ),
                       ),
                     ],
                   ),
@@ -1732,6 +1984,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             accentColor: _accentColor,
             isPlaying: isCurrent,
             autofocus: isCurrent,
+            focusNode: index == 0 ? _firstContentFocusNode : null,
+            onMoveLeft: _focusSelectedSidebarCategory,
             isFavorite: isFav,
             onFocus: () => _onChannelFocusChanged(item),
             onToggleFavorite: () => _toggleLiveFavorite(item),
@@ -2005,7 +2259,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
   }
 
   Widget _buildMainContent() {
-    if (_isItemsLoading) {
+    final items = _filteredItems;
+    if (_isItemsLoading || (_isGlobalSeriesSearching && items.isEmpty)) {
       return Center(
         child: CircularProgressIndicator(
           valueColor: AlwaysStoppedAnimation<Color>(_accentColor),
@@ -2015,15 +2270,13 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     if (_itemsError != null) {
       return _buildItemsError();
     }
-    if (_filteredItems.isEmpty) {
+    if (items.isEmpty) {
       return _buildEmptyState();
     }
-    return _buildCatalogGrid();
+    return _buildCatalogGrid(items);
   }
 
-
-
-  Widget _buildCatalogGrid() {
+  Widget _buildCatalogGrid(List<dynamic> items) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isLandscape = constraints.maxWidth > constraints.maxHeight;
@@ -2041,9 +2294,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                 crossAxisSpacing: 12,
                 mainAxisSpacing: 12,
               ),
-              itemCount: _filteredItems.length,
+              itemCount: items.length,
               itemBuilder: (context, index) {
-                final item = _filteredItems[index] as XtreamLiveStream;
+                final item = items[index] as XtreamLiveStream;
                 final isFav = FavoritesService.instance.isFavorite(
                   scopeKey: _accountKey,
                   type: FavoriteType.live,
@@ -2053,6 +2306,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                   stream: item,
                   accentColor: _accentColor,
                   isPlaying: _activeLiveStream?.streamId == item.streamId,
+                  focusNode: index == 0 ? _firstContentFocusNode : null,
+                  onMoveLeft: (index % crossAxisCount == 0)
+                      ? _focusSelectedSidebarCategory
+                      : null,
                   isFavorite: isFav,
                   onFocus: () => _onChannelFocusChanged(item),
                   onToggleFavorite: () => _toggleLiveFavorite(item),
@@ -2063,9 +2320,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           } else {
             return ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              itemCount: _filteredItems.length,
+              itemCount: items.length,
               itemBuilder: (context, index) {
-                final item = _filteredItems[index] as XtreamLiveStream;
+                final item = items[index] as XtreamLiveStream;
                 final isFav = FavoritesService.instance.isFavorite(
                   scopeKey: _accountKey,
                   type: FavoriteType.live,
@@ -2077,6 +2334,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     stream: item,
                     accentColor: _accentColor,
                     isPlaying: _activeLiveStream?.streamId == item.streamId,
+                    focusNode: index == 0 ? _firstContentFocusNode : null,
+                    onMoveLeft: _focusSelectedSidebarCategory,
                     isFavorite: isFav,
                     onFocus: () => _onChannelFocusChanged(item),
                     onToggleFavorite: () => _toggleLiveFavorite(item),
@@ -2099,9 +2358,9 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             crossAxisSpacing: 14,
             mainAxisSpacing: 16,
           ),
-          itemCount: _filteredItems.length,
+          itemCount: items.length,
           itemBuilder: (context, index) {
-            final dynamic item = _filteredItems[index];
+            final dynamic item = items[index];
             final String name = item.name;
             final String? image = _currentType == XtreamCatalogType.movies
                 ? (item as XtreamVodStream).streamIcon
@@ -2124,6 +2383,10 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
               rating: rating,
               accentColor: _accentColor,
               fallbackIcon: _icon,
+              focusNode: index == 0 ? _firstContentFocusNode : null,
+              onMoveLeft: (index % crossAxisCount == 0)
+                  ? _focusSelectedSidebarCategory
+                  : null,
               isFavorite: isFav,
               onToggleFavorite: () async {
                 final favItem = _currentType == XtreamCatalogType.movies
@@ -2259,6 +2522,8 @@ class _LiveChannelCard extends StatefulWidget {
   final Color accentColor;
   final bool isPlaying;
   final bool isFavorite;
+  final FocusNode? focusNode;
+  final VoidCallback? onMoveLeft;
   final VoidCallback? onFocus;
   final VoidCallback? onToggleFavorite;
   final VoidCallback onTap;
@@ -2270,6 +2535,8 @@ class _LiveChannelCard extends StatefulWidget {
     required this.accentColor,
     this.isPlaying = false,
     this.isFavorite = false,
+    this.focusNode,
+    this.onMoveLeft,
     this.onFocus,
     this.onToggleFavorite,
     required this.onTap,
@@ -2305,10 +2572,18 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
   bool _isMenuKey(LogicalKeyboardKey key) {
     return key == LogicalKeyboardKey.contextMenu ||
         key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.f1 ||
         key == LogicalKeyboardKey.gameButtonX;
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+        widget.onMoveLeft != null) {
+      if (event is KeyDownEvent) {
+        widget.onMoveLeft!();
+      }
+      return KeyEventResult.handled;
+    }
     if (_isSelectKey(event.logicalKey)) {
       if (event is KeyDownEvent) {
         if (!_isKeyDown) {
@@ -2350,6 +2625,7 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
     final isHighlighted = _isFocused || _isHovered || widget.isPlaying;
 
     return Focus(
+      focusNode: widget.focusNode,
       autofocus: widget.autofocus,
       onFocusChange: (focused) {
         if (!focused) {
@@ -2524,6 +2800,8 @@ class _MediaPosterCard extends StatefulWidget {
   final String? rating;
   final Color accentColor;
   final IconData fallbackIcon;
+  final FocusNode? focusNode;
+  final VoidCallback? onMoveLeft;
   final bool isFavorite;
   final VoidCallback? onToggleFavorite;
   final VoidCallback onTap;
@@ -2534,6 +2812,8 @@ class _MediaPosterCard extends StatefulWidget {
     this.rating,
     required this.accentColor,
     required this.fallbackIcon,
+    this.focusNode,
+    this.onMoveLeft,
     this.isFavorite = false,
     this.onToggleFavorite,
     required this.onTap,
@@ -2546,157 +2826,254 @@ class _MediaPosterCard extends StatefulWidget {
 class _MediaPosterCardState extends State<_MediaPosterCard> {
   bool _isFocused = false;
   bool _isHovered = false;
+  Timer? _longPressTimer;
+  bool _longPressTriggered = false;
+  bool _isKeyDown = false;
+  int _repeatCount = 0;
+
+  @override
+  void dispose() {
+    _longPressTimer?.cancel();
+    super.dispose();
+  }
+
+  void _cancelHold() {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _isKeyDown = false;
+    _longPressTriggered = false;
+    _repeatCount = 0;
+  }
+
+  bool _isSelectKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA ||
+        key == LogicalKeyboardKey.numpadEnter;
+  }
+
+  bool _isFavoriteKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.contextMenu ||
+        key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.f1 ||
+        key == LogicalKeyboardKey.gameButtonX;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowLeft && widget.onMoveLeft != null) {
+      if (event is KeyDownEvent) {
+        _cancelHold();
+        widget.onMoveLeft!();
+      }
+      return KeyEventResult.handled;
+    }
+    if (_isFavoriteKey(key)) {
+      if (event is KeyDownEvent) {
+        _cancelHold();
+        widget.onToggleFavorite?.call();
+      }
+      return KeyEventResult.handled;
+    }
+    if (_isSelectKey(key)) {
+      if (event is KeyDownEvent) {
+        _cancelHold();
+        _isKeyDown = true;
+        if (widget.onToggleFavorite != null) {
+          _longPressTimer = Timer(const Duration(milliseconds: 600), () {
+            if (mounted && _isKeyDown && !_longPressTriggered) {
+              _longPressTriggered = true;
+              _isKeyDown = false;
+              HapticFeedback.mediumImpact();
+              widget.onToggleFavorite?.call();
+            }
+          });
+        }
+        return KeyEventResult.handled;
+      } else if (event is KeyRepeatEvent) {
+        if (_isKeyDown &&
+            !_longPressTriggered &&
+            widget.onToggleFavorite != null) {
+          _repeatCount++;
+          if (_repeatCount >= 2) {
+            _longPressTriggered = true;
+            _isKeyDown = false;
+            _longPressTimer?.cancel();
+            HapticFeedback.mediumImpact();
+            widget.onToggleFavorite?.call();
+          }
+        }
+        return KeyEventResult.handled;
+      } else if (event is KeyUpEvent) {
+        final shouldTap = _isKeyDown && !_longPressTriggered;
+        _cancelHold();
+        if (shouldTap) {
+          widget.onTap();
+        }
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
 
-    return FocusableActionDetector(
-      actions: DeviceUtils.activateAction(widget.onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: AnimatedScale(
-        scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
-        duration: const Duration(milliseconds: 150),
-        child: AnimatedContainer(
+    return Focus(
+      focusNode: widget.focusNode,
+      onFocusChange: (v) {
+        if (!v) _cancelHold();
+        if (mounted) setState(() => _isFocused = v);
+      },
+      onKeyEvent: _handleKeyEvent,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: AnimatedScale(
+          scale: DeviceUtils.isTv ? 1.0 : (isHighlighted ? 1.03 : 1.0),
           duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceSecondary,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
-              width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
-            ),
-            boxShadow: isHighlighted
-                ? [
-                    BoxShadow(
-                      color: AppColors.focusCyan.withValues(alpha: 0.25),
-                      blurRadius: 14,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : const [
-                    BoxShadow(
-                      color: Color(0x33000000),
-                      blurRadius: 6,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              canRequestFocus: false,
-              onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceSecondary,
               borderRadius: BorderRadius.circular(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Imagem do Poster com Badge de Nota e Coração
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: ClipRRect(
-                            borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
-                            child: widget.imageUrl != null && widget.imageUrl!.isNotEmpty
-                                ? Image.network(
-                                    widget.imageUrl!,
-                                    fit: BoxFit.cover,
-                                    cacheWidth: 300,
-                                    cacheHeight: 450,
-                                    errorBuilder: (_, _, _) => _buildFallback(),
-                                  )
-                                : _buildFallback(),
+              border: Border.all(
+                color: isHighlighted ? AppColors.focusCyan : AppColors.borderSubtle,
+                width: isHighlighted ? AppColors.focusBorderWidth : AppColors.normalBorderWidth,
+              ),
+              boxShadow: isHighlighted
+                  ? [
+                      BoxShadow(
+                        color: AppColors.focusCyan.withValues(alpha: 0.25),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
+                      ),
+                    ]
+                  : const [
+                      BoxShadow(
+                        color: Color(0x33000000),
+                        blurRadius: 6,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                canRequestFocus: false,
+                onTap: widget.onTap,
+                onLongPress: widget.onToggleFavorite,
+                borderRadius: BorderRadius.circular(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Imagem do Poster com Badge de Nota e Coração
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: ClipRRect(
+                              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+                              child: widget.imageUrl != null && widget.imageUrl!.isNotEmpty
+                                  ? Image.network(
+                                      widget.imageUrl!,
+                                      fit: BoxFit.cover,
+                                      cacheWidth: 300,
+                                      cacheHeight: 450,
+                                      errorBuilder: (_, _, _) => _buildFallback(),
+                                    )
+                                  : _buildFallback(),
+                            ),
                           ),
-                        ),
-                        if (widget.onToggleFavorite != null)
-                          Positioned(
-                            top: 6,
-                            left: 6,
-                            child: Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                canRequestFocus: false,
-                                onTap: widget.onToggleFavorite,
-                                borderRadius: BorderRadius.circular(16),
-                                child: Container(
-                                  padding: const EdgeInsets.all(5),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xDD090D14),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
+                          if (widget.onToggleFavorite != null)
+                            Positioned(
+                              top: 6,
+                              left: 6,
+                              child: Material(
+                                color: Colors.transparent,
+                                child: InkWell(
+                                  canRequestFocus: false,
+                                  onTap: widget.onToggleFavorite,
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xDD090D14),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: widget.isFavorite
+                                            ? const Color(0xFFEF5350)
+                                            : const Color(0xFF37474F),
+                                        width: 0.8,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      widget.isFavorite
+                                          ? Icons.favorite_rounded
+                                          : Icons.favorite_outline_rounded,
+                                      size: 14,
                                       color: widget.isFavorite
                                           ? const Color(0xFFEF5350)
-                                          : const Color(0xFF37474F),
-                                      width: 0.8,
+                                          : Colors.white70,
                                     ),
-                                  ),
-                                  child: Icon(
-                                    widget.isFavorite
-                                        ? Icons.favorite_rounded
-                                        : Icons.favorite_outline_rounded,
-                                    size: 14,
-                                    color: widget.isFavorite
-                                        ? const Color(0xFFEF5350)
-                                        : Colors.white70,
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                        if (widget.rating != null &&
-                            widget.rating!.isNotEmpty &&
-                            widget.rating != '0' &&
-                            widget.rating != '0.0')
-                          Positioned(
-                            top: 6,
-                            right: 6,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: const Color(0xDD090D14),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: const Color(0xFFFFA726), width: 0.8),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.star_rounded, size: 12, color: Color(0xFFFFA726)),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    widget.rating!,
-                                    style: const TextStyle(
-                                      color: Color(0xFFF0F4F8),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
+                          if (widget.rating != null &&
+                              widget.rating!.isNotEmpty &&
+                              widget.rating != '0' &&
+                              widget.rating != '0.0')
+                            Positioned(
+                              top: 6,
+                              right: 6,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xDD090D14),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: const Color(0xFFFFA726), width: 0.8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.star_rounded, size: 12, color: Color(0xFFFFA726)),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      widget.rating!,
+                                      style: const TextStyle(
+                                        color: Color(0xFFF0F4F8),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                      ],
-                    ),
-                  ),
-
-                  // Título na parte inferior
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Text(
-                      widget.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFFF0F4F8),
-                        height: 1.2,
+                        ],
                       ),
                     ),
-                  ),
-                ],
+
+                    // Título na parte inferior
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Text(
+                        widget.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFF0F4F8),
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

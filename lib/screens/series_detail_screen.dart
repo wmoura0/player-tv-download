@@ -6,7 +6,8 @@ import '../models/xtream_series_info.dart';
 import '../services/cloud_progress_sync_service.dart';
 import '../services/favorites_service.dart';
 import '../services/playback_progress_service.dart';
-import '../services/smart_source_resolver.dart';
+import '../services/player_diagnostics.dart';
+import '../services/series_identity_verifier.dart';
 import '../services/url_sanitizer.dart';
 import '../services/xtream_catalog_service.dart';
 import '../theme/app_colors.dart';
@@ -37,9 +38,12 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   bool _isLoading = true;
   String? _errorMessage;
+  SeriesInfoFetchResult? _lastFetchResult;
   XtreamSeriesInfo? _seriesInfo;
   int _selectedSeasonNumber = 1;
+  bool _hasInitializedSeason = false;
   bool _isFavorite = false;
+  int _loadGeneration = 0;
 
   // Mapa de progresso salvo por episodeId
   final Map<int, PlaybackProgress> _episodesProgress = {};
@@ -65,7 +69,32 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant SeriesDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.series.seriesId != widget.series.seriesId ||
+        oldWidget.accountKey != widget.accountKey) {
+      _loadGeneration++;
+      _currentSeries = widget.series;
+      _seriesInfo = null;
+      _lastFetchResult = null;
+      _errorMessage = null;
+      _hasInitializedSeason = false;
+      _episodesProgress.clear();
+      _primaryEpisode = null;
+      _primaryPosition = null;
+      _primaryButtonLabel = '';
+      _isFavorite = FavoritesService.instance.isFavorite(
+        scopeKey: widget.accountKey,
+        type: FavoriteType.series,
+        id: _currentSeries.seriesId.toString(),
+      );
+      _loadSeriesData();
+    }
+  }
+
+  @override
   void dispose() {
+    _loadGeneration++;
     FavoritesService.instance.removeListener(_onFavoritesChanged);
     super.dispose();
   }
@@ -105,131 +134,337 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     }
   }
 
-  Future<void> _loadSeriesData() async {
+  bool _shouldAttemptReindexRecovery(SeriesInfoFetchResult result) {
+    switch (result.category) {
+      case SeriesInfoErrorCategory.serverReturnedNoEpisodes:
+      case SeriesInfoErrorCategory.httpNotFound:
+      case SeriesInfoErrorCategory.emptyBody:
+      case SeriesInfoErrorCategory.unexpectedJsonStructure:
+      case SeriesInfoErrorCategory.identityMismatch:
+      case SeriesInfoErrorCategory.staleOrIncoherentCache:
+        return true;
+      case SeriesInfoErrorCategory.none:
+        return !result.hasUsableEpisodes;
+      case SeriesInfoErrorCategory.invalidServerUrl:
+      case SeriesInfoErrorCategory.authDenied:
+      case SeriesInfoErrorCategory.httpServerError:
+      case SeriesInfoErrorCategory.httpOtherError:
+      case SeriesInfoErrorCategory.timeout:
+      case SeriesInfoErrorCategory.networkError:
+      case SeriesInfoErrorCategory.tlsError:
+      case SeriesInfoErrorCategory.htmlErrorPage:
+      case SeriesInfoErrorCategory.invalidJson:
+      case SeriesInfoErrorCategory.parserIgnoredEpisodes:
+      case SeriesInfoErrorCategory.reindexedSeriesId:
+      case SeriesInfoErrorCategory.unknown:
+        return false;
+    }
+  }
+
+  String _formatSeriesErrorMessage(SeriesInfoFetchResult result) {
+    switch (result.category) {
+      case SeriesInfoErrorCategory.identityMismatch:
+        return 'Os dados retornados pelo servidor não pertencem a "${_currentSeries.name}". '
+            'Por segurança, a associação automática foi bloqueada.';
+      case SeriesInfoErrorCategory.parserIgnoredEpisodes:
+        return result.userMessage ??
+            'O servidor retornou episódios em um formato não reconhecido pelo leitor.';
+      case SeriesInfoErrorCategory.serverReturnedNoEpisodes:
+        return 'O servidor retornou 0 episódios cadastrados para "${_currentSeries.name}". '
+            'Você pode tentar "Atualizar dados" para verificar novamente.';
+      case SeriesInfoErrorCategory.httpNotFound:
+      case SeriesInfoErrorCategory.emptyBody:
+      case SeriesInfoErrorCategory.unexpectedJsonStructure:
+        return '${result.userMessage ?? 'Cadastro da série indisponível ou reindexado no servidor.'} '
+            'Toque em "Atualizar dados" para tentar recarregar.';
+      case SeriesInfoErrorCategory.authDenied:
+      case SeriesInfoErrorCategory.httpServerError:
+      case SeriesInfoErrorCategory.httpOtherError:
+      case SeriesInfoErrorCategory.timeout:
+      case SeriesInfoErrorCategory.networkError:
+      case SeriesInfoErrorCategory.tlsError:
+      case SeriesInfoErrorCategory.htmlErrorPage:
+      case SeriesInfoErrorCategory.invalidJson:
+      case SeriesInfoErrorCategory.invalidServerUrl:
+      case SeriesInfoErrorCategory.staleOrIncoherentCache:
+      case SeriesInfoErrorCategory.reindexedSeriesId:
+      case SeriesInfoErrorCategory.unknown:
+      case SeriesInfoErrorCategory.none:
+        return result.userMessage ??
+            'Não foi possível carregar as informações e episódios desta série.';
+    }
+  }
+
+  Future<SeriesInfoFetchResult?> _tryRecoverUnambiguousReindexedSeries({
+    required XtreamSeriesItem target,
+  }) async {
+    if (SeriesIdentityVerifier.parseTitleParts(target.name).canonicalBase.isEmpty) {
+      return null;
+    }
+
+    XtreamSeriesItem? matched;
+
+    final cachedUnion = widget.catalogService.getAllCachedSeriesUnionSync();
+    if (cachedUnion.isNotEmpty) {
+      matched = SeriesIdentityVerifier.findUnambiguousSeriesMatch(
+        target: target,
+        candidates: cachedUnion,
+      );
+    }
+
+    if (matched == null &&
+        target.categoryId.isNotEmpty &&
+        target.categoryId != '0' &&
+        target.categoryId != 'all') {
+      try {
+        final catList = await widget.catalogService.fetchSeries(
+          categoryId: target.categoryId,
+          forceRefresh: true,
+        );
+        matched = SeriesIdentityVerifier.findUnambiguousSeriesMatch(
+          target: target,
+          candidates: catList,
+        );
+      } catch (_) {}
+    }
+
+    if (matched == null) {
+      try {
+        final allList = await widget.catalogService.fetchSeries(
+          categoryId: 'all',
+          forceRefresh: true,
+        );
+        matched = SeriesIdentityVerifier.findUnambiguousSeriesMatch(
+          target: target,
+          candidates: allList,
+        );
+      } catch (_) {}
+    }
+
+    if (matched == null) return null;
+
+    final candidateResult = await widget.catalogService.fetchSeriesInfoDetailed(
+      matched.seriesId,
+      forceRefresh: true,
+      expectedSeriesName: target.name,
+    );
+    if (!candidateResult.hasUsableEpisodes ||
+        candidateResult.identityConsistency == SeriesIdentityConsistency.mismatch) {
+      return null;
+    }
+
+    final candidateInfo = candidateResult.info!;
+    PlayerDiagnostics.logSeriesDiagnostic(
+      SeriesDiagnosticRecord(
+        timestamp: DateTime.now(),
+        requestType: 'series_reindex_recovery',
+        anonymizedId: UrlSanitizer.anonymizeId('${target.seriesId}->${matched.seriesId}'),
+        cacheSource: 'network',
+        httpStatus: candidateResult.httpStatus,
+        elapsedMs: candidateResult.elapsedMs,
+        seasonCount: candidateInfo.seasons.length,
+        episodeCount: candidateInfo.totalEpisodeCount,
+        rawEpisodesShape: candidateInfo.rawEpisodesShape,
+        rawEpisodeEntriesCount: candidateInfo.rawEpisodeEntriesCount,
+        errorCategory: SeriesInfoErrorCategory.reindexedSeriesId,
+        identityConsistency: candidateResult.identityConsistency,
+        classification: DiagnosticClassification.confirmedServerIssue,
+        sanitizedNote: 'Série reindexada no servidor com identidade confirmada.',
+      ),
+    );
+
+    if (widget.accountKey.trim().isNotEmpty) {
+      await _progressService.migrateSeriesProgressNonDestructively(
+        accountKey: widget.accountKey,
+        oldSeriesId: target.seriesId,
+        newSeriesId: matched.seriesId,
+        seriesName: target.name,
+        coverUrl: matched.cover ?? target.cover,
+        newSeriesInfo: candidateInfo,
+      );
+
+      final wasOldFavorited = FavoritesService.instance.isFavorite(
+        scopeKey: widget.accountKey,
+        type: FavoriteType.series,
+        id: target.seriesId.toString(),
+      );
+      if (wasOldFavorited) {
+        await FavoritesService.instance.migrateSeriesFavoriteId(
+          accountKey: widget.accountKey,
+          oldSeriesId: target.seriesId,
+          newSeries: matched,
+        );
+      }
+    }
+
+    _currentSeries = matched;
+    return candidateResult;
+  }
+
+  Future<void> _reloadProgressFromLateSync(XtreamSeriesInfo info, int expectedGen) async {
+    if (!mounted || expectedGen != _loadGeneration) return;
+    await _loadEpisodesProgress(info, expectedGen: expectedGen);
+    if (!mounted || expectedGen != _loadGeneration) return;
+    setState(() {
+      final preferredSeason = _primaryEpisode?.seasonNumber;
+      if (!_hasInitializedSeason &&
+          preferredSeason != null &&
+          info.seasons.any((s) => s.seasonNumber == preferredSeason)) {
+        _selectedSeasonNumber = preferredSeason;
+      }
+    });
+  }
+
+  Future<void> _loadSeriesData({bool forceRefresh = false}) async {
+    final gen = ++_loadGeneration;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _lastFetchResult = null;
     });
 
     try {
-      final syncFuture = widget.accountKey.trim().isNotEmpty
+      // Garantir favoritos carregados no cold start para refletir estado real e migração segura
+      if (widget.accountKey.trim().isNotEmpty) {
+        await FavoritesService.instance.loadFavorites(widget.accountKey);
+        if (!mounted || gen != _loadGeneration) return;
+        _isFavorite = FavoritesService.instance.isFavorite(
+          scopeKey: widget.accountKey,
+          type: FavoriteType.series,
+          id: _currentSeries.seriesId.toString(),
+        );
+      }
+
+      var syncCompletedInline = false;
+      final rawSyncFuture = widget.accountKey.trim().isNotEmpty
           ? CloudProgressSyncService.instance
               .syncAccount(
                 widget.accountKey,
                 progressService: _progressService,
               )
-              .timeout(const Duration(seconds: 3), onTimeout: () => false)
               .catchError((_) => false)
           : Future<bool>.value(false);
 
-      // 1. Carregamento instantâneo via cache se disponível
-      var info = await widget.catalogService.getCachedSeriesInfo(_currentSeries.seriesId);
-      final hadCachedInfo = info != null && info.seasons.isNotEmpty && !info.isOrphanedOrStub;
-      if (!hadCachedInfo) {
-        info = await widget.catalogService.fetchSeriesInfo(
-          _currentSeries.seriesId,
-          forceRefresh: true,
-        );
-      } else {
-        // Revalidação em segundo plano (Stale-While-Revalidate): garante que IDs reindexados
-        // ou container_extension atualizados no servidor substituam o cache de 24h em disco.
-        unawaited(_revalidateSeriesInfoFromNetwork(_currentSeries.seriesId));
-      }
-
-      // Se a série não retornou dados ou retornou apenas registros órfãos/stubs sem extensões válidas,
-      // tenta recuperar se foi reindexada com novo seriesId
-      if (info == null || info.seasons.isEmpty || info.isOrphanedOrStub) {
-        try {
-          final seriesList = await widget.catalogService.fetchSeries(
-            categoryId: _currentSeries.categoryId,
-            forceRefresh: true,
-          );
-          final cleanTargetTitle = SmartSourceResolver.normalizeTitle(_currentSeries.name);
-
-          // Validação robusta de metadados:
-          // Usa normalizeTitle para tolerar sufixos de anos duplicados como (2009) (2009)
-          final matches = seriesList.where((s) {
-            final norm = SmartSourceResolver.normalizeTitle(s.name);
-            final titleMatch = norm == cleanTargetTitle ||
-                (cleanTargetTitle.isNotEmpty && (norm.contains(cleanTargetTitle) || cleanTargetTitle.contains(norm)));
-            if (!titleMatch) return false;
-            final categoryMatch = s.categoryId == _currentSeries.categoryId;
-            final coverMatch = s.cover != null && _currentSeries.cover != null && s.cover == _currentSeries.cover;
-            final ratingMatch = s.rating != null && _currentSeries.rating != null && s.rating == _currentSeries.rating;
-            return categoryMatch || coverMatch || ratingMatch;
-          }).toList();
-
-          if (matches.isNotEmpty) {
-            final matched = matches.first;
-            final recoveredInfo = await widget.catalogService.fetchSeriesInfo(matched.seriesId, forceRefresh: true);
-            if (recoveredInfo != null && recoveredInfo.seasons.isNotEmpty && !recoveredInfo.isOrphanedOrStub) {
-              info = recoveredInfo;
-              _currentSeries = matched;
-              if (_isFavorite) {
-                await FavoritesService.instance.addFavorite(
-                  FavoriteItem.fromSeriesItem(
-                    accountKey: widget.accountKey,
-                    series: matched,
-                  ),
-                );
-              }
-            }
+      unawaited(
+        rawSyncFuture.then((changed) {
+          if (syncCompletedInline &&
+              changed &&
+              mounted &&
+              gen == _loadGeneration &&
+              _seriesInfo != null) {
+            unawaited(_reloadProgressFromLateSync(_seriesInfo!, gen));
           }
-        } catch (_) {}
+        }),
+      );
+
+      final syncFuture = rawSyncFuture.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => false,
+      );
+
+      // 1. Consulta estruturada com verificação estrita de identidade
+      var result = await widget.catalogService.fetchSeriesInfoDetailed(
+        _currentSeries.seriesId,
+        forceRefresh: forceRefresh,
+        expectedSeriesName: _currentSeries.name,
+      );
+      if (!mounted || gen != _loadGeneration) return;
+
+      if (!forceRefresh && result.fromCache && result.hasUsableEpisodes) {
+        unawaited(_revalidateSeriesInfoFromNetwork(_currentSeries.seriesId, gen));
       }
 
-      if (!mounted) return;
+      // 2. Recuperação automática SOMENTE quando o ID pode ter sido reindexado e há correspondência inequívoca
+      if (_shouldAttemptReindexRecovery(result)) {
+        final recovered = await _tryRecoverUnambiguousReindexedSeries(
+          target: _currentSeries,
+        );
+        if (!mounted || gen != _loadGeneration) return;
+        if (recovered != null) {
+          result = recovered;
+        }
+      }
 
-      if (info == null) {
+      final info = result.info;
+      if (result.category == SeriesInfoErrorCategory.identityMismatch ||
+          info == null ||
+          !result.hasUsableEpisodes) {
         setState(() {
           _isLoading = false;
-          _errorMessage = 'Não foi possível carregar as informações e episódios desta série.';
+          _seriesInfo = null;
+          _lastFetchResult = result;
+          _errorMessage = _formatSeriesErrorMessage(result);
         });
         return;
       }
 
       await syncFuture;
-      if (!mounted) return;
+      syncCompletedInline = true;
+      if (!mounted || gen != _loadGeneration) return;
 
       // Carregar progresso dos episódios antes de selecionar a temporada inicial
-      await _loadEpisodesProgress(info);
+      await _loadEpisodesProgress(info, expectedGen: gen);
+      if (!mounted || gen != _loadGeneration) return;
 
       final preferredSeason = _primaryEpisode?.seasonNumber;
       final hasPreferredSeason = preferredSeason != null &&
           info.seasons.any((s) => s.seasonNumber == preferredSeason);
-      final initialSeason = hasPreferredSeason
+      final initialSeason = (!_hasInitializedSeason && hasPreferredSeason)
           ? preferredSeason
-          : (info.seasons.isNotEmpty ? info.seasons.first.seasonNumber : 1);
+          : (info.seasons.any((s) => s.seasonNumber == _selectedSeasonNumber)
+              ? _selectedSeasonNumber
+              : (info.seasons.isNotEmpty ? info.seasons.first.seasonNumber : 1));
+      _hasInitializedSeason = true;
 
-      if (mounted) {
-        setState(() {
-          _seriesInfo = info;
-          _selectedSeasonNumber = initialSeason;
-          _isLoading = false;
-        });
-      }
+      setState(() {
+        _seriesInfo = info;
+        _lastFetchResult = result;
+        _selectedSeasonNumber = initialSeason;
+        _isLoading = false;
+      });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _loadGeneration) return;
       final safeErr = UrlSanitizer.sanitizeErrorMessage(e.toString());
       setState(() {
         _isLoading = false;
+        _seriesInfo = null;
         _errorMessage = 'Erro ao carregar série: $safeErr';
       });
     }
   }
 
-  Future<void> _revalidateSeriesInfoFromNetwork(int seriesId) async {
+  Future<void> _revalidateSeriesInfoFromNetwork(int seriesId, int expectedGen) async {
     try {
-      final freshInfo = await widget.catalogService
-          .fetchSeriesInfo(seriesId, forceRefresh: true)
-          .timeout(const Duration(seconds: 12), onTimeout: () => null);
-      if (!mounted || freshInfo == null || freshInfo.seasons.isEmpty || freshInfo.isOrphanedOrStub) {
+      final freshResult = await widget.catalogService
+          .fetchSeriesInfoDetailed(
+            seriesId,
+            forceRefresh: true,
+            expectedSeriesName: _currentSeries.name,
+          )
+          .timeout(
+            const Duration(seconds: 12),
+            onTimeout: () => const SeriesInfoFetchResult(
+              category: SeriesInfoErrorCategory.timeout,
+              classification: DiagnosticClassification.networkFailure,
+            ),
+          );
+      if (!mounted ||
+          expectedGen != _loadGeneration ||
+          seriesId != _currentSeries.seriesId ||
+          !freshResult.hasUsableEpisodes ||
+          freshResult.identityConsistency == SeriesIdentityConsistency.mismatch) {
         return;
       }
-      await _loadEpisodesProgress(freshInfo);
-      if (!mounted) return;
+      final freshInfo = freshResult.info!;
+      await _loadEpisodesProgress(freshInfo, expectedGen: expectedGen);
+      if (!mounted ||
+          expectedGen != _loadGeneration ||
+          seriesId != _currentSeries.seriesId) {
+        return;
+      }
       setState(() {
         _seriesInfo = freshInfo;
+        _lastFetchResult = freshResult;
         if (!freshInfo.seasons.any((s) => s.seasonNumber == _selectedSeasonNumber) &&
             freshInfo.seasons.isNotEmpty) {
           _selectedSeasonNumber = freshInfo.seasons.first.seasonNumber;
@@ -238,42 +473,83 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     } catch (_) {}
   }
 
-  Future<void> _loadEpisodesProgress(XtreamSeriesInfo info) async {
-    _episodesProgress.clear();
-    _primaryEpisode = null;
-    _primaryPosition = null;
-    _primaryButtonLabel = '';
-
-    // 1. Verificar último episódio assistido salvo
-    final lastWatched = await _progressService.getLastWatchedEpisode(
+  Future<void> _loadEpisodesProgress(
+    XtreamSeriesInfo info, {
+    int? expectedGen,
+  }) async {
+    // 1. Consultar último episódio assistido salvo (com fallback por Continue Watching / ledger se necessário)
+    var lastWatched = await _progressService.getLastWatchedEpisode(
       accountKey: widget.accountKey,
       seriesId: _currentSeries.seriesId,
     );
 
-    // 2. Consultar progresso de todos os episódios disponíveis em paralelo
-    final allEpisodes = info.episodesBySeason.values.expand((list) => list).toList();
-    final progressFutures = allEpisodes.map((ep) async {
-      final prog = await _progressService.getEpisodeProgress(
-        accountKey: widget.accountKey,
-        seriesId: _currentSeries.seriesId,
-        episodeId: ep.id,
-      );
-      return MapEntry(ep.id, prog);
-    });
+    if (expectedGen != null && (!mounted || expectedGen != _loadGeneration)) return;
 
-    final progressEntries = await Future.wait(progressFutures);
+    // 2. Consultar progresso de todos os episódios disponíveis em paralelo sem limpar o mapa antes do await
+    final allEpisodes = info.episodesBySeason.values.expand((list) => list).toList();
+    final progressEntries = await Future.wait(
+      allEpisodes.map((ep) async {
+        final prog = await _progressService.getEpisodeProgress(
+          accountKey: widget.accountKey,
+          seriesId: _currentSeries.seriesId,
+          episodeId: ep.id,
+        );
+        return MapEntry(ep.id, prog);
+      }),
+    );
+
+    if (expectedGen != null && (!mounted || expectedGen != _loadGeneration)) return;
+
+    final loadedProgress = <int, PlaybackProgress>{};
     for (final entry in progressEntries) {
       if (entry.value != null) {
-        _episodesProgress[entry.key] = entry.value!;
+        loadedProgress[entry.key] = entry.value!;
       }
     }
 
-    // 3. Determinar episódio para o botão principal (Continuar / Próximo / Assistir)
+    // Fallback P6: se lastWatched está ausente ou aponta para episódio não encontrado diretamente,
+    // reconcilia via índice/ledger/Continue Watching da mesma série pelo título exato.
+    bool needsFallback = lastWatched == null;
+    if (!needsFallback) {
+      final lwEpId = lastWatched['episodeId'];
+      final lwSeason = lastWatched['seasonNumber'];
+      final lwNum = lastWatched['episodeNum'];
+      final foundById = (lwEpId != null) ? info.findEpisodeById(lwEpId) : null;
+      final foundBySN = (lwSeason != null && lwNum != null)
+          ? info.findEpisodeBySeasonAndNum(lwSeason, lwNum)
+          : null;
+      if (foundById == null && foundBySN == null) {
+        needsFallback = true;
+      }
+    }
+
+    if (needsFallback && widget.accountKey.trim().isNotEmpty) {
+      final fallback = await _progressService.findSeriesProgressFallback(
+        accountKey: widget.accountKey,
+        seriesId: _currentSeries.seriesId,
+        seriesName: _currentSeries.name,
+        seriesInfo: info,
+      );
+      if (expectedGen != null && (!mounted || expectedGen != _loadGeneration)) return;
+      if (fallback != null) {
+        lastWatched = fallback;
+      }
+    }
+
+    XtreamSeriesEpisode? primaryEpisode;
+    Duration? primaryPosition;
+    var primaryButtonLabel = '';
+
+    // 3. Determinar episódio para o botão principal (Continuar / Próximo / Assistir / Rever)
     if (lastWatched != null) {
       final lastEpId = lastWatched['episodeId'];
       final lastSeason = lastWatched['seasonNumber'];
       final lastNum = lastWatched['episodeNum'];
       final isPromotedNext = lastWatched['isPromotedNext'] == 1;
+      final isMarkedCompleted = lastWatched['isCompleted'] == 1;
+      final fallbackPosSecs = lastWatched['positionSeconds'] ?? 0;
+      final fallbackDurSecs = lastWatched['durationSeconds'] ?? 0;
+
       XtreamSeriesEpisode? lastEp = (lastEpId != null) ? info.findEpisodeById(lastEpId) : null;
       if (lastEp == null && lastSeason != null && lastNum != null) {
         lastEp = info.findEpisodeBySeasonAndNum(lastSeason, lastNum);
@@ -284,8 +560,10 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             seriesId: _currentSeries.seriesId,
             episodeId: lastEpId,
           );
-          if (migratedProg != null && migratedProg.canResume) {
-            _episodesProgress[lastEp.id] = migratedProg;
+          if (expectedGen != null && (!mounted || expectedGen != _loadGeneration)) return;
+          if (migratedProg != null &&
+              (migratedProg.canResume || migratedProg.isCompleted)) {
+            loadedProgress[lastEp.id] = migratedProg;
             unawaited(
               _progressService.saveEpisodeProgress(
                 accountKey: widget.accountKey,
@@ -310,91 +588,127 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       }
 
       if (lastEp != null) {
-        final prog = _episodesProgress[lastEp.id];
-        if (prog != null && prog.canResume) {
+        var prog = loadedProgress[lastEp.id];
+        if (prog == null && !isMarkedCompleted && fallbackPosSecs >= 10) {
+          final recoveredDur = fallbackDurSecs > 0
+              ? Duration(seconds: fallbackDurSecs)
+              : (lastEp.durationSecs != null && lastEp.durationSecs! > 0
+                  ? Duration(seconds: lastEp.durationSecs!)
+                  : Duration.zero);
+          final recoveredProg = PlaybackProgress(
+            streamId: lastEp.id,
+            position: Duration(seconds: fallbackPosSecs),
+            duration: recoveredDur,
+            updatedAt: DateTime.now(),
+          );
+          loadedProgress[lastEp.id] = recoveredProg;
+          prog = recoveredProg;
+          unawaited(
+            _progressService.saveEpisodeProgress(
+              accountKey: widget.accountKey,
+              seriesId: _currentSeries.seriesId,
+              episodeId: lastEp.id,
+              position: recoveredProg.position,
+              duration: recoveredProg.duration,
+            ),
+          );
+        }
+
+        if (prog != null && prog.canResume && !isMarkedCompleted) {
           // Episódio foi interrompido: continuar exatamente do ponto salvo
-          _primaryEpisode = lastEp;
-          _primaryPosition = prog.position;
-          _primaryButtonLabel = 'CONTINUAR S${lastEp.seasonNumber}E${lastEp.episodeNum}';
-        } else if (isPromotedNext) {
+          primaryEpisode = lastEp;
+          primaryPosition = prog.position;
+          primaryButtonLabel = 'CONTINUAR S${lastEp.seasonNumber}E${lastEp.episodeNum}';
+        } else if (isPromotedNext && !isMarkedCompleted) {
           // Este episódio já é o próximo promovido pela conclusão do anterior
-          _primaryEpisode = lastEp;
-          _primaryPosition = Duration.zero;
-          _primaryButtonLabel = 'PRÓXIMO S${lastEp.seasonNumber}E${lastEp.episodeNum}';
+          primaryEpisode = lastEp;
+          primaryPosition = Duration.zero;
+          primaryButtonLabel = 'PRÓXIMO S${lastEp.seasonNumber}E${lastEp.episodeNum}';
         } else {
-          // Episódio foi concluído: disponibilizar o próximo episódio válido
+          // Episódio foi concluído: disponibilizar o próximo episódio válido (sem voltar ao Ep 1 indevidamente)
           final nextEp = info.getNextEpisode(lastEp);
           if (nextEp != null) {
-            final nextProg = _episodesProgress[nextEp.id];
+            final nextProg = loadedProgress[nextEp.id];
             if (nextProg != null && nextProg.canResume) {
-              _primaryEpisode = nextEp;
-              _primaryPosition = nextProg.position;
-              _primaryButtonLabel = 'CONTINUAR S${nextEp.seasonNumber}E${nextEp.episodeNum}';
+              primaryEpisode = nextEp;
+              primaryPosition = nextProg.position;
+              primaryButtonLabel = 'CONTINUAR S${nextEp.seasonNumber}E${nextEp.episodeNum}';
             } else {
-              _primaryEpisode = nextEp;
-              _primaryPosition = Duration.zero;
-              _primaryButtonLabel = 'PRÓXIMO S${nextEp.seasonNumber}E${nextEp.episodeNum}';
+              primaryEpisode = nextEp;
+              primaryPosition = Duration.zero;
+              primaryButtonLabel = 'PRÓXIMO S${nextEp.seasonNumber}E${nextEp.episodeNum}';
             }
           } else {
             // Todos os episódios foram concluídos: opção de rever a série
             final firstSeason = info.seasons.firstOrNull;
-            final firstEp = firstSeason != null ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull : null;
+            final firstEp = firstSeason != null
+                ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull
+                : null;
             if (firstEp != null) {
-              _primaryEpisode = firstEp;
-              _primaryPosition = Duration.zero;
-              _primaryButtonLabel = 'REVER S${firstEp.seasonNumber}E${firstEp.episodeNum}';
+              primaryEpisode = firstEp;
+              primaryPosition = Duration.zero;
+              primaryButtonLabel = 'REVER S${firstEp.seasonNumber}E${firstEp.episodeNum}';
             }
           }
         }
       }
     }
 
-    // Se não encontrou pelo último assistido, busca qualquer episódio com progresso pendente
-    if (_primaryEpisode == null && _episodesProgress.isNotEmpty) {
+    // Se não encontrou pelo último assistido, busca qualquer episódio com progresso em andamento
+    if (primaryEpisode == null && loadedProgress.isNotEmpty) {
       for (final season in info.seasons) {
         final eps = info.episodesBySeason[season.seasonNumber] ?? [];
         for (final ep in eps) {
-          final prog = _episodesProgress[ep.id];
+          final prog = loadedProgress[ep.id];
           if (prog != null && prog.canResume) {
-            _primaryEpisode = ep;
-            _primaryPosition = prog.position;
-            _primaryButtonLabel = 'CONTINUAR S${ep.seasonNumber}E${ep.episodeNum}';
+            primaryEpisode = ep;
+            primaryPosition = prog.position;
+            primaryButtonLabel = 'CONTINUAR S${ep.seasonNumber}E${ep.episodeNum}';
             break;
           }
         }
-        if (_primaryEpisode != null) break;
+        if (primaryEpisode != null) break;
       }
     }
 
     // Se ainda não há nenhum episódio iniciado, o botão principal oferece começar o Ep 1
-    if (_primaryEpisode == null) {
+    if (primaryEpisode == null) {
       final firstSeason = info.seasons.firstOrNull;
-      final firstEp = firstSeason != null ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull : null;
+      final firstEp = firstSeason != null
+          ? info.episodesBySeason[firstSeason.seasonNumber]?.firstOrNull
+          : null;
       if (firstEp != null) {
-        _primaryEpisode = firstEp;
-        _primaryPosition = Duration.zero;
-        _primaryButtonLabel = 'ASSISTIR S${firstEp.seasonNumber}E${firstEp.episodeNum}';
+        primaryEpisode = firstEp;
+        primaryPosition = Duration.zero;
+        primaryButtonLabel = 'ASSISTIR S${firstEp.seasonNumber}E${firstEp.episodeNum}';
       }
     }
 
+    if (expectedGen != null && (!mounted || expectedGen != _loadGeneration)) return;
+
+    _episodesProgress
+      ..clear()
+      ..addAll(loadedProgress);
+    _primaryEpisode = primaryEpisode;
+    _primaryPosition = primaryPosition;
+    _primaryButtonLabel = primaryButtonLabel;
+
     // 4. Auto-reconciliação do card "Continuar assistindo" da Home:
-    // Se a série possui um episódio ativo para CONTINUAR ou PRÓXIMO na tela da série,
-    // mas por qualquer razão (saída nos créditos finais, atualização de versão, etc.)
-    // não estava presente ou estava desatualizada no índice da Home, restaura-a automaticamente.
+    // Respeita itens ocultados ou limpos pelo usuário (P1: never resurrects on detail open).
     if (widget.accountKey.trim().isNotEmpty &&
-        _primaryEpisode != null &&
-        (_primaryButtonLabel.startsWith('CONTINUAR') ||
-            _primaryButtonLabel.startsWith('PRÓXIMO'))) {
-      final primaryEp = _primaryEpisode!;
-      final pos = _primaryPosition ?? Duration.zero;
-      final prog = _episodesProgress[primaryEp.id];
+        primaryEpisode != null &&
+        (primaryButtonLabel.startsWith('CONTINUAR') ||
+            primaryButtonLabel.startsWith('PRÓXIMO'))) {
+      final primaryEp = primaryEpisode;
+      final pos = primaryPosition ?? Duration.zero;
+      final prog = loadedProgress[primaryEp.id];
       final dur = (prog != null && prog.duration > Duration.zero)
           ? prog.duration
           : (primaryEp.durationSecs != null && primaryEp.durationSecs! > 0
               ? Duration(seconds: primaryEp.durationSecs!)
               : Duration.zero);
 
-      final isNextPromoted = _primaryButtonLabel.startsWith('PRÓXIMO');
+      final isNextPromoted = primaryButtonLabel.startsWith('PRÓXIMO');
       if (isNextPromoted &&
           (lastWatched == null ||
               lastWatched['episodeId'] != primaryEp.id ||
@@ -452,6 +766,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
 
   Future<void> _startPlayback(XtreamSeriesEpisode episode, {Duration? initialPosition}) async {
     if (_seriesInfo == null) return;
+    final genAtLaunch = _loadGeneration;
 
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -462,16 +777,17 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
           catalogService: widget.catalogService,
           accountKey: widget.accountKey,
           initialPosition: initialPosition,
+          seriesInfoIsFresh: _lastFetchResult != null && !_lastFetchResult!.fromCache,
         ),
       ),
     );
 
     // Ao voltar do player, restaura imediatamente a orientação e atualiza progresso
-    if (mounted) {
+    if (mounted && genAtLaunch == _loadGeneration) {
       DeviceUtils.restoreOrientation();
       if (_seriesInfo != null) {
-        await _loadEpisodesProgress(_seriesInfo!);
-        if (mounted) setState(() {});
+        await _loadEpisodesProgress(_seriesInfo!, expectedGen: genAtLaunch);
+        if (mounted && genAtLaunch == _loadGeneration) setState(() {});
       }
     }
   }
@@ -529,6 +845,12 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     }
 
     if (_errorMessage != null) {
+      final diagLabel = _lastFetchResult != null &&
+              _lastFetchResult!.category != SeriesInfoErrorCategory.none
+          ? 'Diagnóstico: ${_lastFetchResult!.category.name}'
+              '${_lastFetchResult!.httpStatus != null ? ' • HTTP ${_lastFetchResult!.httpStatus}' : ''}'
+              ' • Origem: ${_lastFetchResult!.classification.name}'
+          : null;
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 16.0),
@@ -542,16 +864,31 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
                     children: [
                       const Icon(Icons.error_outline_rounded, color: Color(0xFFEF5350), size: 48),
                       const SizedBox(height: 12),
-                      Text(
-                        _errorMessage!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 560),
+                        child: Text(
+                          _errorMessage!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
                       ),
+                      if (diagLabel != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          diagLabel,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFF78909C),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 20),
                       ElevatedButton.icon(
-                        onPressed: _loadSeriesData,
+                        autofocus: true,
+                        onPressed: () => _loadSeriesData(forceRefresh: true),
                         icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('Tentar novamente'),
+                        label: const Text('Atualizar dados'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF00E5FF),
                           foregroundColor: Colors.black,
@@ -568,7 +905,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     }
 
     final info = _seriesInfo!;
-    final backdropUrl = info.backdrop ?? info.cover ?? widget.series.cover;
+    final backdropUrl = info.backdrop ?? info.cover ?? _currentSeries.cover;
 
     return Stack(
       fit: StackFit.expand,
@@ -673,7 +1010,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         const SizedBox(width: 14),
         Expanded(
           child: Text(
-            widget.series.name,
+            _currentSeries.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
@@ -698,9 +1035,9 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   Widget _buildHeroSection(XtreamSeriesInfo info, BoxConstraints constraints) {
     final isLandscape = constraints.maxWidth > constraints.maxHeight;
     final year = info.releaseDate?.split('-').firstOrNull;
-    final rating = info.rating ?? widget.series.rating;
-    final genre = info.genre ?? widget.series.genre;
-    final plot = info.plot ?? widget.series.plot;
+    final rating = info.rating ?? _currentSeries.rating;
+    final genre = info.genre ?? _currentSeries.genre;
+    final plot = info.plot ?? _currentSeries.plot;
 
     final heroWidth = isLandscape ? (constraints.maxWidth * 0.62).clamp(380.0, 760.0) : double.infinity;
 
@@ -881,9 +1218,24 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
       return Container(
         padding: const EdgeInsets.all(24),
         alignment: Alignment.center,
-        child: const Text(
-          'Nenhum episódio cadastrado para esta temporada.',
-          style: TextStyle(color: Color(0xFF90A4AE), fontSize: 14),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Nenhum episódio cadastrado para esta temporada.',
+              style: TextStyle(color: Color(0xFF90A4AE), fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: () => _loadSeriesData(forceRefresh: true),
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Atualizar dados'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+                foregroundColor: Colors.black,
+              ),
+            ),
+          ],
         ),
       );
     }
