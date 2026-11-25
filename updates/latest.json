@@ -1,11 +1,11 @@
 {
-  "version": "1.2.16",
-  "versionCode": 19,
+  "version": "1.2.17",
+  "versionCode": 20,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.16/JessFlix-v1.2.16.apk",
-  "fileSize": 59179977,
-  "sha256": "531b51026ddb560b8049c95ef2a59e0df6de27edd4d7ebd7818322652b645d51",
-  "releaseNotes": "• Restauração Automática de Séries no Continuar Assistindo (ex: Matéria Escura): Ao sair de um episódio nos créditos finais (<= 45s restantes), o player promove automaticamente o próximo episódio na Home em vez de remover a série.\n• Reconciliação Automática na Home e na Tela da Série: Séries com progresso salvo ou próximo episódio pendente (CONTINUAR / PRÓXIMO) são restauradas automaticamente no carrossel 'Continuar assistindo' da Home e sincronizadas na nuvem.\n• Capacidade Ampliada no Continuar Assistindo: Limite local ampliado para até 20 itens simultâneos no carrossel.\n• Correção do 1º Clique Direto na Tela da Série e na Home: Revalidação automática com forceRefresh e recarga transparente de sessão.",
-  "publishedAt": "2026-11-23T01:31:45.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.17/JessFlix-v1.2.17.apk",
+  "fileSize": 59704581,
+  "sha256": "561545c94573d6b477c13e52a99e7b79c4c1ce62815cb62f331d26f89bbd0f27",
+  "releaseNotes": "• Identidade Estrita de Séries (P0): Impede mistura de episódios entre séries diferentes sem heurística de classificação ou seleção ambígua, preservando IDs e histórico.\n• Continuar Assistindo Acessível no Fire TV (P1): Novas opções via botão Menu ou OK longo (Ocultar da Home, Reiniciar, Concluir e Apagar histórico) sem ressurreição pelo Firebase.\n• Navegação de Categorias e Busca Global em Séries (P2/P3): Mantém Lançamentos selecionado ao navegar com setas ou voltar de detalhes e pesquisa em todas as séries.\n• Diagnóstico de Séries sem Episódios e Favoritos (P4/P5/P8): Classifica falhas de servidor/rede com botão Atualizar dados e adiciona remoção/Desfazer pelo controle remoto com isolamento por perfil.\n• Preservação de Progresso e Estabilidade Geral (P6/P7): Protege séries reindexadas contra sobrescrita <10s e corrige PIN real, controllers e player VOD.",
+  "publishedAt": "2026-11-25T22:58:13.000Z",
   "mandatory": false
 }
