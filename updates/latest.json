@@ -1,11 +1,11 @@
 {
-  "version": "1.2.17",
-  "versionCode": 20,
+  "version": "1.2.18",
+  "versionCode": 21,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.17/JessFlix-v1.2.17.apk",
-  "fileSize": 59704581,
-  "sha256": "561545c94573d6b477c13e52a99e7b79c4c1ce62815cb62f331d26f89bbd0f27",
-  "releaseNotes": "• Identidade Estrita de Séries (P0): Impede mistura de episódios entre séries diferentes sem heurística de classificação ou seleção ambígua, preservando IDs e histórico.\n• Continuar Assistindo Acessível no Fire TV (P1): Novas opções via botão Menu ou OK longo (Ocultar da Home, Reiniciar, Concluir e Apagar histórico) sem ressurreição pelo Firebase.\n• Navegação de Categorias e Busca Global em Séries (P2/P3): Mantém Lançamentos selecionado ao navegar com setas ou voltar de detalhes e pesquisa em todas as séries.\n• Diagnóstico de Séries sem Episódios e Favoritos (P4/P5/P8): Classifica falhas de servidor/rede com botão Atualizar dados e adiciona remoção/Desfazer pelo controle remoto com isolamento por perfil.\n• Preservação de Progresso e Estabilidade Geral (P6/P7): Protege séries reindexadas contra sobrescrita <10s e corrige PIN real, controllers e player VOD.",
-  "publishedAt": "2026-11-25T22:58:13.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.18/JessFlix-v1.2.18.apk",
+  "fileSize": 59835653,
+  "sha256": "a4ed86fe3095de782730f1cd578a98f5472f16ec8bc52b5e13a3d7423cda7095",
+  "releaseNotes": "• Navegação e Clique na Home (Fire TV): Corrige aprisionamento de foco na seção de categorias, permitindo descer com o D-pad até Continuar assistindo e botão Opções e reproduzir episódios normalmente.\n• Carregamento de Episódios em Séries (P0/P4): Suporte a tags de streaming/áudio/resolução, subtítulos e títulos traduzidos com a mesma capa no servidor, mantendo o bloqueio de segurança contra episódios de séries erradas.\n• Auditoria Geral de Estabilidade (P0-P8): Inclui opções D-pad em Continuar assistindo sem ressurreição pelo Firebase, busca global em Séries mantendo Lançamentos, remoção/Desfazer de Favoritos pelo controle remoto e preservação de histórico em séries reindexadas.",
+  "publishedAt": "2026-11-25T23:53:15.000Z",
   "mandatory": false
 }
