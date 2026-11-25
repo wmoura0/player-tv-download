@@ -460,6 +460,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
             seriesId,
             forceRefresh: forceRefresh,
             expectedSeriesName: widget.series.name,
+            expectedCoverUrl: widget.series.cover,
           )
           .timeout(const Duration(seconds: 12));
       if (!mounted || sessionEpoch != _episodeSessionEpoch || _isExiting) return;
@@ -546,6 +547,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
         final cachedInfo = await widget.catalogService.getCachedSeriesInfo(
           _activeSeriesId,
           expectedSeriesName: widget.series.name,
+          expectedCoverUrl: widget.series.cover,
         );
         if (!mounted || sessionEpoch != _episodeSessionEpoch) return;
         if (cachedInfo != null && !cachedInfo.isOrphanedOrStub) {
@@ -1269,6 +1271,7 @@ class _SeriesPlayerScreenState extends State<SeriesPlayerScreen>
               .fetchSeriesInfoDetailed(
                 activeSeriesId,
                 expectedSeriesName: widget.series.name,
+                expectedCoverUrl: widget.series.cover,
               )
               .timeout(const Duration(seconds: 6));
           final fetched = res.info;

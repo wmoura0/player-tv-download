@@ -9,9 +9,9 @@ class DeviceUtils {
   static bool? _mockIsPipSupported;
   static bool? _mockIsMultiWindowOrPip;
 
-  // Versão instalada real (padrão v1.2.17+20 com sincronização dinâmica via MainActivity)
-  static int _installedVersionCode = 20;
-  static String _installedVersionName = '1.2.17';
+  // Versão instalada real (padrão v1.2.18+21 com sincronização dinâmica via MainActivity)
+  static int _installedVersionCode = 21;
+  static String _installedVersionName = '1.2.18';
 
   /// Versão de build (versionCode) da aplicação instalada no dispositivo.
   static int get installedVersionCode => _installedVersionCode;

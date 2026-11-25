@@ -498,6 +498,7 @@ class SmartSourceResolver {
         matched.seriesId,
         forceRefresh: true,
         expectedSeriesName: seriesTitle,
+        expectedCoverUrl: matched.cover,
       );
       final info = infoResult.info;
       if (infoResult.identityConsistency == SeriesIdentityConsistency.mismatch ||

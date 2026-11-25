@@ -73,6 +73,59 @@ class SeriesIdentityVerifier {
     'subtitulada',
     'serie',
     'series',
+    'netflix',
+    'prime',
+    'prime video',
+    'amazon',
+    'amazon prime',
+    'disney',
+    'disney plus',
+    'hbo',
+    'hbo max',
+    'max',
+    'apple',
+    'apple tv',
+    'apple tv plus',
+    'globoplay',
+    'paramount',
+    'paramount plus',
+    'star',
+    'star plus',
+    'starz',
+    'crunchyroll',
+    'discovery',
+    'vip',
+    'lancamento',
+    'lancamentos',
+    'novo',
+    'novidade',
+    'br',
+    'bra',
+    'en',
+    'eng',
+    'es',
+    'esp',
+    'lat',
+    'latino',
+    'ing',
+    'ingles',
+    'portugues',
+    'dub leg',
+    'dub e leg',
+    'dublado legendado',
+    'hdr',
+    'hdr10',
+    'dolby',
+    'atmos',
+    'web',
+    'web dl',
+    'webdl',
+    'bluray',
+    'blu ray',
+    'hdcam',
+    '4k uhd',
+    'uhd 4k',
+    'fhd 4k',
   };
 
   /// Remove acentos/diacríticos comuns do português, espanhol e inglês.
@@ -150,6 +203,124 @@ class SeriesIdentityVerifier {
         .trim();
   }
 
+  static bool _isTechnicalOnlySegment(String normSegment, Set<String> yearsOut) {
+    if (normSegment.isEmpty) return true;
+    if (RegExp(r'^((?:19|20)\d{2})$').hasMatch(normSegment)) {
+      yearsOut.add(normSegment);
+      return true;
+    }
+    if (_knownEditionTags.contains(normSegment)) {
+      return true;
+    }
+    final tokens = normSegment.split(' ').where((t) => t.isNotEmpty).toList();
+    if (tokens.isEmpty) return true;
+
+    final localYears = <String>{};
+    var i = 0;
+    while (i < tokens.length) {
+      var matchedLen = 0;
+      for (final len in const [3, 2, 1]) {
+        if (i + len <= tokens.length) {
+          final phrase = tokens.sublist(i, i + len).join(' ');
+          if (_knownEditionTags.contains(phrase)) {
+            matchedLen = len;
+            break;
+          }
+        }
+      }
+      if (matchedLen > 0) {
+        i += matchedLen;
+        continue;
+      }
+      if (RegExp(r'^(?:19|20)\d{2}$').hasMatch(tokens[i])) {
+        localYears.add(tokens[i]);
+        i++;
+        continue;
+      }
+      return false;
+    }
+    yearsOut.addAll(localYears);
+    return true;
+  }
+
+  static String _stripBracketsAndTechnicalSuffixes(
+    String raw, {
+    required Set<String> years,
+    required Set<String> qualifiers,
+  }) {
+    // 1. Inspeciona tags em [...] e (...) mantendo qualificadores significativos (ex.: (US), (UK), (Mexico))
+    // e removendo apenas tags técnicas de áudio/vídeo/streaming e anos (armazenados em `years`).
+    String working = raw.replaceAllMapped(
+      RegExp(r'\[([^\]]*)\]|\(([^)]*)\)'),
+      (match) {
+        final innerRaw = match.group(1) ?? match.group(2) ?? '';
+        final innerNorm = _normalizePunctuation(innerRaw);
+        if (innerNorm.isEmpty) return ' ';
+
+        if (_isTechnicalOnlySegment(innerNorm, years)) {
+          return ' ';
+        }
+
+        // Mantém tokens não técnicos como qualificador estrutural
+        final tokens = innerNorm.split(' ').where((t) => t.isNotEmpty).toList();
+        final remainingQualifiers = <String>[];
+        var i = 0;
+        while (i < tokens.length) {
+          var matchedLen = 0;
+          for (final len in const [3, 2, 1]) {
+            if (i + len <= tokens.length &&
+                _knownEditionTags.contains(tokens.sublist(i, i + len).join(' '))) {
+              matchedLen = len;
+              break;
+            }
+          }
+          if (matchedLen > 0) {
+            i += matchedLen;
+          } else if (RegExp(r'^(?:19|20)\d{2}$').hasMatch(tokens[i])) {
+            years.add(tokens[i]);
+            i++;
+          } else {
+            remainingQualifiers.add(tokens[i]);
+            i++;
+          }
+        }
+        if (remainingQualifiers.isNotEmpty) {
+          qualifiers.add(remainingQualifiers.join(' '));
+        }
+        return ' ';
+      },
+    );
+
+    // 2. Remove sufixos técnicos após separadores '|' ou ' - ' (ex.: "- Dublado | 4K UHD")
+    while (true) {
+      final pipeIdx = working.lastIndexOf('|');
+      final dashIdx = working.lastIndexOf(' - ');
+      final int sepIdx;
+      final int sepLen;
+      if (pipeIdx > dashIdx) {
+        sepIdx = pipeIdx;
+        sepLen = 1;
+      } else if (dashIdx >= 0) {
+        sepIdx = dashIdx;
+        sepLen = 3;
+      } else {
+        break;
+      }
+
+      final prefix = working.substring(0, sepIdx).trim();
+      final suffix = working.substring(sepIdx + sepLen).trim();
+      if (prefix.isEmpty) break;
+      final normSuffix = _normalizePunctuation(suffix);
+      if (_isTechnicalOnlySegment(normSuffix, years)) {
+        working = prefix;
+      } else {
+        break;
+      }
+    }
+
+    return working;
+  }
+
   /// Extrai base canônica, anos explícitos e qualificadores não-técnicos de um título.
   static SeriesTitleParts parseTitleParts(String title) {
     final trimmed = title.trim();
@@ -164,40 +335,10 @@ class SeriesIdentityVerifier {
     final years = <String>{};
     final qualifiers = <String>{};
 
-    // 1. Inspeciona tags em [...] e (...) mantendo qualificadores significativos (ex.: (US), (UK), (Mexico))
-    // e removendo apenas tags técnicas de áudio/vídeo e anos (armazenados em `years`).
-    String working = trimmed.replaceAllMapped(
-      RegExp(r'\[([^\]]*)\]|\(([^)]*)\)'),
-      (match) {
-        final innerRaw = match.group(1) ?? match.group(2) ?? '';
-        final innerNorm = _normalizePunctuation(innerRaw);
-        if (innerNorm.isEmpty) return ' ';
-
-        final yearMatch = RegExp(r'^((?:19|20)\d{2})$').firstMatch(innerNorm);
-        if (yearMatch != null) {
-          years.add(yearMatch.group(1)!);
-          return ' ';
-        }
-
-        if (_knownEditionTags.contains(innerNorm)) {
-          return ' ';
-        }
-
-        // Caso contenha múltiplos tokens (ex.: "DUB 2021" ou "US FHD"), separa anos e tags conhecidas
-        final tokens = innerNorm.split(' ');
-        final remainingQualifiers = <String>[];
-        for (final tok in tokens) {
-          if (RegExp(r'^(19|20)\d{2}$').hasMatch(tok)) {
-            years.add(tok);
-          } else if (!_knownEditionTags.contains(tok)) {
-            remainingQualifiers.add(tok);
-          }
-        }
-        if (remainingQualifiers.isNotEmpty) {
-          qualifiers.add(remainingQualifiers.join(' '));
-        }
-        return ' ';
-      },
+    final working = _stripBracketsAndTechnicalSuffixes(
+      trimmed,
+      years: years,
+      qualifiers: qualifiers,
     );
 
     // 2. Extrai eventual ano solto no final ou no meio do título se houver texto restante além do ano
@@ -258,10 +399,64 @@ class SeriesIdentityVerifier {
     return true;
   }
 
+  static String? _normalizeCoverUrl(String? raw) {
+    final trimmed = raw?.trim() ?? '';
+    if (trimmed.isEmpty || trimmed.toLowerCase() == 'null') return null;
+    final parsed = Uri.tryParse(trimmed);
+    if (parsed == null || !parsed.hasScheme || parsed.host.isEmpty) {
+      return trimmed.toLowerCase();
+    }
+    final normalizedPath = parsed.path == '/' ? '' : parsed.path;
+    final queryPart = parsed.hasQuery ? '?${parsed.query}' : '';
+    return '${parsed.host.toLowerCase()}$normalizedPath$queryPart';
+  }
+
+  static bool _matchesBasePlusSubtitle(String reqTitle, String srvTitle) {
+    final yearsA = <String>{};
+    final qualsA = <String>{};
+    final yearsB = <String>{};
+    final qualsB = <String>{};
+
+    final cleanA = _stripBracketsAndTechnicalSuffixes(
+      reqTitle.trim(),
+      years: yearsA,
+      qualifiers: qualsA,
+    );
+    final cleanB = _stripBracketsAndTechnicalSuffixes(
+      srvTitle.trim(),
+      years: yearsB,
+      qualifiers: qualsB,
+    );
+
+    if (qualsA.length != qualsB.length || !qualsA.containsAll(qualsB)) {
+      return false;
+    }
+    if (yearsA.isNotEmpty && yearsB.isNotEmpty && !yearsA.any(yearsB.contains)) {
+      return false;
+    }
+
+    final sepRegex = RegExp(r'\s*:\s+|\s+-\s+');
+    final matchA = sepRegex.firstMatch(cleanA);
+    final matchB = sepRegex.firstMatch(cleanB);
+    if ((matchA != null) == (matchB != null)) {
+      return false;
+    }
+
+    final mainA = _normalizePunctuation(
+      matchA != null ? cleanA.substring(0, matchA.start) : cleanA,
+    );
+    final mainB = _normalizePunctuation(
+      matchB != null ? cleanB.substring(0, matchB.start) : cleanB,
+    );
+    return mainA.isNotEmpty && mainA == mainB;
+  }
+
   /// Compara o título solicitado pelo usuário com `info['name']` retornado por `get_series_info`.
   static SeriesIdentityConsistency verifySeriesInfoIdentity({
     required String requestedTitle,
     required String? serverReturnedName,
+    String? expectedCoverUrl,
+    String? serverReturnedCoverUrl,
   }) {
     final reqTrimmed = requestedTitle.trim();
     if (reqTrimmed.isEmpty) {
@@ -279,6 +474,18 @@ class SeriesIdentityVerifier {
     }
 
     if (areSameSeriesIdentity(reqTrimmed, srvTrimmed)) {
+      return SeriesIdentityConsistency.verifiedNormalized;
+    }
+
+    final expectedCover = _normalizeCoverUrl(expectedCoverUrl);
+    final returnedCover = _normalizeCoverUrl(serverReturnedCoverUrl);
+    if (expectedCover != null &&
+        returnedCover != null &&
+        expectedCover == returnedCover) {
+      return SeriesIdentityConsistency.verifiedNormalized;
+    }
+
+    if (_matchesBasePlusSubtitle(reqTrimmed, srvTrimmed)) {
       return SeriesIdentityConsistency.verifiedNormalized;
     }
 

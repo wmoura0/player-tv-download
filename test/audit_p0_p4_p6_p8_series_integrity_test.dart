@@ -271,6 +271,120 @@ void main() {
       );
       expect(cachedAfterReject, isNull);
     });
+
+    test('Aceita tags de streaming/áudio, subtítulo e título traduzido com mesma capa, mantendo bloqueio entre séries diferentes', () async {
+      final client = MockClient((req) async {
+        final action = req.url.queryParameters['action'];
+        final sid = req.url.queryParameters['series_id'];
+        if (action != 'get_series_info') return http.Response('[]', 200);
+
+        if (sid == '201') {
+          return http.Response(
+            jsonEncode({
+              'info': {
+                'name': 'Gossip Girl: A Garota do Blog',
+                'cover': 'https://cdn.iptv.local/gossip.jpg',
+              },
+              'seasons': [
+                {'season_number': 1, 'name': 'Temporada 1'},
+              ],
+              'episodes': {
+                '1': [
+                  {
+                    'id': '20101',
+                    'episode_num': 1,
+                    'title': 'Pilot',
+                    'season': 1,
+                    'container_extension': 'mp4',
+                  },
+                ],
+              },
+            }),
+            200,
+          );
+        }
+        if (sid == '202') {
+          return http.Response(
+            jsonEncode({
+              'info': {
+                'name': 'Dark Matter',
+                'cover': 'http://cdn.iptv.local/darkmatter.jpg',
+              },
+              'seasons': [
+                {'season_number': 1, 'name': 'Temporada 1'},
+              ],
+              'episodes': {
+                '1': [
+                  {
+                    'id': '20201',
+                    'episode_num': 1,
+                    'title': 'Are You Happy in Your Life?',
+                    'season': 1,
+                    'container_extension': 'mp4',
+                  },
+                ],
+              },
+            }),
+            200,
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'info': {
+              'name': 'Outlander',
+              'cover': 'https://cdn.iptv.local/outlander.jpg',
+            },
+            'seasons': [
+              {'season_number': 1, 'name': 'Temporada 1'},
+            ],
+            'episodes': {
+              '1': [
+                {
+                  'id': '20301',
+                  'episode_num': 1,
+                  'title': 'Sassenach',
+                  'season': 1,
+                  'container_extension': 'mp4',
+                },
+              ],
+            },
+          }),
+          200,
+        );
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://test.iptv.local:8080',
+        username: 'secret_user',
+        password: 'secret_password',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      final resTagAndSubtitle = await catalog.fetchSeriesInfoDetailed(
+        201,
+        expectedSeriesName: 'Gossip Girl [NETFLIX] - Dublado | 4K',
+        expectedCoverUrl: 'https://cdn.iptv.local/gossip.jpg',
+      );
+      expect(resTagAndSubtitle.hasUsableEpisodes, isTrue);
+      expect(resTagAndSubtitle.info!.findEpisodeById(20101), isNotNull);
+
+      final resTranslatedSameCover = await catalog.fetchSeriesInfoDetailed(
+        202,
+        expectedSeriesName: 'Matéria Escura [APPLE TV+] (2024)',
+        expectedCoverUrl: 'https://cdn.iptv.local/darkmatter.jpg',
+      );
+      expect(resTranslatedSameCover.hasUsableEpisodes, isTrue);
+      expect(resTranslatedSameCover.info!.findEpisodeById(20201), isNotNull);
+
+      final resWrongSeries = await catalog.fetchSeriesInfoDetailed(
+        203,
+        expectedSeriesName: 'Gossip Girl',
+        expectedCoverUrl: 'https://cdn.iptv.local/gossip.jpg',
+      );
+      expect(resWrongSeries.category, SeriesInfoErrorCategory.identityMismatch);
+      expect(resWrongSeries.info, isNull);
+    });
   });
 
   group('P4 & P8 - Diagnóstico get_series_info e Privacidade de Logs', () {

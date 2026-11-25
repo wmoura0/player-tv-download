@@ -1278,6 +1278,7 @@ class XtreamCatalogService extends ChangeNotifier {
   Future<XtreamSeriesInfo?> getCachedSeriesInfo(
     int seriesId, {
     String? expectedSeriesName,
+    String? expectedCoverUrl,
   }) async {
     final gen = _cacheGeneration;
     XtreamSeriesInfo? candidate;
@@ -1306,6 +1307,8 @@ class XtreamCatalogService extends ChangeNotifier {
       final consistency = SeriesIdentityVerifier.verifySeriesInfoIdentity(
         requestedTitle: expectedSeriesName,
         serverReturnedName: candidate.serverReturnedName,
+        expectedCoverUrl: expectedCoverUrl,
+        serverReturnedCoverUrl: candidate.cover,
       );
       if (consistency == SeriesIdentityConsistency.mismatch) {
         PlayerDiagnostics.logSeriesDiagnostic(
@@ -1348,17 +1351,21 @@ class XtreamCatalogService extends ChangeNotifier {
     int seriesId, {
     bool forceRefresh = false,
     String? expectedSeriesName,
+    String? expectedCoverUrl,
   }) async {
     if (!forceRefresh) {
       final cached = await getCachedSeriesInfo(
         seriesId,
         expectedSeriesName: expectedSeriesName,
+        expectedCoverUrl: expectedCoverUrl,
       );
       if (cached != null) {
         final consistency = (expectedSeriesName != null && expectedSeriesName.trim().isNotEmpty)
             ? SeriesIdentityVerifier.verifySeriesInfoIdentity(
                 requestedTitle: expectedSeriesName,
                 serverReturnedName: cached.serverReturnedName,
+                expectedCoverUrl: expectedCoverUrl,
+                serverReturnedCoverUrl: cached.cover,
               )
             : SeriesIdentityConsistency.notApplicable;
         return SeriesInfoFetchResult(
@@ -1371,7 +1378,8 @@ class XtreamCatalogService extends ChangeNotifier {
       }
     }
 
-    final inFlightKey = '$seriesId|$forceRefresh|${expectedSeriesName?.trim() ?? ''}';
+    final inFlightKey =
+        '$seriesId|$forceRefresh|${expectedSeriesName?.trim() ?? ''}|${expectedCoverUrl?.trim() ?? ''}';
     final existing = _inFlightSeriesInfoFetches[inFlightKey];
     if (existing != null) {
       return existing;
@@ -1382,6 +1390,7 @@ class XtreamCatalogService extends ChangeNotifier {
     future = _fetchSeriesInfoNetworkDetailed(
       seriesId,
       expectedSeriesName: expectedSeriesName,
+      expectedCoverUrl: expectedCoverUrl,
       expectedGen: gen,
     ).whenComplete(() {
       if (identical(_inFlightSeriesInfoFetches[inFlightKey], future)) {
@@ -1395,6 +1404,7 @@ class XtreamCatalogService extends ChangeNotifier {
   Future<SeriesInfoFetchResult> _fetchSeriesInfoNetworkDetailed(
     int seriesId, {
     String? expectedSeriesName,
+    String? expectedCoverUrl,
     required int expectedGen,
   }) async {
     final anonId = UrlSanitizer.anonymizeId(seriesId.toString());
@@ -1470,6 +1480,8 @@ class XtreamCatalogService extends ChangeNotifier {
         ? SeriesIdentityVerifier.verifySeriesInfoIdentity(
             requestedTitle: expectedSeriesName,
             serverReturnedName: info.serverReturnedName,
+            expectedCoverUrl: expectedCoverUrl,
+            serverReturnedCoverUrl: info.cover,
           )
         : SeriesIdentityConsistency.notApplicable;
 
@@ -1622,11 +1634,13 @@ class XtreamCatalogService extends ChangeNotifier {
     int seriesId, {
     bool forceRefresh = false,
     String? expectedSeriesName,
+    String? expectedCoverUrl,
   }) async {
     final result = await fetchSeriesInfoDetailed(
       seriesId,
       forceRefresh: forceRefresh,
       expectedSeriesName: expectedSeriesName,
+      expectedCoverUrl: expectedCoverUrl,
     );
     return result.info;
   }

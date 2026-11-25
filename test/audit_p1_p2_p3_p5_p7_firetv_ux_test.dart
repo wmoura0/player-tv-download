@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import 'package:projeto_tv/models/xtream_account.dart';
 import 'package:projeto_tv/screens/favorites_screen.dart';
 import 'package:projeto_tv/screens/hidden_categories_screen.dart';
 import 'package:projeto_tv/screens/series_detail_screen.dart';
+import 'package:projeto_tv/screens/series_player_screen.dart';
 import 'package:projeto_tv/screens/xtream_catalog_screen.dart';
 import 'package:projeto_tv/services/cloud_progress_sync_service.dart';
 import 'package:projeto_tv/services/favorites_service.dart';
@@ -21,6 +23,81 @@ import 'package:projeto_tv/services/pin_service.dart';
 import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/user_profile_service.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
+// ignore: depend_on_referenced_packages
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+
+class _StubHomeVideoPlayerPlatform extends VideoPlayerPlatform {
+  final Map<int, StreamController<VideoEvent>> _controllers = {};
+  int _nextId = 1;
+
+  void disposeAll() {
+    for (final c in _controllers.values) {
+      if (!c.isClosed) unawaited(c.close());
+    }
+    _controllers.clear();
+  }
+
+  @override
+  Future<void> init() async {}
+
+  @override
+  Future<void> dispose(int textureId) async {
+    final c = _controllers.remove(textureId);
+    if (c != null && !c.isClosed) unawaited(c.close());
+  }
+
+  @override
+  Future<int?> create(DataSource dataSource) async {
+    final id = _nextId++;
+    final controller = StreamController<VideoEvent>();
+    _controllers[id] = controller;
+    controller.onListen = () {
+      scheduleMicrotask(() {
+        if (!controller.isClosed) {
+          controller.add(
+            VideoEvent(
+              eventType: VideoEventType.initialized,
+              duration: const Duration(minutes: 45),
+              size: const Size(1920, 1080),
+            ),
+          );
+        }
+      });
+    };
+    return id;
+  }
+
+  @override
+  Stream<VideoEvent> videoEventsFor(int textureId) =>
+      _controllers[textureId]?.stream ?? const Stream.empty();
+
+  @override
+  Future<void> setLooping(int textureId, bool looping) async {}
+
+  @override
+  Future<void> play(int textureId) async {}
+
+  @override
+  Future<void> pause(int textureId) async {}
+
+  @override
+  Future<void> setVolume(int textureId, double volume) async {}
+
+  @override
+  Future<void> setPlaybackSpeed(int textureId, double speed) async {}
+
+  @override
+  Future<void> setMixWithOthers(bool mixWithOthers) async {}
+
+  @override
+  Future<void> seekTo(int textureId, Duration position) async {}
+
+  @override
+  Future<Duration> getPosition(int textureId) async => Duration.zero;
+
+  @override
+  Widget buildView(int textureId) => const SizedBox(width: 1920, height: 1080);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -286,6 +363,102 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Ruptura'), findsNothing);
+    });
+
+    testWidgets('HomeScreen permite descer o foco de Categorias até Opções e Card de Continuar Assistindo e clicar com OK', (tester) async {
+      final originalVideoPlatform = VideoPlayerPlatform.instance;
+      final stubVideo = _StubHomeVideoPlayerPlatform();
+      VideoPlayerPlatform.instance = stubVideo;
+      addTearDown(() {
+        stubVideo.disposeAll();
+        VideoPlayerPlatform.instance = originalVideoPlatform;
+      });
+
+      await tester.binding.setSurfaceSize(const Size(1920, 1080));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      const account = XtreamAccount(
+        serverUrl: 'http://tv.test.local',
+        username: 'user_home_dpad',
+        isAuthorized: true,
+        status: 'Active',
+      );
+      final ak = PlaybackProgressService.buildAccountKey(account.serverUrl, account.username);
+      final progress = PlaybackProgressService();
+      await progress.saveContinueWatchingItem(
+        accountKey: ak,
+        item: ContinueWatchingItem(
+          streamId: 6001,
+          seriesId: 60,
+          type: ContinueWatchingType.series,
+          title: 'Diários de um Vampiro',
+          subtitle: 'T2:E5',
+          position: const Duration(minutes: 12),
+          duration: const Duration(minutes: 42),
+          updatedAt: DateTime.now(),
+          seasonNumber: 2,
+          episodeNum: 5,
+        ),
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: HomeScreen(xtreamAccount: account)));
+      await tester.pumpAndSettle();
+
+      // Garante que o foco inicial sai da seção de categorias ao navegar para baixo com D-pad
+      var reachedOptions = false;
+      var reachedCwCard = false;
+      for (var i = 0; i < 8; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        final focusedLabel = FocusManager.instance.primaryFocus?.debugLabel ?? '';
+        if (focusedLabel == 'ContinueWatchingCard_0') {
+          reachedCwCard = true;
+          break;
+        }
+        final optionsFinder = find.text('Opções');
+        if (optionsFinder.evaluate().isNotEmpty) {
+          final optionsElement = optionsFinder.evaluate().first;
+          final focusWidget = FocusManager.instance.primaryFocus?.context?.widget;
+          var insideOptions = false;
+          optionsElement.visitAncestorElements((el) {
+            if (identical(el.widget, focusWidget)) {
+              insideOptions = true;
+              return false;
+            }
+            return true;
+          });
+          if (insideOptions) {
+            reachedOptions = true;
+          }
+        }
+      }
+
+      // Pelo menos Opções ou ContinueWatchingCard_0 deve ter sido alcançado diretamente via ArrowDown
+      expect(reachedOptions || reachedCwCard, isTrue);
+
+      // Se parou em Opções, abre diálogo com OK e depois navega mais 1x para baixo até o card
+      if (reachedOptions && !reachedCwCard) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
+        await tester.pumpAndSettle();
+        expect(find.text('Ocultar da Home'), findsOneWidget);
+
+        await tester.tap(find.text('Fechar'));
+        await tester.pumpAndSettle();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        expect(
+          FocusManager.instance.primaryFocus?.debugLabel,
+          'ContinueWatchingCard_0',
+        );
+      }
+
+      // Pressiona OK no card de Continuar Assistindo e confirma navegação para o player
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.byType(SeriesPlayerScreen), findsOneWidget);
     });
   });
 
