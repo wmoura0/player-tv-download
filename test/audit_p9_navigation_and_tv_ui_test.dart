@@ -23,6 +23,7 @@ import 'package:projeto_tv/services/playback_progress_service.dart';
 import 'package:projeto_tv/services/settings_service.dart';
 import 'package:projeto_tv/services/user_profile_service.dart';
 import 'package:projeto_tv/services/xtream_catalog_service.dart';
+import 'package:projeto_tv/utils/device_utils.dart';
 import 'package:projeto_tv/widgets/catalog_sidebar.dart';
 
 void main() {
@@ -633,6 +634,169 @@ void main() {
       );
       expect(epProg, isNotNull);
       expect(epProg!.position.inMinutes, 15);
+    });
+  });
+
+  group('Fire TV 960x540 (dpr 2.0) - Escala Virtual 1280x720, Overscan e Grade 5 Colunas', () {
+    const account = XtreamAccount(
+      serverUrl: 'http://tv.p10.local',
+      username: 'usuarioTvP10',
+      isAuthorized: true,
+      status: 'Active',
+    );
+    final accountKey = PlaybackProgressService.buildAccountKey(
+      account.serverUrl,
+      account.username,
+    );
+
+    testWidgets('PlayerTvApp normaliza 960x540 dpr 2.0 para 1280x720 com overscan e mantém celular inalterado', (tester) async {
+      DeviceUtils.setMockIsTv(true);
+      addTearDown(() => DeviceUtils.setMockIsTv(null));
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      late MediaQueryData capturedTvMq;
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: Builder(
+            builder: (ctx) {
+              capturedTvMq = MediaQuery.of(ctx);
+              return const Scaffold(body: SizedBox.shrink());
+            },
+          ),
+        ),
+      );
+      expect(capturedTvMq.size.width, closeTo(1280.0, 0.5));
+      expect(capturedTvMq.size.height, closeTo(720.0, 0.5));
+      expect(capturedTvMq.devicePixelRatio, closeTo(1.5, 0.05));
+      expect(capturedTvMq.padding.left, greaterThanOrEqualTo(48.0));
+      expect(capturedTvMq.padding.right, greaterThanOrEqualTo(48.0));
+      expect(capturedTvMq.padding.top, greaterThanOrEqualTo(30.0));
+      expect(capturedTvMq.padding.bottom, greaterThanOrEqualTo(30.0));
+
+      // Celular (não-TV) não recebe escala nem overscan de TV
+      DeviceUtils.setMockIsTv(false);
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3.0;
+      late MediaQueryData capturedPhoneMq;
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: Builder(
+            builder: (ctx) {
+              capturedPhoneMq = MediaQuery.of(ctx);
+              return const Scaffold(body: SizedBox.shrink());
+            },
+          ),
+        ),
+      );
+      expect(capturedPhoneMq.size.width, closeTo(390.0, 0.5));
+      expect(capturedPhoneMq.size.height, closeTo(844.0, 0.5));
+      expect(capturedPhoneMq.padding.left, 0.0);
+    });
+
+    testWidgets('Home, Séries (5 colunas) e Favoritos respeitam zona segura de overscan em Fire TV real', (tester) async {
+      DeviceUtils.setMockIsTv(true);
+      addTearDown(() => DeviceUtils.setMockIsTv(null));
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await FavoritesService.instance.addFavorite(
+        FavoriteItem(
+          id: '10',
+          scopeKey: accountKey,
+          type: FavoriteType.live,
+          name: 'HBO HD',
+          addedAt: DateTime.now(),
+        ),
+      );
+
+      // 1. Home em Fire TV 960x540 @ dpr=2.0
+      await tester.pumpWidget(
+        const PlayerTvApp(home: HomeScreen(xtreamAccount: account)),
+      );
+      await tester.pumpAndSettle();
+      final logoRect = tester.getRect(find.text('JessFlix'));
+      final searchBtnRect = tester.getRect(find.byKey(const Key('header_search_btn')));
+      expect(logoRect.top, greaterThanOrEqualTo(22.0));
+      expect(logoRect.left, greaterThanOrEqualTo(36.0));
+      expect(searchBtnRect.top, greaterThanOrEqualTo(22.0));
+      expect(tester.takeException(), isNull);
+
+      // 2. Séries em Fire TV: 5 colunas em 1280px virtuais e sidebar dentro da área de overscan
+      final client = MockClient((req) async {
+        final action = req.url.queryParameters['action'];
+        if (action == 'get_series_categories') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode([
+              {'category_id': '10', 'category_name': 'Series | Lancamento'},
+              {'category_id': '11', 'category_name': 'Drama'},
+            ])),
+            200,
+          );
+        }
+        if (action == 'get_series') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(List.generate(6, (i) => {
+              'series_id': 3000 + i,
+              'name': 'Série Grid ${i + 1}',
+              'category_id': '10',
+              'rating': '8',
+            }))),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+      final catalog = XtreamCatalogService(
+        serverUrl: account.serverUrl,
+        username: account.username,
+        password: 'p',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: XtreamCatalogScreen(
+            type: XtreamCatalogType.series,
+            catalogService: catalog,
+          ),
+        ),
+      );
+      for (var i = 0; i < 40 && find.byType(CircularProgressIndicator).evaluate().isNotEmpty; i++) {
+        await tester.runAsync(() => Future.delayed(const Duration(milliseconds: 25)));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+
+      final catRect = tester.getRect(find.byKey(const Key('sidebar_cat_10')));
+      expect(catRect.left, greaterThanOrEqualTo(36.0));
+      // Série 1 e Série 5 devem estar na primeira linha (top iguais -> 5 colunas)
+      final s1Rect = tester.getRect(find.text('Série Grid 1'));
+      final s5Rect = tester.getRect(find.text('Série Grid 5'));
+      expect((s1Rect.top - s5Rect.top).abs(), lessThan(2.0));
+      expect(tester.takeException(), isNull);
+
+      // 3. Favoritos em Fire TV respeita overscan
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: FavoritesScreen(
+            xtreamAccount: account,
+            catalogService: catalog,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final favCatRect = tester.getRect(find.byKey(const Key('favorites_cat_live')));
+      expect(favCatRect.left, greaterThanOrEqualTo(36.0));
+      expect(tester.takeException(), isNull);
     });
   });
 }

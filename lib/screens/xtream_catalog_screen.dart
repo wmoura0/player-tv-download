@@ -1716,6 +1716,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         appBar: _isFullscreen
             ? null
             : AppBar(
+                toolbarHeight: DeviceUtils.isTv ? 48 : null,
                 backgroundColor: const Color(0xFF0A141D),
                 title: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -2429,60 +2430,66 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
         }
 
         // Se for Filmes ou Séries: formato de pôster vertical (aspect ratio ~2:3)
-        final crossAxisCount = isLandscape ? 4 : 2;
+        return LayoutBuilder(
+          builder: (context, gridConstraints) {
+            final crossAxisCount = isLandscape
+                ? (gridConstraints.maxWidth ~/ 175).clamp(4, 7)
+                : 2;
 
-        return GridView.builder(
-          controller: _gridScrollController,
-          padding: const EdgeInsets.all(16),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            childAspectRatio: 0.67,
-            crossAxisSpacing: 14,
-            mainAxisSpacing: 16,
-          ),
-          itemCount: items.length,
-          itemBuilder: (context, index) {
-            final dynamic item = items[index];
-            final String name = item.name;
-            final String? image = _currentType == XtreamCatalogType.movies
-                ? (item as XtreamVodStream).streamIcon
-                : (item as XtreamSeriesItem).cover;
-            final String? rating = _currentType == XtreamCatalogType.movies
-                ? (item as XtreamVodStream).rating
-                : (item as XtreamSeriesItem).rating;
-            final String itemId = _currentType == XtreamCatalogType.movies
-                ? (item as XtreamVodStream).streamId.toString()
-                : (item as XtreamSeriesItem).seriesId.toString();
-            final isFav = FavoritesService.instance.isFavorite(
-              scopeKey: _accountKey,
-              type: _favoriteType,
-              id: itemId,
-            );
+            return GridView.builder(
+              controller: _gridScrollController,
+              padding: const EdgeInsets.all(14),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: crossAxisCount,
+                childAspectRatio: 0.65,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 14,
+              ),
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                final dynamic item = items[index];
+                final String name = item.name;
+                final String? image = _currentType == XtreamCatalogType.movies
+                    ? (item as XtreamVodStream).streamIcon
+                    : (item as XtreamSeriesItem).cover;
+                final String? rating = _currentType == XtreamCatalogType.movies
+                    ? (item as XtreamVodStream).rating
+                    : (item as XtreamSeriesItem).rating;
+                final String itemId = _currentType == XtreamCatalogType.movies
+                    ? (item as XtreamVodStream).streamId.toString()
+                    : (item as XtreamSeriesItem).seriesId.toString();
+                final isFav = FavoritesService.instance.isFavorite(
+                  scopeKey: _accountKey,
+                  type: _favoriteType,
+                  id: itemId,
+                );
 
-            return _MediaPosterCard(
-              title: name,
-              imageUrl: image,
-              rating: rating,
-              accentColor: _accentColor,
-              fallbackIcon: _icon,
-              focusNode: index == 0 ? _firstContentFocusNode : null,
-              onMoveLeft: (index % crossAxisCount == 0)
-                  ? _focusSelectedSidebarCategory
-                  : null,
-              isFavorite: isFav,
-              onToggleFavorite: () async {
-                final favItem = _currentType == XtreamCatalogType.movies
-                    ? FavoriteItem.fromVodStream(
-                        accountKey: _accountKey,
-                        movie: item as XtreamVodStream,
-                      )
-                    : FavoriteItem.fromSeriesItem(
-                        accountKey: _accountKey,
-                        series: item as XtreamSeriesItem,
-                      );
-                await FavoritesService.instance.toggleFavorite(favItem);
+                return _MediaPosterCard(
+                  title: name,
+                  imageUrl: image,
+                  rating: rating,
+                  accentColor: _accentColor,
+                  fallbackIcon: _icon,
+                  focusNode: index == 0 ? _firstContentFocusNode : null,
+                  onMoveLeft: (index % crossAxisCount == 0)
+                      ? _focusSelectedSidebarCategory
+                      : null,
+                  isFavorite: isFav,
+                  onToggleFavorite: () async {
+                    final favItem = _currentType == XtreamCatalogType.movies
+                        ? FavoriteItem.fromVodStream(
+                            accountKey: _accountKey,
+                            movie: item as XtreamVodStream,
+                          )
+                        : FavoriteItem.fromSeriesItem(
+                            accountKey: _accountKey,
+                            series: item as XtreamSeriesItem,
+                          );
+                    await FavoritesService.instance.toggleFavorite(favItem);
+                  },
+                  onTap: () => _onItemTap(item),
+                );
               },
-              onTap: () => _onItemTap(item),
             );
           },
         );
@@ -3063,8 +3070,9 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
                                   ? Image.network(
                                       widget.imageUrl!,
                                       fit: BoxFit.cover,
-                                      cacheWidth: 300,
-                                      cacheHeight: 450,
+                                      alignment: const Alignment(0, -0.25),
+                                      cacheWidth: 360,
+                                      cacheHeight: 540,
                                       errorBuilder: (_, _, _) => _buildFallback(),
                                     )
                                   : _buildFallback(),
@@ -3142,7 +3150,7 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
 
                     // Título na parte inferior
                     Padding(
-                      padding: const EdgeInsets.all(8.0),
+                      padding: const EdgeInsets.symmetric(horizontal: 7.0, vertical: 6.0),
                       child: Text(
                         widget.title,
                         maxLines: 2,

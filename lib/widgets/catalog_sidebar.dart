@@ -507,21 +507,21 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
               ),
               decoration: BoxDecoration(
                 color: isHighlighted
-                    ? AppColors.focusCyan.withValues(alpha: 0.2)
+                    ? const Color(0xFF0E253A)
                     : (widget.isSelected
-                        ? AppColors.primary.withValues(alpha: 0.22)
+                        ? const Color(0xFF132C44)
                         : Colors.transparent),
                 borderRadius: BorderRadius.circular(8),
                 border: isHighlighted
                     ? Border.all(color: AppColors.focusCyan, width: AppColors.focusBorderWidth)
                     : (widget.isSelected
-                        ? Border.all(color: AppColors.primary.withValues(alpha: 0.55), width: 1.2)
+                        ? Border.all(color: AppColors.primary.withValues(alpha: 0.6), width: 1.2)
                         : Border.all(color: Colors.transparent, width: 1.2)),
                 boxShadow: isHighlighted
                     ? [
                         BoxShadow(
-                          color: AppColors.focusCyan.withValues(alpha: 0.35),
-                          blurRadius: 8,
+                          color: AppColors.focusCyan.withValues(alpha: 0.22),
+                          blurRadius: 6,
                         ),
                       ]
                     : null,
@@ -560,7 +560,7 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                             ? FontWeight.bold
                             : FontWeight.w500,
                         color: (widget.isSelected || isHighlighted)
-                            ? const Color(0xFFF0F4F8)
+                            ? const Color(0xFFFFFFFF)
                             : const Color(0xFF94A3B8),
                       ),
                       maxLines: 1,

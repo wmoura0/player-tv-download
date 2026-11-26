@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/managed_account.dart';
@@ -83,6 +84,77 @@ class PlayerTvApp extends StatelessWidget {
             ),
             useMaterial3: true,
           ),
+          builder: (context, child) {
+            if (child == null) return const SizedBox.shrink();
+            final mq = MediaQuery.of(context);
+            final isTvLandscape =
+                DeviceUtils.isTv && mq.size.width > mq.size.height;
+            if (!isTvLandscape) {
+              return child;
+            }
+
+            final needsVirtualScale = mq.size.width < 1200;
+            final targetWidth = needsVirtualScale ? 1280.0 : mq.size.width;
+            final aspect = mq.size.width / mq.size.height;
+            final targetHeight =
+                needsVirtualScale ? (targetWidth / aspect) : mq.size.height;
+            final scale =
+                needsVirtualScale ? (mq.size.width / targetWidth) : 1.0;
+
+            // Margem segura oficial de overscan para TVs (evita cortes nas 4 bordas)
+            final overscanH = (targetWidth * 0.0375).clamp(36.0, 64.0);
+            final overscanV = (targetHeight * 0.042).clamp(26.0, 44.0);
+
+            final scaledPadding = mq.padding / scale;
+            final scaledViewPadding = mq.viewPadding / scale;
+            final scaledViewInsets = mq.viewInsets / scale;
+
+            final tvPadding = EdgeInsets.only(
+              left: math.max(scaledPadding.left, overscanH),
+              right: math.max(scaledPadding.right, overscanH),
+              top: math.max(scaledPadding.top, overscanV),
+              bottom: math.max(scaledPadding.bottom, overscanV),
+            );
+            final tvViewPadding = EdgeInsets.only(
+              left: math.max(scaledViewPadding.left, overscanH),
+              right: math.max(scaledViewPadding.right, overscanH),
+              top: math.max(scaledViewPadding.top, overscanV),
+              bottom: math.max(scaledViewPadding.bottom, overscanV),
+            );
+
+            final scaledMediaQuery = mq.copyWith(
+              size: Size(targetWidth, targetHeight),
+              devicePixelRatio: mq.devicePixelRatio * scale,
+              padding: tvPadding,
+              viewPadding: tvViewPadding,
+              viewInsets: scaledViewInsets,
+              textScaler: TextScaler.linear(
+                mq.textScaler.scale(1.0).clamp(0.9, 1.1),
+              ),
+            );
+
+            final tvChild = MediaQuery(
+              data: scaledMediaQuery,
+              child: child,
+            );
+
+            if (!needsVirtualScale) {
+              return tvChild;
+            }
+
+            return ColoredBox(
+              color: AppColors.background,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                alignment: Alignment.center,
+                child: SizedBox(
+                  width: targetWidth,
+                  height: targetHeight,
+                  child: tvChild,
+                ),
+              ),
+            );
+          },
           home: home ?? const SplashScreen(),
         );
       },
@@ -1230,11 +1302,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               final rawScale = MediaQuery.textScalerOf(context).scale(1.0);
               final clampedScale = rawScale.clamp(0.9, 1.15).toDouble();
               final isLandscape = constraints.maxWidth > constraints.maxHeight;
-              final horizontalPadding = isLandscape
-                  ? (constraints.maxWidth >= 1600
-                      ? 52.0
-                      : (constraints.maxWidth >= 1100 ? 36.0 : 24.0))
-                  : 16.0;
+              final horizontalPadding = DeviceUtils.isTv
+                  ? 10.0
+                  : (isLandscape
+                      ? (constraints.maxWidth >= 1600
+                          ? 52.0
+                          : (constraints.maxWidth >= 1100 ? 36.0 : 24.0))
+                      : 16.0);
 
               return MediaQuery(
                 data: MediaQuery.of(context).copyWith(
@@ -1861,8 +1935,8 @@ class _ContinueWatchingSection extends StatelessWidget {
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
 
-    final cardWidth = isLandscape ? (maxWidth >= 1600 ? 264.0 : 224.0) : 185.0;
-    final cardHeight = isLandscape ? (maxWidth >= 1600 ? 152.0 : 130.0) : 116.0;
+    final cardWidth = isLandscape ? (maxWidth >= 1600 ? 264.0 : 228.0) : 185.0;
+    final cardHeight = isLandscape ? (maxWidth >= 1600 ? 152.0 : 132.0) : 116.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -2177,6 +2251,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
                         child: Image.network(
                           widget.item.coverUrl!,
                           fit: BoxFit.cover,
+                          alignment: const Alignment(0, -0.35),
                           errorBuilder: (_, _, _) => _buildFallbackBackground(isSeries),
                         ),
                       ),
@@ -2441,8 +2516,8 @@ class _RecentMoviesSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (movies.isEmpty) return const SizedBox.shrink();
-    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 170.0) : 162.0;
-    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 114.0) : 108.0;
+    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 176.0) : 162.0;
+    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 118.0) : 108.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -2510,8 +2585,8 @@ class _RecentSeriesSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (seriesList.isEmpty) return const SizedBox.shrink();
-    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 170.0) : 162.0;
-    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 114.0) : 108.0;
+    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 176.0) : 162.0;
+    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 118.0) : 108.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -2829,7 +2904,7 @@ class _MainCategoriesSection extends StatelessWidget {
     ];
 
     if (isLandscape) {
-      final heroHeight = maxWidth >= 1600 ? 204.0 : 168.0;
+      final heroHeight = maxWidth >= 1600 ? 204.0 : 180.0;
       return SizedBox(
         height: heroHeight,
         child: Row(
