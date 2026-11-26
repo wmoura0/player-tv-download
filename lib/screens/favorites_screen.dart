@@ -605,6 +605,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       child: Scaffold(
         backgroundColor: const Color(0xFF070F18),
         appBar: AppBar(
+          toolbarHeight: DeviceUtils.isTv ? 48 : null,
           backgroundColor: const Color(0xFF0A141D),
           leading: IconButton(
             focusNode: _backButtonFocusNode,
@@ -969,7 +970,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             padding: const EdgeInsets.all(16),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: crossAxisCount,
-              mainAxisExtent: 74,
+              mainAxisExtent: 64,
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
             ),
@@ -1337,9 +1338,9 @@ class _FavoritesSidebarItemState extends State<_FavoritesSidebarItem> {
               ),
               decoration: BoxDecoration(
                 color: highlighted
-                    ? AppColors.focusCyan.withValues(alpha: 0.2)
+                    ? const Color(0xFF0E253A)
                     : (widget.isSelected
-                        ? AppColors.primary.withValues(alpha: 0.22)
+                        ? const Color(0xFF132C44)
                         : Colors.transparent),
                 borderRadius: BorderRadius.circular(8),
                 border: highlighted
@@ -1349,15 +1350,15 @@ class _FavoritesSidebarItemState extends State<_FavoritesSidebarItem> {
                       )
                     : (widget.isSelected
                         ? Border.all(
-                            color: AppColors.primary.withValues(alpha: 0.55),
+                            color: AppColors.primary.withValues(alpha: 0.6),
                             width: 1.2,
                           )
                         : Border.all(color: Colors.transparent, width: 1.2)),
                 boxShadow: highlighted
                     ? [
                         BoxShadow(
-                          color: AppColors.focusCyan.withValues(alpha: 0.35),
-                          blurRadius: 8,
+                          color: AppColors.focusCyan.withValues(alpha: 0.22),
+                          blurRadius: 6,
                         ),
                       ]
                     : null,
@@ -1393,7 +1394,7 @@ class _FavoritesSidebarItemState extends State<_FavoritesSidebarItem> {
                             ? FontWeight.bold
                             : FontWeight.w500,
                         color: (widget.isSelected || highlighted)
-                            ? const Color(0xFFF0F4F8)
+                            ? const Color(0xFFFFFFFF)
                             : const Color(0xFF94A3B8),
                       ),
                     ),
@@ -1637,18 +1638,21 @@ class _FavoriteChannelTileState extends State<_FavoriteChannelTile> {
 
     if (logoUrl == null || logoUrl.trim().isEmpty) return fallback;
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: Image.network(
-          logoUrl,
-          fit: BoxFit.contain,
-          cacheWidth: 120,
-          cacheHeight: 120,
-          errorBuilder: (_, _, _) => fallback,
-        ),
+    return Container(
+      width: size,
+      height: size,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF101D2D),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF283F58)),
+      ),
+      child: Image.network(
+        logoUrl,
+        fit: BoxFit.contain,
+        cacheWidth: 120,
+        cacheHeight: 120,
+        errorBuilder: (_, _, _) => fallback,
       ),
     );
   }
