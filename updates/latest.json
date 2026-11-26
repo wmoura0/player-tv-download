@@ -1,11 +1,11 @@
 {
-  "version": "1.2.19",
-  "versionCode": 22,
+  "version": "1.2.20",
+  "versionCode": 23,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.19/JessFlix-v1.2.19.apk",
-  "fileSize": 59478361,
-  "sha256": "a669120bbfc86a3500aa8a0b219b818b3ed2027e10c043e539d911866d6f7dfd",
-  "releaseNotes": "• Notificações Temporárias Confiáveis (Fire TV): Substitui avisos persistentes por toasts com fechamento automático imune ao modo de acessibilidade e sem capturar o controle remoto.\n• Navegação Pós-Pesquisa em Séries e Sidebar Limpa: Corrige foco preso na sidebar após busca/alternância de categorias, remove quadradinhos/símbolos decorativos e ícones redundantes.\n• Nova Tela de Favoritos e Home para TV (720p/1080p): Favoritos com sidebar lateral e barra de progresso de séries, cabeçalho da Home sem recortes, rolagem centralizada no foco, menu Continuar Assistindo simplificado, remoção de Reprodução e Fontes em Configurações e novo banner Leanback para Fire TV.",
-  "publishedAt": "2026-11-26T12:57:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.20/JessFlix-v1.2.20.apk",
+  "fileSize": 60233049,
+  "sha256": "ffab1068ae2ec76cdff18998baaec81642a5da03115ceca2e23e98ca8c24ab9c",
+  "releaseNotes": "• Resolução Real e Margem Segura de Overscan na TV: Normaliza o Fire TV (960×540 dp) para espaço virtual 1280×720 com margem segura de overscan nas 4 bordas, eliminando o aspecto esticado e cortes no cabeçalho e na barra lateral.\n• Grade de 5 Colunas e Contraste Aprimorado: Filmes e Séries agora exibem 5 pôsteres nítidos por linha na TV, foco da sidebar com fundo escuro e texto branco de alto contraste, e logos de canais emoldurados nos Favoritos.\n• Novo Ícone Oficial do JessFlix no Fire TV: Novo ícone raster sólido full-bleed (@mipmap/ic_jessflix_launcher) e banners 16:9 em múltiplas densidades para substituir o ícone antigo na tela inicial do Fire TV.",
+  "publishedAt": "2026-11-26T15:33:00.000Z",
   "mandatory": false
 }
