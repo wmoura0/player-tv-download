@@ -17,6 +17,7 @@ import 'screens/xtream_catalog_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/xtream_login_screen.dart';
 import 'services/account_manager_service.dart';
+import 'services/app_toast_service.dart';
 import 'services/cloud_progress_sync_service.dart';
 import 'services/favorites_service.dart';
 import 'services/hidden_categories_service.dart';
@@ -144,6 +145,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     _homeLoadGeneration++;
+    AppToastService.instance.dismiss();
     WidgetsBinding.instance.removeObserver(this);
     AccountManagerService.instance.removeListener(_onAccountOrProfileChanged);
     UserProfileService.instance.removeListener(_onAccountOrProfileChanged);
@@ -887,21 +889,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            feedbackMessage ?? '"${item.title}" removido de Continuar assistindo.',
-            style: const TextStyle(color: AppColors.textPrimary),
-          ),
-          backgroundColor: AppColors.surfaceSecondary,
-          duration: const Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-            side: const BorderSide(color: AppColors.focusCyan, width: 1),
-          ),
-        ),
+      AppToastService.instance.show(
+        context,
+        message: feedbackMessage ?? '"${item.title}" removido de Continuar assistindo.',
+        duration: const Duration(seconds: 3),
+        icon: action == _ContinueWatchingAction.complete
+            ? Icons.check_circle_outline_rounded
+            : Icons.visibility_off_outlined,
       );
     }
 
@@ -913,22 +907,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           id: id,
         );
         break;
-      case _ContinueWatchingAction.reset:
-        await _progressService.resetPlaybackProgress(
-          accountKey: _accountKey,
-          type: item.type,
-          id: id,
-        );
-        break;
       case _ContinueWatchingAction.complete:
         await _progressService.markContinueWatchingCompleted(
-          accountKey: _accountKey,
-          type: item.type,
-          id: id,
-        );
-        break;
-      case _ContinueWatchingAction.clearHistory:
-        await _progressService.clearItemWatchHistory(
           accountKey: _accountKey,
           type: item.type,
           id: id,
@@ -1121,29 +1101,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   subtitle: 'Remove o card sem apagar onde você parou',
                   onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.hide),
                 ),
-                const SizedBox(height: 6),
-                _CwActionOptionTile(
-                  icon: Icons.replay_rounded,
-                  iconColor: const Color(0xFFFFB74D),
-                  title: 'Reiniciar reprodução',
-                  subtitle: 'Volta a reprodução para o início (00:00)',
-                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.reset),
-                ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 _CwActionOptionTile(
                   icon: Icons.check_circle_outline_rounded,
                   iconColor: const Color(0xFF4CAF50),
                   title: 'Marcar como concluído',
                   subtitle: 'Registra este título como já assistido',
                   onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.complete),
-                ),
-                const SizedBox(height: 6),
-                _CwActionOptionTile(
-                  icon: Icons.delete_forever_outlined,
-                  iconColor: AppColors.error,
-                  title: 'Apagar histórico',
-                  subtitle: 'Exclui todo o histórico salvo deste título',
-                  onTap: () => Navigator.of(ctx).pop(_ContinueWatchingAction.clearHistory),
                 ),
               ],
             ),
@@ -1180,22 +1144,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           feedbackMessage: '"${item.title}" ocultado de Continuar assistindo.',
         );
         break;
-      case _ContinueWatchingAction.reset:
-        final confirmed = await _showSecondaryConfirmDialog(
-          title: 'Reiniciar reprodução',
-          message:
-              'Deseja reiniciar "${item.title}" do começo e zerar a posição atual?',
-          confirmLabel: 'Reiniciar',
-          confirmColor: const Color(0xFFFFB74D),
-        );
-        if (!confirmed || !mounted) return;
-        await _applyContinueWatchingRemovalAction(
-          item,
-          action: _ContinueWatchingAction.reset,
-          removedIndex: index,
-          feedbackMessage: 'Progresso de "${item.title}" reiniciado.',
-        );
-        break;
       case _ContinueWatchingAction.complete:
         final confirmed = await _showSecondaryConfirmDialog(
           title: 'Marcar como concluído',
@@ -1210,22 +1158,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           action: _ContinueWatchingAction.complete,
           removedIndex: index,
           feedbackMessage: '"${item.title}" marcado como concluído.',
-        );
-        break;
-      case _ContinueWatchingAction.clearHistory:
-        final confirmed = await _showSecondaryConfirmDialog(
-          title: 'Apagar histórico',
-          message:
-              'Atenção: isso apagará permanentemente todo o histórico salvo de "${item.title}" nesta conta e perfil.',
-          confirmLabel: 'Apagar histórico',
-          confirmColor: AppColors.error,
-        );
-        if (!confirmed || !mounted) return;
-        await _applyContinueWatchingRemovalAction(
-          item,
-          action: _ContinueWatchingAction.clearHistory,
-          removedIndex: index,
-          feedbackMessage: 'Histórico de "${item.title}" apagado.',
         );
         break;
     }
@@ -1295,11 +1227,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         body: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
+              final rawScale = MediaQuery.textScalerOf(context).scale(1.0);
+              final clampedScale = rawScale.clamp(0.9, 1.15).toDouble();
               final isLandscape = constraints.maxWidth > constraints.maxHeight;
-              final isWideScreen = constraints.maxWidth >= 900;
-              final horizontalPadding = isLandscape ? (isWideScreen ? 48.0 : 32.0) : 16.0;
+              final horizontalPadding = isLandscape
+                  ? (constraints.maxWidth >= 1600
+                      ? 52.0
+                      : (constraints.maxWidth >= 1100 ? 36.0 : 24.0))
+                  : 16.0;
 
-              return CustomScrollView(
+              return MediaQuery(
+                data: MediaQuery.of(context).copyWith(
+                  textScaler: TextScaler.linear(clampedScale),
+                ),
+                child: CustomScrollView(
                 controller: _scrollController,
                 slivers: [
                   // Cabeçalho superior compacto
@@ -1307,7 +1248,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: Padding(
                       padding: EdgeInsets.symmetric(
                         horizontal: horizontalPadding,
-                        vertical: 12.0,
+                        vertical: isLandscape ? 10.0 : 12.0,
                       ),
                       child: _AppHeader(
                         xtreamAccount: _activeAccount,
@@ -1333,11 +1274,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: Padding(
                       padding: EdgeInsets.symmetric(
                         horizontal: horizontalPadding,
-                        vertical: 8.0,
+                        vertical: isLandscape ? 6.0 : 8.0,
                       ),
                       child: FocusTraversalGroup(
                         child: _MainCategoriesSection(
                           isLandscape: isLandscape,
+                          maxWidth: constraints.maxWidth,
                           onCategoryTap: _onCategorySelected,
                           liveCount: _sharedCatalogService?.totalLiveCount,
                           heroFocusNode: _categoriesFallbackFocusNode,
@@ -1352,6 +1294,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       child: _ContinueWatchingSection(
                         items: _continuarAssistindo,
                         isLandscape: isLandscape,
+                        maxWidth: constraints.maxWidth,
                         horizontalPadding: horizontalPadding,
                         itemFocusNodes: _cwCardFocusNodes,
                         onFocusedIndexChanged: (idx) => _lastFocusedCwIndex = idx,
@@ -1378,6 +1321,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       child: _RecentMoviesSection(
                         movies: _recentMovies,
                         isLandscape: isLandscape,
+                        maxWidth: constraints.maxWidth,
                         horizontalPadding: horizontalPadding,
                         onMovieTap: _onSelectRecentMovie,
                       ),
@@ -1389,6 +1333,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       child: _RecentSeriesSection(
                         seriesList: _recentSeries,
                         isLandscape: isLandscape,
+                        maxWidth: constraints.maxWidth,
                         horizontalPadding: horizontalPadding,
                         onSeriesTap: _onSelectRecentSeries,
                       ),
@@ -1424,6 +1369,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: SizedBox(height: 24),
                   ),
                 ],
+              ),
               );
             },
           ),
@@ -1456,7 +1402,9 @@ class _AppHeader extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isCompact = constraints.maxWidth < 720;
-        final showClock = constraints.maxWidth >= 1080;
+        final isDenseBar = constraints.maxWidth < 1320;
+        final showClock = constraints.maxWidth >= 1320;
+        final buttonGap = isDenseBar ? 6.0 : 8.0;
 
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -1506,87 +1454,92 @@ class _AppHeader extends StatelessWidget {
             if (showClock) ...[
               const Spacer(),
               const _LiveHeaderClock(),
-              const Spacer(),
-            ] else ...[
-              const Spacer(),
             ],
 
-            // Pílulas de Ação Rápida no Topo à Direita
-            Flexible(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _HeaderActionButton(
-                      key: const Key('header_search_btn'),
-                      icon: Icons.search_rounded,
-                      tooltip: 'Buscar no catálogo',
-                      label: isCompact ? null : 'Buscar',
-                      iconColor: AppColors.textSecondary,
-                      isCompact: isCompact,
-                      onTap: onSearchTap,
-                    ),
-                    if (onRecentsTap != null && showClock) ...[
-                      const SizedBox(width: 8),
+            const SizedBox(width: 12),
+
+            // Pílulas de Ação Rápida no Topo à Direita (sem overflow em 390px/800px e sem recorte em 720p/1080p)
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       _HeaderActionButton(
-                        key: const Key('header_recents_btn'),
-                        icon: Icons.history_rounded,
-                        tooltip: 'Recentes',
-                        label: 'Recentes',
-                        iconColor: AppColors.textSecondary,
-                        isCompact: false,
-                        onTap: onRecentsTap!,
-                      ),
-                    ],
-                    ListenableBuilder(
-                      listenable: UserProfileService.instance,
-                      builder: (context, _) {
-                        final prof = UserProfileService.instance.currentProfile;
-                        return Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const SizedBox(width: 8),
-                            _HeaderActionButton(
-                              key: const Key('header_profile_btn'),
-                              icon: prof.isKids ? Icons.child_care_rounded : Icons.person_rounded,
-                              tooltip: 'Perfil: ${prof.name}',
-                              label: isCompact ? null : prof.name,
-                              iconColor: Color(prof.avatarColor),
-                              isCompact: isCompact,
-                              onTap: onProfileTap ?? () {},
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    _HeaderActionButton(
-                      key: const Key('header_settings_btn'),
-                      icon: Icons.settings_outlined,
-                      tooltip: 'Configurações',
-                      label: isCompact ? null : 'Configurações',
-                      iconColor: AppColors.textSecondary,
-                      isCompact: isCompact,
-                      onTap: onSettingsTap,
-                    ),
-                    if (xtreamAccount != null) ...[
-                      const SizedBox(width: 8),
-                      _HeaderActionButton(
-                        key: const Key('header_logout_btn'),
-                        icon: Icons.account_circle_outlined,
-                        tooltip: 'Sair da conta',
-                        label: isCompact
-                            ? null
-                            : (xtreamAccount!.username.length > 12
-                                ? '${xtreamAccount!.username.substring(0, 10)}...'
-                                : xtreamAccount!.username),
+                        key: const Key('header_search_btn'),
+                        icon: Icons.search_rounded,
+                        tooltip: 'Buscar no catálogo',
+                        label: isCompact ? null : 'Buscar',
                         iconColor: AppColors.textSecondary,
                         isCompact: isCompact,
-                        onTap: onLogoutTap,
+                        onTap: onSearchTap,
                       ),
+                      if (onRecentsTap != null && showClock) ...[
+                        SizedBox(width: buttonGap),
+                        _HeaderActionButton(
+                          key: const Key('header_recents_btn'),
+                          icon: Icons.history_rounded,
+                          tooltip: 'Recentes',
+                          label: 'Recentes',
+                          iconColor: AppColors.textSecondary,
+                          isCompact: false,
+                          onTap: onRecentsTap!,
+                        ),
+                      ],
+                      ListenableBuilder(
+                        listenable: UserProfileService.instance,
+                        builder: (context, _) {
+                          final prof = UserProfileService.instance.currentProfile;
+                          return Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(width: buttonGap),
+                              _HeaderActionButton(
+                                key: const Key('header_profile_btn'),
+                                icon: prof.isKids
+                                    ? Icons.child_care_rounded
+                                    : Icons.person_rounded,
+                                tooltip: 'Perfil: ${prof.name}',
+                                label: isCompact ? null : prof.name,
+                                iconColor: Color(prof.avatarColor),
+                                isCompact: isCompact,
+                                onTap: onProfileTap ?? () {},
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                      SizedBox(width: buttonGap),
+                      _HeaderActionButton(
+                        key: const Key('header_settings_btn'),
+                        icon: Icons.settings_outlined,
+                        tooltip: 'Configurações',
+                        label: isCompact ? null : 'Configurações',
+                        iconColor: AppColors.textSecondary,
+                        isCompact: isCompact,
+                        onTap: onSettingsTap,
+                      ),
+                      if (xtreamAccount != null) ...[
+                        SizedBox(width: buttonGap),
+                        _HeaderActionButton(
+                          key: const Key('header_logout_btn'),
+                          icon: Icons.account_circle_outlined,
+                          tooltip: 'Sair da conta',
+                          label: isCompact
+                              ? null
+                              : (xtreamAccount!.username.length > 14
+                                  ? '${xtreamAccount!.username.substring(0, 13)}...'
+                                  : xtreamAccount!.username),
+                          iconColor: AppColors.textSecondary,
+                          isCompact: isCompact,
+                          onTap: onLogoutTap,
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1791,9 +1744,7 @@ class _HeaderActionButtonState extends State<_HeaderActionButton> {
 
 enum _ContinueWatchingAction {
   hide,
-  reset,
   complete,
-  clearHistory,
 }
 
 class _CwActionOptionTile extends StatefulWidget {
@@ -1884,6 +1835,7 @@ class _CwActionOptionTileState extends State<_CwActionOptionTile> {
 class _ContinueWatchingSection extends StatelessWidget {
   final List<ContinueWatchingItem> items;
   final bool isLandscape;
+  final double maxWidth;
   final double horizontalPadding;
   final List<FocusNode> itemFocusNodes;
   final ValueChanged<int> onFocusedIndexChanged;
@@ -1895,6 +1847,7 @@ class _ContinueWatchingSection extends StatelessWidget {
   const _ContinueWatchingSection({
     required this.items,
     required this.isLandscape,
+    this.maxWidth = 1280,
     required this.horizontalPadding,
     required this.itemFocusNodes,
     required this.onFocusedIndexChanged,
@@ -1908,8 +1861,8 @@ class _ContinueWatchingSection extends StatelessWidget {
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
 
-    final cardWidth = isLandscape ? (DeviceUtils.isTv ? 240.0 : 220.0) : 185.0;
-    final cardHeight = isLandscape ? (DeviceUtils.isTv ? 148.0 : 136.0) : 118.0;
+    final cardWidth = isLandscape ? (maxWidth >= 1600 ? 264.0 : 224.0) : 185.0;
+    final cardHeight = isLandscape ? (maxWidth >= 1600 ? 152.0 : 130.0) : 116.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -2164,6 +2117,11 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
             _cancelOkHold();
           } else {
             widget.onFocused?.call();
+            Scrollable.ensureVisible(
+              context,
+              alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+              duration: const Duration(milliseconds: 180),
+            );
           }
           if (mounted) {
             setState(() => _isFocused = focused);
@@ -2468,12 +2426,14 @@ class _ContinueWatchingDeleteButtonState extends State<_ContinueWatchingDeleteBu
 class _RecentMoviesSection extends StatelessWidget {
   final List<XtreamVodStream> movies;
   final bool isLandscape;
+  final double maxWidth;
   final double horizontalPadding;
   final ValueChanged<XtreamVodStream> onMovieTap;
 
   const _RecentMoviesSection({
     required this.movies,
     required this.isLandscape,
+    this.maxWidth = 1280,
     required this.horizontalPadding,
     required this.onMovieTap,
   });
@@ -2481,11 +2441,13 @@ class _RecentMoviesSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (movies.isEmpty) return const SizedBox.shrink();
+    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 170.0) : 162.0;
+    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 114.0) : 108.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
         horizontal: horizontalPadding,
-        vertical: 12.0,
+        vertical: 10.0,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2506,7 +2468,7 @@ class _RecentMoviesSection extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: DeviceUtils.isTv ? 190 : 168,
+            height: posterHeight,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: movies.length,
@@ -2517,6 +2479,7 @@ class _RecentMoviesSection extends StatelessWidget {
                   title: movie.name,
                   imageUrl: movie.streamIcon,
                   rating: movie.rating,
+                  cardWidth: posterWidth,
                   onTap: () => onMovieTap(movie),
                 );
               },
@@ -2532,12 +2495,14 @@ class _RecentMoviesSection extends StatelessWidget {
 class _RecentSeriesSection extends StatelessWidget {
   final List<XtreamSeriesItem> seriesList;
   final bool isLandscape;
+  final double maxWidth;
   final double horizontalPadding;
   final ValueChanged<XtreamSeriesItem> onSeriesTap;
 
   const _RecentSeriesSection({
     required this.seriesList,
     required this.isLandscape,
+    this.maxWidth = 1280,
     required this.horizontalPadding,
     required this.onSeriesTap,
   });
@@ -2545,11 +2510,13 @@ class _RecentSeriesSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (seriesList.isEmpty) return const SizedBox.shrink();
+    final posterHeight = isLandscape ? (maxWidth >= 1600 ? 196.0 : 170.0) : 162.0;
+    final posterWidth = isLandscape ? (maxWidth >= 1600 ? 132.0 : 114.0) : 108.0;
 
     return Padding(
       padding: EdgeInsets.symmetric(
         horizontal: horizontalPadding,
-        vertical: 12.0,
+        vertical: 10.0,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2570,7 +2537,7 @@ class _RecentSeriesSection extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: DeviceUtils.isTv ? 190 : 168,
+            height: posterHeight,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: seriesList.length,
@@ -2581,6 +2548,7 @@ class _RecentSeriesSection extends StatelessWidget {
                   title: series.name,
                   imageUrl: series.cover,
                   rating: series.rating,
+                  cardWidth: posterWidth,
                   onTap: () => onSeriesTap(series),
                 );
               },
@@ -2597,12 +2565,14 @@ class _MediaPosterCard extends StatefulWidget {
   final String title;
   final String? imageUrl;
   final String? rating;
+  final double? cardWidth;
   final VoidCallback onTap;
 
   const _MediaPosterCard({
     required this.title,
     this.imageUrl,
     this.rating,
+    this.cardWidth,
     required this.onTap,
   });
 
@@ -2618,12 +2588,21 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
     return FocusableActionDetector(
       actions: DeviceUtils.activateAction(widget.onTap),
       shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+      onShowFocusHighlight: (v) {
+        setState(() => _isFocused = v);
+        if (v) {
+          Scrollable.ensureVisible(
+            context,
+            alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+            duration: const Duration(milliseconds: 180),
+          );
+        }
+      },
       child: AnimatedScale(
         scale: DeviceUtils.isTv ? 1.0 : (_isFocused ? 1.04 : 1.0),
         duration: const Duration(milliseconds: 160),
         child: Container(
-          width: DeviceUtils.isTv ? 124 : 110,
+          width: widget.cardWidth ?? (DeviceUtils.isTv ? 124 : 110),
           decoration: BoxDecoration(
             color: AppColors.surfaceSecondary,
             borderRadius: BorderRadius.circular(10),
@@ -2794,12 +2773,14 @@ class _CategoryItem {
 /// Seção que organiza o card de destaque de TV ao Vivo e o bloco 2x2 de Filmes, Séries, Favoritos e Playlist.
 class _MainCategoriesSection extends StatelessWidget {
   final bool isLandscape;
+  final double maxWidth;
   final ValueChanged<String> onCategoryTap;
   final int? liveCount;
   final FocusNode? heroFocusNode;
 
   const _MainCategoriesSection({
     required this.isLandscape,
+    this.maxWidth = 1280,
     required this.onCategoryTap,
     this.liveCount,
     this.heroFocusNode,
@@ -2848,14 +2829,15 @@ class _MainCategoriesSection extends StatelessWidget {
     ];
 
     if (isLandscape) {
+      final heroHeight = maxWidth >= 1600 ? 204.0 : 168.0;
       return SizedBox(
-        height: 200,
+        height: heroHeight,
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Cartão de TV ao vivo em destaque (Hero)
             Expanded(
-              flex: 40,
+              flex: 38,
               child: _CategoryCard(
                 item: heroItem,
                 focusNode: heroFocusNode,
@@ -2867,7 +2849,7 @@ class _MainCategoriesSection extends StatelessWidget {
             const SizedBox(width: 12),
             // Bloco 2x2 de Filmes, Séries, Favoritos e Playlist
             Expanded(
-              flex: 60,
+              flex: 62,
               child: Column(
                 children: [
                   Expanded(
