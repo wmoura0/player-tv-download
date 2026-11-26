@@ -19,7 +19,7 @@ void main() {
   });
 
   tearDown(() {
-    DeviceUtils.setMockAppVersion(versionCode: 23, versionName: '1.2.20');
+    DeviceUtils.setMockAppVersion(versionCode: 24, versionName: '1.2.21');
   });
 
   group('HOTFIX P0 — BUG 1: Prevenção do Loop de Atualização OTA', () {

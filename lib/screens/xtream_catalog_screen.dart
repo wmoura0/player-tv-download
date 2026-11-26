@@ -175,7 +175,8 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     with WidgetsBindingObserver {
   final GlobalKey<CatalogSidebarState> _sidebarKey =
       GlobalKey<CatalogSidebarState>();
-  final GlobalKey _gridContainerKey = GlobalKey(debugLabel: 'CatalogGridContainer');
+  final FocusNode _gridContainerFocusNode =
+      FocusNode(debugLabel: 'CatalogGridContainerFocus');
   final ScrollController _gridScrollController = ScrollController();
   final FocusNode _firstContentFocusNode =
       FocusNode(debugLabel: 'CatalogFirstItemFocus');
@@ -357,6 +358,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     _channelScrollController.dispose();
     _gridScrollController.dispose();
     _firstContentFocusNode.dispose();
+    _gridContainerFocusNode.dispose();
     _playerController?.removeListener(_onPlayerStateChanged);
     _playerController?.pause();
     _playerController?.dispose();
@@ -918,6 +920,16 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     });
   }
 
+  void _resetContentScrollToTop() {
+    if (_gridScrollController.hasClients && _gridScrollController.offset > 0) {
+      _gridScrollController.jumpTo(0);
+    }
+    if (_channelScrollController.hasClients &&
+        _channelScrollController.offset > 0) {
+      _channelScrollController.jumpTo(0);
+    }
+  }
+
   void _flushPendingGridFocus() {
     if (!_pendingFocusGrid) return;
     _pendingFocusGrid = false;
@@ -928,52 +940,65 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
     });
   }
 
-  void _focusFirstDescendantInGrid() {
-    final ctx = _gridContainerKey.currentContext;
-    if (ctx == null) return;
-    final scope = FocusScope.of(ctx);
-    for (final node in scope.traversalDescendants) {
-      if (node.canRequestFocus && node.context != null) {
-        node.requestFocus();
-        return;
-      }
+  bool _isFocusableNodeActive(FocusNode node) {
+    final ctx = node.context;
+    if (ctx == null || !ctx.mounted || !node.canRequestFocus) {
+      return false;
     }
+    final ro = ctx.findRenderObject();
+    return ro != null && ro.attached;
   }
 
-  void _focusContentGridFirstItem() {
+  bool _focusFirstDescendantInGrid() {
+    FocusNode? bestVisible;
+    double bestTop = double.infinity;
+    double bestLeft = double.infinity;
+    FocusNode? fallbackNode;
+
+    for (final node in _gridContainerFocusNode.traversalDescendants) {
+      if (!_isFocusableNodeActive(node)) continue;
+      fallbackNode ??= node;
+      final ro = node.context!.findRenderObject();
+      if (ro is RenderBox && ro.hasSize) {
+        final topLeft = ro.localToGlobal(Offset.zero);
+        if (topLeft.dy >= -8 && topLeft.dx >= 0) {
+          if (topLeft.dy < bestTop - 10 ||
+              ((topLeft.dy - bestTop).abs() <= 10 && topLeft.dx < bestLeft)) {
+            bestTop = topLeft.dy;
+            bestLeft = topLeft.dx;
+            bestVisible = node;
+          }
+        }
+      }
+    }
+
+    final target = bestVisible ?? fallbackNode;
+    if (target == null) return false;
+    target.requestFocus();
+    return true;
+  }
+
+  void _focusContentGridFirstItem({int retries = 2}) {
     if (!mounted) return;
     if (_isItemsLoading) {
       _pendingFocusGrid = true;
       return;
     }
-    if (_firstContentFocusNode.context != null &&
-        _firstContentFocusNode.canRequestFocus) {
+    if (_isFocusableNodeActive(_firstContentFocusNode)) {
       _firstContentFocusNode.requestFocus();
       return;
     }
-    if (_gridScrollController.hasClients &&
-        _gridScrollController.offset > 0) {
-      _gridScrollController.jumpTo(0);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        if (_firstContentFocusNode.context != null &&
-            _firstContentFocusNode.canRequestFocus) {
-          _firstContentFocusNode.requestFocus();
-        } else {
-          _focusFirstDescendantInGrid();
-        }
-      });
+    if (_focusFirstDescendantInGrid()) {
       return;
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (_firstContentFocusNode.context != null &&
-          _firstContentFocusNode.canRequestFocus) {
-        _firstContentFocusNode.requestFocus();
-      } else {
-        _focusFirstDescendantInGrid();
-      }
-    });
+    _resetContentScrollToTop();
+    _resetContentScrollToTop();
+    if (retries > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _focusContentGridFirstItem(retries: retries - 1);
+      });
+    }
   }
 
   void _focusSelectedSidebarCategory() {
@@ -1695,9 +1720,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
           _onSearchChanged('');
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
-              if (_gridScrollController.hasClients) {
-                _gridScrollController.jumpTo(0);
-              }
+              _resetContentScrollToTop();
               _sidebarKey.currentState?.focusCategory(_selectedCategoryId);
             }
           });
@@ -1815,53 +1838,59 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       if (_isSidebarVisible)
-                        CatalogSidebar(
-                          key: _sidebarKey,
-                          categories: _visibleCategories,
-                          selectedCategoryId: _selectedCategoryId,
-                          searchQuery: _searchQuery,
-                          searchController: _searchController,
-                          onCategoryFocused: (catId) {
-                            _focusedCategoryId = catId;
-                          },
-                          onFocusContentGrid: _focusContentGridFirstItem,
-                          onSearchChanged: _onSearchChanged,
-                          onCategorySelected: (catId) {
-                            _sidebarKey.currentState?.exitSearchEditing();
-                            final hadSearch = _searchQuery.isNotEmpty ||
-                                _searchController.text.isNotEmpty;
-                            if (_selectedCategoryId != catId || hadSearch) {
-                              _seriesSearchDebounce?.cancel();
-                              _seriesSearchGeneration++;
-                              if (hadSearch) {
-                                _searchController.clear();
+                        FocusTraversalGroup(
+                          child: CatalogSidebar(
+                            key: _sidebarKey,
+                            categories: _visibleCategories,
+                            selectedCategoryId: _selectedCategoryId,
+                            searchQuery: _searchQuery,
+                            searchController: _searchController,
+                            onCategoryFocused: (catId) {
+                              _focusedCategoryId = catId;
+                            },
+                            onFocusContentGrid: _focusContentGridFirstItem,
+                            onSearchChanged: _onSearchChanged,
+                            onCategorySelected: (catId) {
+                              _sidebarKey.currentState?.exitSearchEditing();
+                              final hadSearch = _searchQuery.isNotEmpty ||
+                                  _searchController.text.isNotEmpty;
+                              if (_selectedCategoryId != catId || hadSearch) {
+                                _seriesSearchDebounce?.cancel();
+                                _seriesSearchGeneration++;
+                                if (hadSearch) {
+                                  _searchController.clear();
+                                }
+                                _resetContentScrollToTop();
+                                setState(() {
+                                  _searchQuery = '';
+                                  _globalSeriesSearchResults = null;
+                                  _isGlobalSeriesSearching = false;
+                                  _categoryBeforeSeriesSearch = null;
+                                  _selectedCategoryId = catId;
+                                  _focusedCategoryId = catId;
+                                });
+                                _loadItemsForCategory(catId);
+                              } else {
+                                _focusContentGridFirstItem();
                               }
-                              if (_gridScrollController.hasClients) {
-                                _gridScrollController.jumpTo(0);
-                              }
-                              setState(() {
-                                _searchQuery = '';
-                                _globalSeriesSearchResults = null;
-                                _isGlobalSeriesSearching = false;
-                                _categoryBeforeSeriesSearch = null;
-                                _selectedCategoryId = catId;
-                                _focusedCategoryId = catId;
-                              });
-                              _loadItemsForCategory(catId);
-                            }
-                          },
-                          onHomeTap: () => Navigator.of(context).pop(),
-                          onCloseTap: isCompact
-                              ? () => setState(() => _isSidebarVisible = false)
-                              : null,
-                          accentColor: _accentColor,
-                          isCompact: isCompact,
-                          isLoading: _isInitLoading,
+                            },
+                            onHomeTap: () => Navigator.of(context).pop(),
+                            onCloseTap: isCompact
+                                ? () => setState(() => _isSidebarVisible = false)
+                                : null,
+                            accentColor: _accentColor,
+                            isCompact: isCompact,
+                            isLoading: _isInitLoading,
+                          ),
                         ),
                       Expanded(
-                        child: FocusTraversalGroup(
-                          key: _gridContainerKey,
-                          child: catalogContent,
+                        child: Focus(
+                          focusNode: _gridContainerFocusNode,
+                          canRequestFocus: false,
+                          skipTraversal: true,
+                          child: FocusTraversalGroup(
+                            child: catalogContent,
+                          ),
                         ),
                       ),
                     ],
@@ -2063,7 +2092,7 @@ class _XtreamCatalogScreenState extends State<XtreamCatalogScreen>
             stream: item,
             accentColor: _accentColor,
             isPlaying: isCurrent,
-            autofocus: isCurrent,
+            autofocus: false,
             focusNode: index == 0 ? _firstContentFocusNode : null,
             onMoveLeft: _focusSelectedSidebarCategory,
             isFavorite: isFav,
@@ -2693,11 +2722,12 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
         return KeyEventResult.handled;
       } else if (event is KeyUpEvent) {
         _longPressTimer?.cancel();
+        final shouldTap = _isKeyDown && !_longPressTriggered;
         _isKeyDown = false;
-        if (!_longPressTriggered) {
+        _longPressTriggered = false;
+        if (shouldTap) {
           widget.onTap();
         }
-        _longPressTriggered = false;
         return KeyEventResult.handled;
       }
     } else if (_isMenuKey(event.logicalKey)) {
@@ -2724,6 +2754,11 @@ class _LiveChannelCardState extends State<_LiveChannelCard> {
           _longPressTriggered = false;
         } else {
           widget.onFocus?.call();
+          Scrollable.ensureVisible(
+            context,
+            alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+            duration: const Duration(milliseconds: 140),
+          );
         }
         setState(() => _isFocused = focused);
       },
@@ -3014,7 +3049,15 @@ class _MediaPosterCardState extends State<_MediaPosterCard> {
     return Focus(
       focusNode: widget.focusNode,
       onFocusChange: (v) {
-        if (!v) _cancelHold();
+        if (!v) {
+          _cancelHold();
+        } else {
+          Scrollable.ensureVisible(
+            context,
+            alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+            duration: const Duration(milliseconds: 140),
+          );
+        }
         if (mounted) setState(() => _isFocused = v);
       },
       onKeyEvent: _handleKeyEvent,

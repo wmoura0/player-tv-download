@@ -166,14 +166,21 @@ class CatalogSidebarState extends State<CatalogSidebar> {
 
     _scrollToCategory(targetId);
     final node = _focusNodeFor(targetId);
-    if (node.context != null && node.canRequestFocus) {
+    final nodeCtx = node.context;
+    if (nodeCtx != null &&
+        nodeCtx.mounted &&
+        node.canRequestFocus &&
+        (nodeCtx.findRenderObject()?.attached ?? false)) {
       node.requestFocus();
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _scrollToCategory(targetId);
         final mountedNode = _focusNodeFor(targetId);
-        if (mountedNode.canRequestFocus) {
+        final mountedCtx = mountedNode.context;
+        if (mountedCtx != null &&
+            mountedCtx.mounted &&
+            mountedNode.canRequestFocus) {
           mountedNode.requestFocus();
         }
       });
@@ -206,6 +213,7 @@ class CatalogSidebarState extends State<CatalogSidebar> {
                 // Botão de Início / Voltar à Home
                 _HomeSidebarButton(
                   onTap: widget.onHomeTap,
+                  onMoveRight: widget.onFocusContentGrid,
                   isCompact: widget.isCompact,
                 ),
 
@@ -330,10 +338,12 @@ class CatalogSidebarState extends State<CatalogSidebar> {
 /// Botão de retorno à tela inicial (Home) integrado ao cabeçalho da barra lateral
 class _HomeSidebarButton extends StatefulWidget {
   final VoidCallback onTap;
+  final VoidCallback? onMoveRight;
   final bool isCompact;
 
   const _HomeSidebarButton({
     required this.onTap,
+    this.onMoveRight,
     required this.isCompact,
   });
 
@@ -350,13 +360,26 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
     final isHighlighted = _isFocused || _isHovered;
     const focusColor = AppColors.focusCyan;
 
-    return FocusableActionDetector(
-      key: const Key('sidebar_home'),
-      actions: DeviceUtils.activateAction(widget.onTap),
-      shortcuts: DeviceUtils.dpadSelectShortcuts,
-      onShowFocusHighlight: (v) => setState(() => _isFocused = v),
-      onShowHoverHighlight: (v) => setState(() => _isHovered = v),
-      child: Tooltip(
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) {
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
+            widget.onMoveRight != null) {
+          if (event is KeyDownEvent) {
+            widget.onMoveRight!();
+          }
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: FocusableActionDetector(
+        key: const Key('sidebar_home'),
+        actions: DeviceUtils.activateAction(widget.onTap),
+        shortcuts: DeviceUtils.dpadSelectShortcuts,
+        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        onShowHoverHighlight: (v) => setState(() => _isHovered = v),
+        child: Tooltip(
         message: 'Voltar ao Início',
         child: Material(
           color: Colors.transparent,
@@ -403,6 +426,7 @@ class _HomeSidebarButtonState extends State<_HomeSidebarButton> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -473,10 +497,11 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
       canRequestFocus: false,
       skipTraversal: true,
       onKeyEvent: (node, event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.arrowRight &&
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
             widget.onMoveRight != null) {
-          widget.onMoveRight!();
+          if (event is KeyDownEvent) {
+            widget.onMoveRight!();
+          }
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -716,13 +741,15 @@ class _SidebarTvSearchBarState extends State<_SidebarTvSearchBar> {
       canRequestFocus: !_isEditing,
       onFocusChange: (f) => setState(() => _isFocused = f),
       onKeyEvent: (node, event) {
-        if (event is KeyDownEvent) {
-          if (!_isEditing &&
-              event.logicalKey == LogicalKeyboardKey.arrowRight &&
-              widget.onMoveRight != null) {
+        if (!_isEditing &&
+            event.logicalKey == LogicalKeyboardKey.arrowRight &&
+            widget.onMoveRight != null) {
+          if (event is KeyDownEvent) {
             widget.onMoveRight!();
-            return KeyEventResult.handled;
           }
+          return KeyEventResult.handled;
+        }
+        if (event is KeyDownEvent) {
           if (!_isEditing &&
               event.logicalKey == LogicalKeyboardKey.arrowDown &&
               widget.onMoveDownToCategories != null) {

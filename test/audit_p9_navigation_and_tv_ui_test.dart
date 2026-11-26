@@ -799,4 +799,377 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  group('Catalog Re-entry D-Pad - TV ao vivo, Filmes e Séries (Ida e Volta Sidebar <-> Direita)', () {
+    void expectFocusInContentItems(WidgetTester tester, {required String stepLabel}) {
+      final focused = FocusManager.instance.primaryFocus;
+      expect(focused, isNotNull, reason: '$stepLabel: primaryFocus é nulo');
+      expect(focused!.context, isNotNull, reason: '$stepLabel: context do foco é nulo');
+      var inSidebar = false;
+      var inAppBar = false;
+      var inScrollable = false;
+      focused.context!.visitAncestorElements((ancestor) {
+        if (ancestor.widget is CatalogSidebar) inSidebar = true;
+        if (ancestor.widget is AppBar) inAppBar = true;
+        if (ancestor.widget is GridView || ancestor.widget is ListView) {
+          inScrollable = true;
+        }
+        return true;
+      });
+      expect(inSidebar, isFalse, reason: '$stepLabel: foco permaneceu preso na sidebar');
+      expect(inAppBar, isFalse, reason: '$stepLabel: foco escapou para a AppBar');
+      expect(inScrollable, isTrue, reason: '$stepLabel: foco deve estar em um item à direita');
+    }
+
+    Future<void> pumpUntilItemsLoaded(WidgetTester tester) async {
+      await tester.pump();
+      for (var i = 0; i < 60 && find.byType(CircularProgressIndicator).evaluate().isNotEmpty; i++) {
+        await tester.runAsync(() => Future.delayed(const Duration(milliseconds: 25)));
+        await tester.pump(const Duration(milliseconds: 25));
+      }
+      await tester.pump(const Duration(milliseconds: 120));
+    }
+
+    testWidgets('Filmes: entrar em Lançamentos, rolar, voltar à sidebar e reentrar na grade + trocar categorias', (tester) async {
+      DeviceUtils.setMockIsTv(true);
+      addTearDown(() => DeviceUtils.setMockIsTv(null));
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final client = MockClient((req) async {
+        final action = req.url.queryParameters['action'];
+        final cat = req.url.queryParameters['category_id'];
+        if (action == 'get_vod_categories') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode([
+              {'category_id': '10', 'category_name': 'Filmes | Lançamentos'},
+              {'category_id': '11', 'category_name': 'Ação'},
+              {'category_id': '12', 'category_name': 'Comédia'},
+            ])),
+            200,
+          );
+        }
+        if (action == 'get_vod_streams') {
+          if (cat == '10') {
+            return http.Response.bytes(
+              utf8.encode(jsonEncode(List.generate(30, (i) => {
+                'stream_id': 1000 + i,
+                'name': 'Filme Lançamento $i',
+                'category_id': '10',
+                'container_extension': 'mp4',
+              }))),
+              200,
+            );
+          }
+          if (cat == '11') {
+            return http.Response.bytes(
+              utf8.encode(jsonEncode(List.generate(10, (i) => {
+                'stream_id': 2000 + i,
+                'name': 'Filme Ação $i',
+                'category_id': '11',
+                'container_extension': 'mp4',
+              }))),
+              200,
+            );
+          }
+          if (cat == '12') {
+            await Future<void>.delayed(const Duration(milliseconds: 120));
+            return http.Response.bytes(
+              utf8.encode(jsonEncode(List.generate(8, (i) => {
+                'stream_id': 3000 + i,
+                'name': 'Filme Comédia $i',
+                'category_id': '12',
+                'container_extension': 'mp4',
+              }))),
+              200,
+            );
+          }
+        }
+        return http.Response('[]', 200);
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://reentry.local:8080',
+        username: 'u',
+        password: 'p',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: XtreamCatalogScreen(
+            type: XtreamCatalogType.movies,
+            catalogService: catalog,
+          ),
+        ),
+      );
+      await pumpUntilItemsLoaded(tester);
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_10');
+
+      // 1. Entra em Filmes | Lançamentos (Direita)
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Filmes entrada 1');
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'CatalogFirstItemFocus');
+
+      // 2. Desce na grade para desmontar o item 0 da lista virtualizada e volta à esquerda
+      for (var i = 0; i < 4; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expectFocusInContentItems(tester, stepLabel: 'Filmes após descer');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_10');
+
+      // 3. Reentra na grade à direita na MESMA categoria mesmo após rolagem
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Filmes reentrada após rolagem');
+
+      // 4. Volta à sidebar e troca para Ação -> confirma OK -> entra na direita
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_11');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await pumpUntilItemsLoaded(tester);
+      expect(find.text('Filme Ação 0'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Filmes entrada em Ação');
+
+      // 5. Volta à sidebar e pressiona OK novamente na categoria Ação já selecionada -> entra nos itens
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_11');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Filmes OK na categoria já selecionada');
+
+      // 6. Volta à sidebar, seleciona Comédia (com carregamento assíncrono) e aperta Direita durante o loading
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pumpUntilItemsLoaded(tester);
+      expect(find.text('Filme Comédia 0'), findsOneWidget);
+      expectFocusInContentItems(tester, stepLabel: 'Filmes pendência durante loading');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Séries: entrar, voltar à sidebar, trocar categoria e reentrar na grade repetidamente', (tester) async {
+      DeviceUtils.setMockIsTv(true);
+      addTearDown(() => DeviceUtils.setMockIsTv(null));
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final client = MockClient((req) async {
+        final action = req.url.queryParameters['action'];
+        final cat = req.url.queryParameters['category_id'];
+        if (action == 'get_series_categories') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode([
+              {'category_id': '10', 'category_name': 'Lançamentos'},
+              {'category_id': '11', 'category_name': 'Drama'},
+            ])),
+            200,
+          );
+        }
+        if (action == 'get_series') {
+          final prefix = cat == '11' ? 'Série Drama' : 'Série Lançamento';
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(List.generate(25, (i) => {
+              'series_id': (cat == '11' ? 5000 : 4000) + i,
+              'name': '$prefix $i',
+              'category_id': cat ?? '10',
+            }))),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://reentry-series.local:8080',
+        username: 'u',
+        password: 'p',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: XtreamCatalogScreen(
+            type: XtreamCatalogType.series,
+            catalogService: catalog,
+          ),
+        ),
+      );
+      await pumpUntilItemsLoaded(tester);
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_10');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Séries Lançamentos');
+
+      for (var i = 0; i < 4; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_10');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Séries reentrada em Lançamentos');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await pumpUntilItemsLoaded(tester);
+      expect(find.text('Série Drama 0'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'Séries Drama');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('TV ao vivo: entrar nos canais, rolar lista, voltar à sidebar, trocar categoria e reentrar nos canais', (tester) async {
+      DeviceUtils.setMockIsTv(true);
+      addTearDown(() => DeviceUtils.setMockIsTv(null));
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final client = MockClient((req) async {
+        final action = req.url.queryParameters['action'];
+        final cat = req.url.queryParameters['category_id'];
+        if (action == 'get_live_categories') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode([
+              {'category_id': '20', 'category_name': 'Esportes'},
+              {'category_id': '21', 'category_name': 'Variedades'},
+            ])),
+            200,
+          );
+        }
+        if (action == 'get_live_streams') {
+          final sports = List.generate(15, (i) => {
+            'stream_id': 7000 + i,
+            'name': 'Canal Esporte $i',
+            'category_id': '20',
+          });
+          if (cat == '20') {
+            return http.Response.bytes(
+              utf8.encode(jsonEncode(sports)),
+              200,
+            );
+          }
+          final general = List.generate(25, (i) => {
+            'stream_id': 6000 + i,
+            'name': 'Canal Geral $i',
+            'category_id': '21',
+          });
+          return http.Response.bytes(
+            utf8.encode(jsonEncode([...general, ...sports])),
+            200,
+          );
+        }
+        if (action == 'get_short_epg' || action == 'get_simple_data_table') {
+          return http.Response('{"epg_listings":[]}', 200);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final catalog = XtreamCatalogService(
+        serverUrl: 'http://reentry-live.local:8080',
+        username: 'u',
+        password: 'p',
+        client: client,
+        cacheDirectoryOverride: tempDir,
+      );
+
+      await tester.pumpWidget(
+        PlayerTvApp(
+          home: XtreamCatalogScreen(
+            type: XtreamCatalogType.live,
+            catalogService: catalog,
+          ),
+        ),
+      );
+      await pumpUntilItemsLoaded(tester);
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_all');
+
+      // 1. Direita entra no primeiro canal
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'TV ao vivo entrada inicial');
+
+      // 2. Desce 14 canais (fazendo scroll real na _channelScrollController) e volta com Esquerda
+      for (var i = 0; i < 14; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump(const Duration(milliseconds: 30));
+      }
+      expectFocusInContentItems(tester, stepLabel: 'TV ao vivo após descer 14 canais');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_all');
+
+      // 3. Pressiona Direita para voltar à lista de canais à direita
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'TV ao vivo reentrada após rolagem');
+
+      // 4. Volta à sidebar, muda para Esportes (OK) e entra nos canais (Direita)
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown); // favorites
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown); // Esportes ('20')
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'sidebar_cat_20');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await pumpUntilItemsLoaded(tester);
+      expect(find.text('Canal Esporte 0'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'TV ao vivo entrada em Esportes');
+
+      // 5. Volta à sidebar e aperta OK novamente na categoria Esportes -> entra nos canais
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      expectFocusInContentItems(tester, stepLabel: 'TV ao vivo OK na categoria já selecionada');
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
