@@ -122,9 +122,9 @@ void main() {
       await tester.tap(find.byKey(const Key('cat_favorites')));
       await tester.pumpAndSettle();
 
-      // Deve abrir a tela Meus Favoritos
+      // Deve abrir a tela Meus Favoritos com sidebar
       expect(find.text('Meus Favoritos'), findsOneWidget);
-      expect(find.text('Canais (0)'), findsOneWidget);
+      expect(find.byKey(const Key('favorites_cat_live')), findsOneWidget);
     });
 
     testWidgets('Remoção do item de Continuar assistindo preserva o progresso salvo subjacente', (tester) async {

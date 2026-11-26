@@ -351,9 +351,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Ocultar da Home'), findsOneWidget);
-      expect(find.text('Reiniciar reprodução'), findsOneWidget);
       expect(find.text('Marcar como concluído'), findsOneWidget);
-      expect(find.text('Apagar histórico'), findsOneWidget);
+      expect(find.text('Fechar'), findsOneWidget);
+      expect(find.text('Reiniciar reprodução'), findsNothing);
+      expect(find.text('Apagar histórico'), findsNothing);
 
       await tester.tap(find.text('Ocultar da Home'));
       await tester.pumpAndSettle();

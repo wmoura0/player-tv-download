@@ -15,6 +15,7 @@ class CatalogSidebar extends StatefulWidget {
   final List<XtreamCategory> categories;
   final String selectedCategoryId;
   final ValueChanged<String> onCategorySelected;
+  final ValueChanged<String>? onCategoryFocused;
   final VoidCallback onHomeTap;
   final VoidCallback? onCloseTap;
   final VoidCallback? onFocusContentGrid;
@@ -30,6 +31,7 @@ class CatalogSidebar extends StatefulWidget {
     required this.categories,
     required this.selectedCategoryId,
     required this.onCategorySelected,
+    this.onCategoryFocused,
     required this.onHomeTap,
     this.onCloseTap,
     this.onFocusContentGrid,
@@ -41,6 +43,32 @@ class CatalogSidebar extends StatefulWidget {
     this.searchController,
   });
 
+  /// Remove símbolos decorativos / Unicode sem glifo no Android/Fire OS (tofu □)
+  /// apenas para exibição visual, preservando intactos IDs e nomes reais usados em filtros.
+  static String sanitizeDisplayCategoryName(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return raw;
+
+    final cleaned = trimmed
+        // Variation selectors, ZWJ e caracteres invisíveis
+        .replaceAll(RegExp(r'[\u200B-\u200D\uFE0E\uFE0F\uFFFD]'), '')
+        // Blocos geométricos (■ ▪ ▫ ▶ ▸ ◄ ◆), setas, dingbats, estrelas, PUA e emojis/pictographs
+        .replaceAll(
+          RegExp(
+            r'[\u2190-\u21FF\u2500-\u27BF\u2B00-\u2BFF\uE000-\uF8FF\u{1F000}-\u{1FAFF}]+',
+            unicode: true,
+          ),
+          ' ',
+        )
+        // Separadores decorativos soltos no início (ex.: "| Netflix", "- HBO MAX", "• Filmes")
+        .replaceFirst(RegExp(r'^[\s\-|:•·/\\]+'), '')
+        .replaceFirst(RegExp(r'[\s\-|:•·]+$'), '')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
+
+    return cleaned.isEmpty ? trimmed : cleaned;
+  }
+
   @override
   State<CatalogSidebar> createState() => CatalogSidebarState();
 }
@@ -48,6 +76,13 @@ class CatalogSidebar extends StatefulWidget {
 class CatalogSidebarState extends State<CatalogSidebar> {
   final ScrollController _scrollController = ScrollController();
   final Map<String, FocusNode> _categoryFocusNodes = {};
+  final GlobalKey<_SidebarTvSearchBarState> _searchBarKey =
+      GlobalKey<_SidebarTvSearchBarState>();
+
+  /// Encerra o modo de edição/teclado da barra de busca sem perder estado da categoria.
+  void exitSearchEditing() {
+    _searchBarKey.currentState?.exitEditing();
+  }
 
   @override
   void initState() {
@@ -201,11 +236,14 @@ class CatalogSidebarState extends State<CatalogSidebar> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: _SidebarTvSearchBar(
+                key: _searchBarKey,
                 controller: widget.searchController,
                 query: widget.searchQuery,
                 accentColor: widget.accentColor,
                 isCompact: widget.isCompact,
                 onChanged: widget.onSearchChanged!,
+                onMoveRight: widget.onFocusContentGrid,
+                onMoveDownToCategories: () => focusCategory(widget.selectedCategoryId),
               ),
             ),
 
@@ -274,6 +312,7 @@ class CatalogSidebarState extends State<CatalogSidebar> {
                                 isSelected: isSelected,
                                 accentColor: widget.accentColor,
                                 isCompact: widget.isCompact,
+                                onFocused: () => widget.onCategoryFocused?.call(cat.id),
                                 onMoveRight: widget.onFocusContentGrid,
                                 onTap: () => widget.onCategorySelected(cat.id),
                               ),
@@ -376,6 +415,7 @@ class _CategorySidebarItem extends StatefulWidget {
   final bool isSelected;
   final Color accentColor;
   final bool isCompact;
+  final VoidCallback? onFocused;
   final VoidCallback? onMoveRight;
   final VoidCallback onTap;
 
@@ -386,6 +426,7 @@ class _CategorySidebarItem extends StatefulWidget {
     required this.isSelected,
     required this.accentColor,
     required this.isCompact,
+    this.onFocused,
     this.onMoveRight,
     required this.onTap,
   });
@@ -398,14 +439,14 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
   bool _isFocused = false;
   bool _isHovered = false;
 
-  IconData get _iconForCategory {
+  IconData? get _iconForCategory {
     if (widget.category.id == 'all') {
       return Icons.apps_rounded;
     }
     if (widget.category.id == 'favorites') {
       return Icons.favorite_rounded;
     }
-    return Icons.folder_outlined;
+    return null;
   }
 
   Color get _iconColor {
@@ -424,6 +465,9 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
   @override
   Widget build(BuildContext context) {
     final isHighlighted = _isFocused || _isHovered;
+    final categoryIcon = _iconForCategory;
+    final displayName =
+        CatalogSidebar.sanitizeDisplayCategoryName(widget.category.name);
 
     return Focus(
       canRequestFocus: false,
@@ -441,10 +485,13 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
         focusNode: widget.focusNode,
         actions: DeviceUtils.activateAction(widget.onTap),
         shortcuts: DeviceUtils.dpadSelectShortcuts,
-        onShowFocusHighlight: (v) => setState(() => _isFocused = v),
+        onShowFocusHighlight: (v) {
+          setState(() => _isFocused = v);
+          if (v) widget.onFocused?.call();
+        },
         onShowHoverHighlight: (v) => setState(() => _isHovered = v),
         child: Tooltip(
-        message: widget.category.name,
+        message: displayName,
         waitDuration: const Duration(milliseconds: 500),
         child: Material(
           color: Colors.transparent,
@@ -493,18 +540,20 @@ class _CategorySidebarItemState extends State<_CategorySidebarItem> {
                       ),
                     ),
 
-                  // Ícone representativo da categoria
-                  Icon(
-                    _iconForCategory,
-                    size: widget.isCompact ? 16 : 18,
-                    color: _iconColor,
-                  ),
-                  const SizedBox(width: 8),
+                  // Ícone representativo apenas quando útil (Todas / Favoritos)
+                  if (categoryIcon != null) ...[
+                    Icon(
+                      categoryIcon,
+                      size: widget.isCompact ? 16 : 18,
+                      color: _iconColor,
+                    ),
+                    const SizedBox(width: 8),
+                  ],
 
-                  // Nome da categoria real
+                  // Nome da categoria real (sanitizado de quadradinhos sem glifo)
                   Expanded(
                     child: Text(
-                      widget.category.name,
+                      displayName,
                       style: TextStyle(
                         fontSize: widget.isCompact ? 11.5 : 13,
                         fontWeight: (widget.isSelected || isHighlighted)
@@ -565,13 +614,18 @@ class _SidebarTvSearchBar extends StatefulWidget {
   final Color accentColor;
   final bool isCompact;
   final ValueChanged<String> onChanged;
+  final VoidCallback? onMoveRight;
+  final VoidCallback? onMoveDownToCategories;
 
   const _SidebarTvSearchBar({
+    super.key,
     this.controller,
     required this.query,
     required this.accentColor,
     required this.isCompact,
     required this.onChanged,
+    this.onMoveRight,
+    this.onMoveDownToCategories,
   });
 
   @override
@@ -585,6 +639,18 @@ class _SidebarTvSearchBarState extends State<_SidebarTvSearchBar> {
   bool _isOwnController = false;
   bool _isFocused = false;
   bool _isEditing = false;
+
+  void exitEditing() {
+    if (_isEditing || _textFocusNode.hasFocus) {
+      _textFocusNode.skipTraversal = true;
+      _textFocusNode.unfocus();
+      if (mounted) {
+        setState(() => _isEditing = false);
+      } else {
+        _isEditing = false;
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -650,6 +716,20 @@ class _SidebarTvSearchBarState extends State<_SidebarTvSearchBar> {
       canRequestFocus: !_isEditing,
       onFocusChange: (f) => setState(() => _isFocused = f),
       onKeyEvent: (node, event) {
+        if (event is KeyDownEvent) {
+          if (!_isEditing &&
+              event.logicalKey == LogicalKeyboardKey.arrowRight &&
+              widget.onMoveRight != null) {
+            widget.onMoveRight!();
+            return KeyEventResult.handled;
+          }
+          if (!_isEditing &&
+              event.logicalKey == LogicalKeyboardKey.arrowDown &&
+              widget.onMoveDownToCategories != null) {
+            widget.onMoveDownToCategories!();
+            return KeyEventResult.handled;
+          }
+        }
         if (!_isEditing &&
             (event.logicalKey == LogicalKeyboardKey.select ||
              event.logicalKey == LogicalKeyboardKey.enter ||

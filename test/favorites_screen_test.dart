@@ -47,9 +47,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Meus Favoritos'), findsOneWidget);
-      expect(find.text('Canais (0)'), findsOneWidget);
-      expect(find.text('Filmes (0)'), findsOneWidget);
-      expect(find.text('Séries (0)'), findsOneWidget);
+      expect(find.text('Início'), findsOneWidget);
+      expect(find.text('Canais'), findsOneWidget);
+      expect(find.text('Filmes'), findsOneWidget);
+      expect(find.text('Séries'), findsOneWidget);
       expect(find.text('Nenhum item em canais de TV ao vivo'), findsOneWidget);
     });
 
@@ -93,21 +94,28 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Confere abas com contagens
-      expect(find.text('Canais (1)'), findsOneWidget);
-      expect(find.text('Filmes (1)'), findsOneWidget);
-      expect(find.text('Séries (1)'), findsOneWidget);
+      // Confere sidebar com categorias e contadores
+      expect(find.text('Canais'), findsOneWidget);
+      expect(find.text('Filmes'), findsOneWidget);
+      expect(find.text('Séries'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('favorites_cat_live')),
+          matching: find.text('1'),
+        ),
+        findsOneWidget,
+      );
 
-      // Aba 1: Canal visível
+      // Categoria 1: Canal visível
       expect(find.text('Globo HD'), findsOneWidget);
 
-      // Troca para Aba 2 (Filmes)
-      await tester.tap(find.text('Filmes (1)'));
+      // Troca para Filmes na sidebar
+      await tester.tap(find.text('Filmes'));
       await tester.pumpAndSettle();
       expect(find.text('Interestelar'), findsOneWidget);
 
-      // Troca para Aba 3 (Séries)
-      await tester.tap(find.text('Séries (1)'));
+      // Troca para Séries na sidebar
+      await tester.tap(find.text('Séries'));
       await tester.pumpAndSettle();
       expect(find.text('Stranger Things'), findsOneWidget);
     });
@@ -141,8 +149,14 @@ void main() {
       expect(find.text('"ESPN Brasil" removido dos favoritos.'), findsOneWidget);
       expect(find.text('Desfazer'), findsOneWidget);
 
-      // Confere que agora a aba está vazia
-      expect(find.text('Canais (0)'), findsOneWidget);
+      // Confere que agora o contador da categoria Canais foi atualizado para 0
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('favorites_cat_live')),
+          matching: find.text('0'),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('D-Pad Select em card de série nos Favoritos aciona navegação para SeriesDetailScreen', (tester) async {
@@ -172,8 +186,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Troca para Aba 3 (Séries)
-      await tester.tap(find.text('Séries (1)'));
+      // Troca para Séries na sidebar
+      await tester.tap(find.text('Séries'));
       await tester.pumpAndSettle();
       expect(find.text('Breaking Bad'), findsOneWidget);
 
@@ -216,8 +230,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Troca para Aba 3 (Séries)
-      await tester.tap(find.text('Séries (1)'));
+      // Troca para Séries na sidebar
+      await tester.tap(find.text('Séries'));
       await tester.pumpAndSettle();
       expect(find.text('Chernobyl'), findsOneWidget);
 

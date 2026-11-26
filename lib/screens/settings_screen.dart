@@ -17,15 +17,12 @@ import '../models/managed_account.dart';
 import '../services/account_manager_service.dart';
 import '../services/favorites_service.dart';
 import '../services/pin_service.dart';
-import '../services/settings_service.dart';
 import '../services/smart_source_resolver.dart';
 import '../services/user_profile_service.dart';
-import '../services/webview_player_service.dart';
 import '../widgets/pin_entry_dialog.dart';
 
 enum SettingsMenuSection {
   generalInfo,
-  playbackPreferences,
   parentalControl,
   accountsAndProfiles,
   hiddenCategories,
@@ -503,14 +500,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: 8),
                         _buildMenuItem(
-                          section: SettingsMenuSection.playbackPreferences,
-                          title: 'Reprodução e Fontes',
-                          subtitle: 'Áudio, Legendas e Smart Source',
-                          icon: Icons.play_circle_outline_rounded,
-                          accentColor: accent,
-                        ),
-                        const SizedBox(height: 8),
-                        _buildMenuItem(
                           section: SettingsMenuSection.parentalControl,
                           title: 'Controle Parental',
                           subtitle: 'Bloqueio por PIN e Adulto',
@@ -620,8 +609,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     switch (_selectedSection) {
       case SettingsMenuSection.generalInfo:
         return _buildGeneralInfoPanel(accent);
-      case SettingsMenuSection.playbackPreferences:
-        return _buildPlaybackPreferencesPanel(accent);
       case SettingsMenuSection.parentalControl:
         return _buildParentalControlPanel(accent);
       case SettingsMenuSection.accountsAndProfiles:
@@ -635,214 +622,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case SettingsMenuSection.logout:
         return _buildLogoutPanel(accent);
     }
-  }
-
-  Widget _buildPlaybackPreferencesPanel(Color accent) {
-    return ListenableBuilder(
-      listenable: SettingsService.instance,
-      builder: (context, _) {
-        final settings = SettingsService.instance;
-        return Container(
-          decoration: BoxDecoration(
-            color: AppColors.surfaceSecondary,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.borderSubtle, width: 1.5),
-            boxShadow: const [
-              BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 4)),
-            ],
-          ),
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: accent.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(Icons.play_circle_outline_rounded, color: accent, size: 26),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Reprodução e Resolução de Fontes',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'Controles avançados de áudio, legendas e recuperação inteligente de episódios',
-                          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              const Divider(color: AppColors.borderSubtle, height: 1),
-              const SizedBox(height: 16),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                activeThumbColor: accent,
-                title: const Text(
-                  'Smart Source (Recuperação de Episódios)',
-                  style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                subtitle: const Text(
-                  'Sonda automaticamente formatos alternativos (.mp4, .mkv, .ts) sem travar o player quando o servidor reportar erro 404 em séries longas.',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                ),
-                value: settings.enableSmartSource,
-                onChanged: (val) async {
-                  await settings.setEnableSmartSource(val);
-                  _showSnackbar('Smart Source ${val ? "ativado" : "desativado"}.');
-                },
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Formato de Contêiner Preferido',
-                          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 14),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'Prioriza a extensão na resolução de fontes de vídeo',
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                  DropdownButton<String>(
-                    value: settings.preferredContainerExtension,
-                    dropdownColor: AppColors.surfaceSecondary,
-                    style: const TextStyle(color: AppColors.focusCyan, fontWeight: FontWeight.bold),
-                    items: const [
-                      DropdownMenuItem(value: 'auto', child: Text('Automático (Padrão)')),
-                      DropdownMenuItem(value: 'mp4', child: Text('MP4')),
-                      DropdownMenuItem(value: 'mkv', child: Text('MKV')),
-                      DropdownMenuItem(value: 'ts', child: Text('TS')),
-                    ],
-                    onChanged: (val) async {
-                      if (val != null) {
-                        await settings.setPreferredContainerExtension(val);
-                        _showSnackbar('Formato preferido definido para $val.');
-                      }
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Idioma de Áudio Preferido',
-                          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 14),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'Faixa de áudio prioritária selecionada automaticamente ao abrir filmes ou séries',
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                  DropdownButton<String>(
-                    value: settings.preferredAudioLanguage,
-                    dropdownColor: AppColors.surfaceSecondary,
-                    style: const TextStyle(color: AppColors.focusCyan, fontWeight: FontWeight.bold),
-                    items: const [
-                      DropdownMenuItem(value: 'pt', child: Text('Português (Dublado)')),
-                      DropdownMenuItem(value: 'en', child: Text('Inglês (Original)')),
-                      DropdownMenuItem(value: 'es', child: Text('Espanhol')),
-                      DropdownMenuItem(value: 'orig', child: Text('Original do Arquivo')),
-                    ],
-                    onChanged: (val) async {
-                      if (val != null) {
-                        await settings.setPreferredAudioLanguage(val);
-                        _showSnackbar('Idioma preferido definido para $val.');
-                      }
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              const Divider(color: AppColors.borderSubtle, height: 1),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.cardBackground.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.science_outlined, color: Colors.amber, size: 28),
-                    const SizedBox(width: 14),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Laboratório: Prova de Conceito WebView (PoC)',
-                            style: TextStyle(
-                              color: AppColors.textPrimary,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                          SizedBox(height: 2),
-                          Text(
-                            'Validação experimental de segundo mecanismo HTML5 isolado para Fire TV (Big Buck Bunny)',
-                            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.amber.shade800,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      ),
-                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                      label: const Text('Testar WebView', style: TextStyle(fontWeight: FontWeight.bold)),
-                      onPressed: () async {
-                        final ok = await WebViewPlayerService.openPocPlayer();
-                        if (!ok && context.mounted) {
-                          _showSnackbar('Não foi possível abrir o player WebView.');
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
   }
 
   Widget _buildParentalControlPanel(Color accent) {
@@ -911,30 +690,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 20),
               const Divider(color: AppColors.borderSubtle, height: 1),
               const SizedBox(height: 16),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                activeThumbColor: accent,
-                title: const Text(
-                  'Bloquear Conteúdo Adulto (+18)',
-                  style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15),
+              Material(
+                type: MaterialType.transparency,
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeThumbColor: accent,
+                  title: const Text(
+                    'Bloquear Conteúdo Adulto (+18)',
+                    style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  subtitle: const Text(
+                    'Exige autenticação por PIN para acessar canais, filmes e séries das categorias adultas ou eróticas.',
+                    style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  value: pinService.isAdultContentHidden,
+                  onChanged: (val) async {
+                    if (hasPin) {
+                      final ok = await PinEntryDialog.show(
+                        context,
+                        title: 'Confirmar PIN',
+                        subtitle: 'Digite o PIN para alterar esta configuração.',
+                      );
+                      if (!ok || !context.mounted) return;
+                    }
+                    await pinService.setHideAdultContent(val);
+                    _showSnackbar('Bloqueio adulto ${val ? "ativado" : "desativado"}.');
+                  },
                 ),
-                subtitle: const Text(
-                  'Exige autenticação por PIN para acessar canais, filmes e séries das categorias adultas ou eróticas.',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                ),
-                value: pinService.isAdultContentHidden,
-                onChanged: (val) async {
-                  if (hasPin) {
-                    final ok = await PinEntryDialog.show(
-                      context,
-                      title: 'Confirmar PIN',
-                      subtitle: 'Digite o PIN para alterar esta configuração.',
-                    );
-                    if (!ok || !context.mounted) return;
-                  }
-                  await pinService.setHideAdultContent(val);
-                  _showSnackbar('Bloqueio adulto ${val ? "ativado" : "desativado"}.');
-                },
               ),
               const SizedBox(height: 16),
               _buildInfoRow('Categorias Bloqueadas', '${pinService.lockedCategories.length} categorias protegidas'),
