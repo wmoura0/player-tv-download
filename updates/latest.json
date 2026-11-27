@@ -1,11 +1,11 @@
 {
-  "version": "1.2.20",
-  "versionCode": 23,
+  "version": "1.2.21",
+  "versionCode": 24,
   "minSupportedVersion": "1.0.0",
-  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.20/JessFlix-v1.2.20.apk",
-  "fileSize": 60233049,
-  "sha256": "ffab1068ae2ec76cdff18998baaec81642a5da03115ceca2e23e98ca8c24ab9c",
-  "releaseNotes": "• Resolução Real e Margem Segura de Overscan na TV: Normaliza o Fire TV (960×540 dp) para espaço virtual 1280×720 com margem segura de overscan nas 4 bordas, eliminando o aspecto esticado e cortes no cabeçalho e na barra lateral.\n• Grade de 5 Colunas e Contraste Aprimorado: Filmes e Séries agora exibem 5 pôsteres nítidos por linha na TV, foco da sidebar com fundo escuro e texto branco de alto contraste, e logos de canais emoldurados nos Favoritos.\n• Novo Ícone Oficial do JessFlix no Fire TV: Novo ícone raster sólido full-bleed (@mipmap/ic_jessflix_launcher) e banners 16:9 em múltiplas densidades para substituir o ícone antigo na tela inicial do Fire TV.",
-  "publishedAt": "2026-11-26T15:33:00.000Z",
+  "apkUrl": "https://github.com/wmoura0/player-tv-download/releases/download/v1.2.21/JessFlix-v1.2.21.apk",
+  "fileSize": 60233045,
+  "sha256": "e940b6d8f790de4dbecfee66b8736fb83c5284676658cd5524fcdfd6bfbb68c3",
+  "releaseNotes": "• Navegação D-pad em TV ao vivo, Filmes e Séries: Corrige o travamento de foco na barra lateral ao voltar das categorias à esquerda para os itens à direita, mesmo após rolar listas/grades ou alternar entre categorias.\n• Reentrada na Categoria Atual e Scroll Automático: Pressionar OK ou Direita na categoria ativa retorna o foco imediatamente ao primeiro item visível à direita e reseta corretamente a rolagem de canais e catálogos.\n• Proteção de Clique na TV ao vivo: Evita a reprodução acidental do primeiro canal ao soltar o botão OK logo após confirmar uma categoria.",
+  "publishedAt": "2026-11-27T00:02:54.000Z",
   "mandatory": false
 }
